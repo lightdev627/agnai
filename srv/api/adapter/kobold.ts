@@ -1,5 +1,4 @@
 import needle from 'needle'
-import { config } from '../../config'
 import { logger } from '../../logger'
 import { joinParts, trimResponse } from '../chat/common'
 import { getGenSettings } from './presets'
