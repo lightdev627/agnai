@@ -146,7 +146,7 @@ export const GenerationPresetsPage: Component = () => {
     setMissingPlaceholder(false)
   }
 
-  if (params.id && !state.editing) {
+  if (params.id && params.id !== 'new' && !state.editing) {
     return (
       <>
         <PageHeader title="Generation Presets" />
