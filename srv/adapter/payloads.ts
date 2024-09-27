@@ -2,6 +2,7 @@ import { AdapterProps } from './type'
 import { getStoppingStrings } from './prompt'
 import { clamp, neat } from '/common/util'
 import { toJsonSchema } from '/common/prompt'
+import { defaultPresets } from '/common/default-preset'
 
 const chat_template = neat`
 {%- if messages[0]['role'] == 'system' -%}
@@ -402,6 +403,26 @@ function getBasePayload(opts: AdapterProps, stops: string[] = []) {
       rep_pen_range: gen.repetitionPenaltyRange,
       rep_pen_slope: gen.repetitionPenaltySlope,
     }
+    return body
+  }
+
+  if (format === 'openai') {
+    const oaiModel = gen.thirdPartyModel || gen.oaiModel || defaultPresets.openai.oaiModel
+    const maxResponseLength = gen.maxTokens ?? defaultPresets.openai.maxTokens
+
+    const body: any = {
+      model: oaiModel,
+      stream:
+        (gen.streamResponse && opts.kind !== 'summary') ?? defaultPresets.openai.streamResponse,
+      temperature: gen.temp ?? defaultPresets.openai.temp,
+      max_tokens: maxResponseLength,
+      top_p: gen.topP ?? 1,
+      stop: getStoppingStrings(opts),
+    }
+
+    body.presence_penalty = gen.presencePenalty ?? defaultPresets.openai.presencePenalty
+    body.frequency_penalty = gen.frequencyPenalty ?? defaultPresets.openai.frequencyPenalty
+
     return body
   }
 }
