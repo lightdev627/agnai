@@ -6,9 +6,9 @@ import {
   AdapterSetting,
   ThirdPartyFormat,
 } from '../../../common/adapters'
-import { presetStore, settingStore, userStore } from '../../store'
+import { presetStore, settingStore } from '../../store'
 import { Card } from '../Card'
-import { getFormEntries, getUsableServices, hidePresetSetting, storage } from '../util'
+import { getFormEntries, getUsableServices, storage } from '../util'
 import { createStore } from 'solid-js/store'
 import Accordian from '../Accordian'
 import { ServiceOption } from '../../pages/Settings/components/RegisteredSettings'
@@ -34,7 +34,6 @@ const PresetSettings: Component<
   PresetProps & { noSave: boolean; store: PresetState; setter: SetPresetState }
 > = (props) => {
   const settings = settingStore()
-  const userState = userStore()
   const pane = usePaneManager()
   const [search, setSearch] = useSearchParams()
   const [tab, setTab] = createSignal(+(search.preset_tab ?? '0'))
@@ -52,6 +51,21 @@ const PresetSettings: Component<
         if (inherited) {
           props.setter(inherited)
         }
+      }
+    )
+  )
+
+  createEffect(
+    on(
+      () => (props.store.service || '') + services().length,
+      () => {
+        if (props.disabled) return
+        if (props.store.service) return
+        if (!services().length) return
+        if (props.store._id) return
+
+        console.log('new', services()[0].value)
+        props.setter('service', services()[0].value as any)
       }
     )
   )
@@ -129,8 +143,8 @@ const PresetSettings: Component<
             { label: 'Featherless', value: 'featherless' },
             { label: 'Google AI Studio', value: 'gemini' },
           ]}
-          value={props.store.thirdPartyFormat ?? userState.user?.thirdPartyFormat ?? ''}
-          hide={hidePresetSetting(props.store, 'thirdPartyFormat')}
+          value={props.store.thirdPartyFormat}
+          hide={props.store.service !== 'kobold'}
           onChange={(ev) => props.setter('thirdPartyFormat', ev.value as ThirdPartyFormat)}
         />
 
