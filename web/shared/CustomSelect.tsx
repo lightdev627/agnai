@@ -2,9 +2,7 @@ import { Component, For, JSX, Show, createMemo, createSignal, onMount } from 'so
 import { FormLabel } from './FormLabel'
 import Button, { ButtonSchema } from './Button'
 import { RootModal } from './Modal'
-import { PresetAISettings } from '/common/adapters'
-import { ComponentSubscriber, useValidServiceSetting } from './util'
-import { forms } from '../emitter'
+import { ComponentSubscriber } from './util'
 import TextInput from './TextInput'
 
 export type CustomOption = {
@@ -28,7 +26,6 @@ export const CustomSelect: Component<{
   fieldName?: string
   selected: any | undefined
   hide?: boolean
-  aiSetting?: keyof PresetAISettings
   parentClass?: string
   classList?: Record<string, boolean>
   emitter?: ComponentSubscriber<'close'>
@@ -37,8 +34,6 @@ export const CustomSelect: Component<{
   let ref: HTMLInputElement
   const [open, setOpen] = createSignal(false)
 
-  const show = useValidServiceSetting(props.aiSetting)
-
   onMount(() => {
     if (props.emitter) {
       props.emitter('close', () => setOpen(false))
@@ -46,10 +41,6 @@ export const CustomSelect: Component<{
   })
 
   const onSelect = (opt: CustomOption) => {
-    if (props.fieldName) {
-      forms.emit(props.fieldName, opt.value)
-    }
-
     if (ref) {
       ref.value = opt.value
     }
@@ -70,7 +61,7 @@ export const CustomSelect: Component<{
   return (
     <div
       class={`max-w-full ${props.parentClass || ''}`}
-      classList={{ ...props.classList, hidden: !show() || props.hide }}
+      classList={{ ...props.classList, hidden: props.hide }}
     >
       <Show when={props.fieldName}>
         <input
@@ -149,7 +140,6 @@ const OptionList: Component<{
           fieldName="options-filter"
           placeholder="Filter..."
           onChange={(ev) => setFilter(ev.currentTarget.value)}
-          onInputText={(text) => setFilter(text)}
         />
       </Show>
 

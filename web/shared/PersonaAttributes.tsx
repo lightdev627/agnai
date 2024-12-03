@@ -1,24 +1,19 @@
 import { Plus, Trash, WandSparkles } from 'lucide-solid'
-import {
-  Component,
-  createEffect,
-  createMemo,
-  createSignal,
-  Index,
-  on,
-  onMount,
-  Show,
-} from 'solid-js'
+import { Component, createMemo, createSignal, Index, onMount, Show } from 'solid-js'
 import Button from './Button'
 import { FormLabel } from './FormLabel'
 import TextInput from './TextInput'
-import { getFormEntries } from './util'
 import { getEncoder } from '/common/tokenize'
 import { formatCharacter } from '/common/characters'
 import { AppSchema } from '/common/types'
 import { CharEditor } from '../pages/Character/editor'
+import { SetStoreFunction } from 'solid-js/store'
 
 type Attr = { key: string; values: string }
+
+export type PersonaState = Record<string, string[]>
+
+export type SetPersonaState = SetStoreFunction<PersonaState>
 
 const defaultAttrs = [
   { key: 'species', values: 'human' },
@@ -27,7 +22,8 @@ const defaultAttrs = [
 ]
 
 const PersonaAttributes: Component<{
-  value?: Record<string, string[]>
+  state: Attr[]
+  setter: (next: Attr[]) => void
   hideLabel?: boolean
   schema?: AppSchema.Persona['kind']
   tokenCount?: boolean | ((count: number) => void)
@@ -35,8 +31,6 @@ const PersonaAttributes: Component<{
   disabled?: boolean
   editor?: CharEditor
 }> = (props) => {
-  const [prev, setPrev] = createSignal(props.value)
-  const [attrs, setAttrs] = createSignal<Attr[]>(toAttrs(props.value))
   const [tokens, setTokens] = createSignal(0)
 
   onMount(() => {
@@ -45,26 +39,9 @@ const PersonaAttributes: Component<{
 
   const plainText = createMemo(() => props.schema === 'text')
 
-  createEffect(() => {
-    if (props.value) {
-      setAttrs(toAttrs(props.value))
-    }
-  })
-
-  createEffect(() => {
-    if (prev() === props.value) return
-    setAttrs(toAttrs(props.value))
-    setPrev(props.value)
-  })
-
-  createEffect(async () => {
-    attrs()
-    updateCount()
-  })
-
   const updateCount = async () => {
     if (!props.tokenCount || !props.form) return
-    const attributes = getAttributeMap(props.form)
+    const attributes = fromAttrs(props.state)
 
     const encoder = await getEncoder()
 
@@ -80,20 +57,24 @@ const PersonaAttributes: Component<{
     }
   }
 
-  const add = () => setAttrs((prev) => [...prev, { key: '', values: '' }])
-
-  const onKey = (key: string, index: number) => {
-    updateCount()
-    if (key !== 'Enter') return
-    if (index + 1 !== attrs().length) return
-    add()
+  const add = () => {
+    const next = props.state.concat({ key: '', values: '' })
+    props.setter(next)
   }
 
   const remove = (i: number) => {
-    const next = attrs()
-      .slice(0, i)
-      .concat(attrs().slice(i + 1))
-    setAttrs(next)
+    const next = props.state.slice(0, i).concat(props.state.slice(i + 1))
+    props.setter(next)
+  }
+
+  const update = (attr: Attr, index: number, prop: 'key' | 'values', value: string) => {
+    const upd = {
+      key: prop === 'key' ? value : attr.key,
+      values: prop === 'values' ? value : attr.values,
+    }
+
+    const next = props.state.map((a, i) => (i === index ? upd : a))
+    props.setter(next)
   }
 
   return (
@@ -120,15 +101,15 @@ const PersonaAttributes: Component<{
       </Show>
       <Show when={plainText()}>
         <div>
-          <TextInput fieldName="attr-key.0" value="text" class="hidden" disabled={props.disabled} />
+          <TextInput value="text" class="hidden" disabled={props.disabled} />
           <TextInput
-            fieldName="attr-value.0"
             class="text-input-min-h-override"
-            value={props.value?.text?.join('\n\n')}
+            value={props.state[0]?.values || ''}
             isMultiline
             placeholder="Example: {{char}} is a tall man who likes {{user}}."
             tokenCount={() => updateCount()}
             disabled={props.disabled}
+            onChange={(ev) => props.setter([{ key: 'text', values: ev.currentTarget.value }])}
           />
         </div>
       </Show>
@@ -140,15 +121,16 @@ const PersonaAttributes: Component<{
           </Button>
         </div>
         <div class="mt-2 flex w-full flex-col gap-2">
-          <Index each={attrs()}>
+          <Index each={props.state}>
             {(attr, i) => (
               <Attribute
                 attr={attr()}
                 index={i}
-                onKey={onKey}
                 remove={remove}
                 disabled={props.disabled}
+                update={update}
                 editor={props.editor}
+                // onKey={onKey}
               />
             )}
           </Index>
@@ -161,47 +143,27 @@ const PersonaAttributes: Component<{
 const Attribute: Component<{
   attr: Attr
   index: number
-  onKey: (key: string, i: number) => void
   remove: (i: number) => void
+  update: (attr: Attr, index: number, prop: 'key' | 'values', value: string) => void
   disabled?: boolean
   editor?: CharEditor
+  // onKey: (key: string, i: number) => void
 }> = (props) => {
-  let valueRef: any
-  const [key, setKey] = createSignal(props.attr.key)
-  const [value, setValue] = createSignal(props.attr.values)
-
-  onMount(() => {
-    valueRef.value = props.attr.values
-    setKey(props.attr.key)
-  })
-
-  createEffect(
-    on(
-      () => props.attr.values,
-      (inc) => {
-        const prev = value()
-        if (inc === prev) return
-        setValue(inc)
-        valueRef.value = inc
-      }
-    )
-  )
-
-  createEffect(on(() => props.attr.key, setKey))
-
   return (
     <div class="bg-700 flex w-full flex-col gap-2 rounded-md p-1">
       <div class="flex w-full items-center justify-between gap-2">
         <TextInput
           parentClass="w-full"
-          fieldName={`attr-key.${props.index}`}
           placeholder="Name. E.g. appearance"
           value={props.attr.key}
           disabled={props.disabled}
-          onKeyUp={(ev) => setKey(ev.currentTarget.value)}
+          onChange={(ev) => props.update(props.attr, props.index, 'key', ev.currentTarget.value)}
         />
         <Show when={props.editor}>
-          <Button schema="secondary" onClick={() => props.editor?.generateField('persona', key())}>
+          <Button
+            schema="secondary"
+            onClick={() => props.editor?.generateField('persona', props.attr.key)}
+          >
             <WandSparkles size={20} />
           </Button>
         </Show>
@@ -211,14 +173,10 @@ const Attribute: Component<{
       </div>
 
       <TextInput
-        ref={(r) => (valueRef = r)}
-        fieldName={`attr-value.${props.index}`}
         placeholder="Comma separate attributes. E.g: tall, brunette, athletic"
-        value={''}
-        onKeyUp={(ev) => {
-          props.onKey(ev.key, props.index)
-          setValue(ev.currentTarget.value)
-        }}
+        value={props.attr.values}
+        // onKeyUp={(ev) => props.onKey(ev.key, props.index)}
+        onChange={(ev) => props.update(props.attr, props.index, 'values', ev.currentTarget.value)}
         isMultiline
         disabled={props.disabled}
       />
@@ -228,35 +186,7 @@ const Attribute: Component<{
 
 export default PersonaAttributes
 
-export function getAttributeMap(event: Event | HTMLFormElement) {
-  const entries = getFormEntries(event)
-  const map: any = {}
-
-  for (const [key, value] of entries) {
-    if (key.startsWith('attr-key')) {
-      const id = key.replace('attr-key.', '')
-      if (!map[id]) map[id] = {}
-      map[id].key = value
-    }
-
-    if (key.startsWith('attr-value')) {
-      const id = key.replace('attr-value.', '')
-      if (!map[id]) map[id] = {}
-      map[id].value = [value]
-      map[id].values = [value]
-    }
-  }
-
-  const values = Object.values(map).reduce<Record<string, string[]>>((prev: any, curr: any) => {
-    if (!curr.values || !curr.values.length) return prev
-    if (curr.key === 'text') prev[curr.key] = curr.value
-    else prev[curr.key] = curr.values
-    return prev
-  }, {})
-  return values
-}
-
-function toAttrs(value?: Record<string, string[]>) {
+export function toAttrs(value?: Record<string, string[]>) {
   if (!value) return defaultAttrs
 
   const attrs = Object.entries(value).map<Attr>(([key, values]) => ({
@@ -264,4 +194,13 @@ function toAttrs(value?: Record<string, string[]>) {
     values: values.join(', '),
   }))
   return attrs
+}
+
+export function fromAttrs(attrs: Array<{ key: string; values: string }>) {
+  let map: Record<string, string[]> = {}
+  for (const { key, values } of attrs) {
+    map[key] = [values]
+  }
+
+  return map
 }

@@ -6,6 +6,8 @@ import { memoryStore, toastStore } from '../../store'
 import EditMemoryForm, { EntrySort } from '../Memory/EditMemory'
 import { AppSchema } from '/common/types'
 import { Option } from '/web/shared/Select'
+import { emptyBookWithEmptyEntry } from '/common/memory'
+import { createStore } from 'solid-js/store'
 
 const ChubImportBookModal: Component<{
   show: boolean
@@ -16,6 +18,7 @@ const ChubImportBookModal: Component<{
 }> = (props) => {
   let ref: any
   const [book, setBook] = createSignal<AppSchema.MemoryBook>(props.book)
+  const [state, setState] = createStore<AppSchema.MemoryBook>(emptyBookWithEmptyEntry())
   const [entrySort, setEntrySort] = createSignal<EntrySort>('creationDate')
   const updateEntrySort = (item: Option<string>) => {
     if (item.value === 'creationDate' || item.value === 'alpha') {
@@ -29,9 +32,9 @@ const ChubImportBookModal: Component<{
 
   const onImport = () => {
     try {
-      memoryStore.create(book())
+      memoryStore.create(state)
     } catch (error) {
-      toastStore.error(`Error importing ${book().name}! ${error}`)
+      toastStore.error(`Error importing ${state.name}! ${error}`)
     }
     props.close()
   }
@@ -75,10 +78,10 @@ const ChubImportBookModal: Component<{
           <div class="text-sm">
             <EditMemoryForm
               hideSave
-              book={book()}
+              state={book()}
               entrySort={entrySort()}
               updateEntrySort={updateEntrySort}
-              onChange={setBook}
+              setter={setState}
             />
           </div>
         </Show>

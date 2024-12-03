@@ -8,30 +8,30 @@ import Select, { Option } from '../../shared/Select'
 import Modal, { ConfirmModal } from '../../shared/Modal'
 import PageHeader from '../../shared/PageHeader'
 import TextInput from '../../shared/TextInput'
-import { getStrictForm, setComponentPageTitle } from '../../shared/util'
+import { setComponentPageTitle } from '../../shared/util'
 import { presetStore, toastStore } from '../../store'
 import Loading from '/web/shared/Loading'
 import { TitleCard } from '/web/shared/Card'
 import { Page } from '/web/Layout'
-import PresetSettings, { getPresetFormData } from '/web/shared/PresetSettings'
+import PresetSettings from '/web/shared/PresetSettings'
+import { getPresetEditor, getPresetForm } from '/web/shared/PresetSettings/types'
 
 export const GenerationPresetsPage: Component = () => {
   const { updateTitle } = setComponentPageTitle('Preset')
-  let ref: any
-
   const params = useParams()
   const [query] = useSearchParams()
 
   const nav = useNavigate()
-  const [edit, setEdit] = createSignal(false)
-  const [editing, setEditing] = createSignal<AppSchema.UserGenPreset>()
+  const [selecting, setSelecting] = createSignal(false)
   const [deleting, setDeleting] = createSignal(false)
+
+  const [store, setStore] = getPresetEditor()
 
   const onEdit = (preset: AppSchema.UserGenPreset) => {
     nav(`/presets/${preset._id}`)
   }
 
-  const state = presetStore(({ presets, saving, importing }) => ({
+  const presets = presetStore(({ presets, saving, importing }) => ({
     saving,
     presets,
     items: presets.map<Option>((p) => ({ label: p.name, value: p._id })),
@@ -46,58 +46,48 @@ export const GenerationPresetsPage: Component = () => {
       const copySource = query.preset
       if (copySource) {
         updateTitle(`Copy preset ${copySource}`)
-      } else if (state.importing) {
+      } else if (presets.importing) {
         updateTitle(`Import preset`)
       } else {
         updateTitle(`Create preset`)
       }
 
-      setEditing()
-      await Promise.resolve()
-
-      if (state.importing) {
-        setEditing({ ...state.importing, kind: 'gen-setting', userId: '', _id: '', name: '' })
+      if (presets.importing) {
+        setStore({ ...presets.importing, _id: '', name: '' })
         presetStore.setImportPreset()
         return
       }
 
       const template = isDefaultPreset(query.preset)
         ? defaultPresets[query.preset]
-        : state.presets.find((p) => p._id === query.preset)
+        : presets.presets.find((p) => p._id === query.preset)
       const preset = template ? { ...template } : { ...emptyPreset }
-      setEditing({ ...emptyPreset, ...preset, _id: '', kind: 'gen-setting', userId: '' })
+      setStore({ ...emptyPreset, ...preset, _id: '' })
       return
     } else if (params.id === 'default') {
-      setEditing()
-      await Promise.resolve()
       if (!isDefaultPreset(query.preset)) return
-      setEditing({
+      setStore({
         ...emptyPreset,
         ...defaultPresets[query.preset],
         _id: '',
-        kind: 'gen-setting',
         userId: 'SYSTEM',
       })
       return
     }
 
-    const preset = editing()
-
-    if (params.id && !preset) {
-      const preset = state.presets.find((p) => p._id === params.id)
-      setEditing(preset)
+    if (params.id && store._id !== params.id) {
+      const preset = presets.presets.find((p) => p._id === params.id)
+      setStore(preset as any)
       return
     }
 
-    if (params.id && preset && preset._id !== params.id) {
-      setEditing()
-      await Promise.resolve()
-      const preset = state.presets.find((p) => p._id === params.id)
-      setEditing(preset)
+    if (params.id && store._id !== params.id) {
+      const preset = presets.presets.find((p) => p._id === params.id)
+      setStore(preset!)
     }
 
-    if (params.id && preset) {
-      updateTitle(`Edit preset ${preset.name}`)
+    if (params.id && store) {
+      updateTitle(`Edit preset ${store.name}`)
     }
   })
 
@@ -106,35 +96,31 @@ export const GenerationPresetsPage: Component = () => {
   }
 
   const deletePreset = () => {
-    const preset = editing()
-    if (!preset) return
-
-    presetStore.deletePreset(preset._id, () => nav('/presets'))
-    setEditing()
+    presetStore.deletePreset(store._id, () => nav('/presets'))
+    setStore(emptyPreset)
   }
 
-  const onSave = (_ev: Event, force?: boolean) => {
-    if (state.saving) return
-    const body = getPresetFormData(ref)
+  const onSave = (ev?: any) => {
+    ev?.preventDefault()
+    if (presets.saving) return
+    const body = getPresetForm(store)
 
     if (!body.service) {
       toastStore.error(`You must select an AI service before saving`)
       return
     }
 
-    const prev = editing()
-
-    if (prev?._id) {
-      presetStore.updatePreset(prev._id, body as any)
+    if (store?._id) {
+      presetStore.updatePreset(store._id, body as any)
     } else {
       presetStore.createPreset(body as any, (newPreset) => {
         nav(`/presets/${newPreset._id}`)
-        setEditing(newPreset)
+        setStore(newPreset)
       })
     }
   }
 
-  if (params.id && params.id !== 'new' && !state.editing) {
+  if (params.id && params.id !== 'new' && !presets.editing) {
     return (
       <Page>
         <PageHeader title="Generation Presets" />
@@ -157,52 +143,43 @@ export const GenerationPresetsPage: Component = () => {
           </TitleCard>
         </Show>
         <div class="flex flex-col gap-4 p-2">
-          <Show when={editing()}>
-            <form ref={ref} onSubmit={onSave} class="flex flex-col gap-4">
-              <div class="flex gap-4">
-                <Show when={state.presets.length > 1}>
-                  <Button onClick={() => setEdit(true)}>Load Preset</Button>
-                </Show>
-                <Button onClick={startNew}>
-                  <Plus />
-                  New Preset
+          <form onSubmit={onSave} class="flex flex-col gap-4">
+            <div class="flex gap-4">
+              <Show when={presets.presets.length > 1}>
+                <Button onClick={() => setSelecting(true)}>Load Preset</Button>
+              </Show>
+              <Button onClick={startNew}>
+                <Plus />
+                New Preset
+              </Button>
+            </div>
+            <div class="flex flex-col">
+              <div>ID: {store._id || 'New Preset'}</div>
+              <TextInput fieldName="id" value={store._id || 'New Preset'} disabled class="hidden" />
+              <TextInput
+                fieldName="name"
+                label="Name"
+                helperText="A name or short description of your preset"
+                placeholder="Preset name"
+                value={store.name}
+                onChange={(ev) => setStore('name', ev.currentTarget.value)}
+                required
+                parentClass="mb-2"
+              />
+
+              <PresetSettings store={store} setter={setStore} noSave />
+            </div>
+            <Show when={store.userId !== 'SYSTEM'}>
+              <div class="flex flex-row justify-end">
+                <Button disabled={presets.saving} onClick={onSave}>
+                  <Save /> Save
                 </Button>
               </div>
-              <div class="flex flex-col">
-                <div>ID: {editing()?._id || 'New Preset'}</div>
-                <TextInput
-                  fieldName="id"
-                  value={editing()?._id || 'New Preset'}
-                  disabled
-                  class="hidden"
-                />
-                <TextInput
-                  fieldName="name"
-                  label="Name"
-                  helperText="A name or short description of your preset"
-                  placeholder="Preset name"
-                  value={editing()?.name}
-                  required
-                  parentClass="mb-2"
-                />
-                <PresetSettings
-                  inherit={editing()}
-                  disabled={params.id === 'default'}
-                  onSave={() => {}}
-                />
-              </div>
-              <Show when={editing()?.userId !== 'SYSTEM'}>
-                <div class="flex flex-row justify-end">
-                  <Button disabled={state.saving} onClick={onSave}>
-                    <Save /> Save
-                  </Button>
-                </div>
-              </Show>
-            </form>
-          </Show>
+            </Show>
+          </form>
         </div>
       </div>
-      <EditPreset show={edit()} close={() => setEdit(false)} select={onEdit} />
+      <EditPreset show={selecting()} close={() => setSelecting(false)} select={onEdit} />
       <ConfirmModal
         show={deleting()}
         close={() => setDeleting(false)}
@@ -228,16 +205,15 @@ const EditPreset: Component<{
   select: (preset: AppSchema.UserGenPreset) => void
 }> = (props) => {
   const params = useParams()
-
-  let ref: any
   const state = presetStore()
 
   const select = () => {
-    const body = getStrictForm(ref, { preset: 'string' })
-    const preset = state.presets.find((preset) => preset._id === body.preset)
+    const preset = state.presets.find((preset) => preset._id === id())
     props.select(preset!)
     props.close()
   }
+
+  const [id, setId] = createSignal(state.presets[0]?._id)
 
   return (
     <Modal
@@ -255,14 +231,14 @@ const EditPreset: Component<{
         </>
       }
     >
-      <form ref={ref}>
+      <form>
         <Select
-          fieldName="preset"
           label="Preset"
           helperText="Select a preset to start editing. If you are currently editing a preset, it won't be in the list."
           items={state.presets
             .filter((pre) => pre._id !== params.id)
             .map((pre) => ({ label: pre.name, value: pre._id }))}
+          onChange={(ev) => setId(ev.value)}
         />
       </form>
     </Modal>

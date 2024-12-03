@@ -12,8 +12,8 @@ import {
   onMount,
 } from 'solid-js'
 import { FormLabel } from '../FormLabel'
-import { AIAdapter, PresetAISettings } from '/common/adapters'
-import { toMap, useValidServiceSetting } from '../util'
+import { AIAdapter } from '/common/adapters'
+import { toMap } from '../util'
 import { useEffect, useRootModal } from '../hooks'
 import Modal from '../Modal'
 import { HelpCircle } from 'lucide-solid'
@@ -27,10 +27,11 @@ import { v4 } from 'uuid'
 import { isDefaultTemplate, replaceTags } from '../../../common/presets/templates'
 import TextInput from '../TextInput'
 import { presetStore } from '/web/store'
-import Sortable, { SortItem } from '../Sortable'
+import Sortable from '../Sortable'
 import { SelectTemplate } from './SelectTemplate'
 import { Toggle } from '/web/shared/Toggle'
 import { AutoEvent, PromptSuggestions, onPromptAutoComplete, onPromptKey } from './Suggestions'
+import { PresetState, SetPresetState } from '../PresetSettings/types'
 
 type Placeholder = {
   required: boolean
@@ -139,13 +140,12 @@ type Optionals = { exclude: InterpAll[] } | { include: InterpAll[] } | {}
 
 const PromptEditor: Component<
   {
-    fieldName: string
     service?: AIAdapter
-    inherit?: Partial<AppSchema.UserGenPreset>
+    fieldName?: string
+    state?: PresetState
     disabled?: boolean
     value?: string
     onChange?: (value: string) => void
-    aiSetting?: keyof PresetAISettings
     showHelp?: boolean
     placeholder?: string
     minHeight?: number
@@ -175,7 +175,7 @@ const PromptEditor: Component<
 
   const openTemplate = () => {
     if (!templateId()) {
-      setTemplateId(props.inherit?.promptTemplateId || '')
+      setTemplateId(props.state?.promptTemplateId || '')
     }
 
     setTemplates(true)
@@ -188,9 +188,9 @@ const PromptEditor: Component<
 
   createEffect(
     on(
-      () => props.inherit?.promptTemplateId,
+      () => props.state?.promptTemplateId,
       () => {
-        setTemplateId(props.inherit?.promptTemplateId || '')
+        setTemplateId(props.state?.promptTemplateId || '')
       }
     )
   )
@@ -208,12 +208,12 @@ const PromptEditor: Component<
   })
 
   const togglePreview = async () => {
-    const opts = await getExampleOpts(props.inherit)
+    const opts = await getExampleOpts(props.state)
     const template = props.noDummyPreview ? input() : ensureValidTemplate(input())
     let { parsed } = await parseTemplate(template, opts)
 
-    if (props.inherit?.modelFormat) {
-      parsed = replaceTags(parsed, props.inherit.modelFormat)
+    if (props.state?.modelFormat) {
+      parsed = replaceTags(parsed, props.state.modelFormat)
     }
 
     setRendered(parsed)
@@ -280,8 +280,6 @@ const PromptEditor: Component<
     ref.style.height = `${next}px`
   }
 
-  const show = useValidServiceSetting(props.aiSetting)
-
   // const hide = createMemo(() => {
   //   if (props.hide) return 'hidden'
   //   if (!props.service || !adapters()) return ''
@@ -291,7 +289,7 @@ const PromptEditor: Component<
   onMount(resize)
 
   return (
-    <div class={`relative w-full flex-col gap-2`} classList={{ hidden: !show() || props.hide }}>
+    <div class={`relative w-full flex-col gap-2`} classList={{ hidden: props.hide }}>
       <Show when={props.showHelp}>
         <FormLabel
           label={
@@ -305,18 +303,18 @@ const PromptEditor: Component<
               </div>
               <div class="flex gap-2">
                 <Button size="sm" onClick={togglePreview}>
-                  Toggle Preview
+                  Preview
                 </Button>
                 <Show when={props.showTemplates}>
-                  <Show when={!props.inherit?.promptTemplateId}>
+                  <Show when={!props.state?.promptTemplateId}>
                     <Button size="sm" onClick={openTemplate}>
-                      Use Library Template
+                      Use Template
                     </Button>
                   </Show>
 
-                  <Show when={!!props.inherit?.promptTemplateId}>
+                  <Show when={!!props.state?.promptTemplateId}>
                     <Button size="sm" onClick={openTemplate}>
-                      Update Library Template
+                      Update Template
                     </Button>
                   </Show>
 
@@ -324,7 +322,7 @@ const PromptEditor: Component<
                     size="sm"
                     onClick={() => {
                       setTemplateId('')
-                      ref.value = props.inherit?.gaslight || ''
+                      ref.value = props.state?.gaslight || ''
                     }}
                   >
                     Use Preset's Template
@@ -363,8 +361,6 @@ const PromptEditor: Component<
         jsonValues={{ example: '', 'example with spaces': '', response: '' }}
       />
       <textarea
-        id={props.fieldName}
-        name={props.fieldName}
         class="form-field focusable-field text-900 min-h-[4rem] w-full rounded-xl px-4 py-2 font-mono text-sm"
         classList={{ hidden: preview() }}
         ref={ref}
@@ -396,9 +392,9 @@ const PromptEditor: Component<
             setTemplateId(id)
             ref.value = template
           }}
-          currentTemplateId={templateId() || props.inherit?.promptTemplateId}
+          currentTemplateId={templateId() || props.state?.promptTemplateId}
           currentTemplate={template()}
-          presetId={props.inherit?._id}
+          presetId={props.state?._id}
         />
       </Show>
     </div>
@@ -424,39 +420,20 @@ const SORTED_LABELS = Object.entries(BASIC_LABELS)
   .sort((l, r) => l.id - r.id)
 
 export const BasicPromptTemplate: Component<{
-  inherit?: Partial<AppSchema.GenSettings>
+  state: PresetState
+  setter: SetPresetState
   hide?: boolean
 }> = (props) => {
-  let ref: HTMLInputElement
-
-  const [mod, setMod] = createSignal(
-    props.inherit?.promptOrder?.map((o) => ({
-      ...BASIC_LABELS[o.placeholder],
-      value: o.placeholder,
-      enabled: o.enabled,
-    })) || SORTED_LABELS.map((h) => ({ ...h, enabled: true }))
-  )
-
   const isMobile = createMemo(() => /iPhone|iPad|iPod|Android/i.test(navigator.userAgent))
   const [lockPromptOrder, setLockPromptOrder] = createSignal(isMobile())
-
-  const updateRef = (items: SortItem[]) => {
-    ref.value = items.map((n) => `${n.value}=${n.enabled ? 'on' : 'off'}`).join(',')
-  }
-
-  const onClick = (id: number) => {
-    const prev = mod()
-    const next = prev.map((o) => {
-      if (o.id !== id) return o
-      return { ...o, enabled: !o.enabled }
-    })
-    setMod(next)
-    updateRef(next)
-  }
-
-  onMount(() => {
-    updateRef(mod())
-  })
+  const items = createMemo(
+    () =>
+      props.state?.promptOrder?.map((o) => ({
+        ...BASIC_LABELS[o.placeholder],
+        value: o.placeholder,
+        enabled: !!o.enabled,
+      })) || SORTED_LABELS.map((h) => ({ ...h, enabled: true }))
+  )
 
   return (
     <Card border hide={props.hide}>
@@ -476,16 +453,14 @@ export const BasicPromptTemplate: Component<{
           />
         </div>
         <Sortable
-          items={mod()}
-          onChange={updateRef}
-          onItemClick={onClick}
+          items={items()}
+          onChange={(next) =>
+            props.setter(
+              'promptOrder',
+              next.map((n) => ({ placeholder: n.value as string, enabled: !!n.enabled }))
+            )
+          }
           disabled={lockPromptOrder()}
-        />
-        <TextInput
-          fieldName="promptOrder"
-          parentClass="hidden"
-          ref={(ele) => (ref = ele)}
-          // value={''}
         />
       </div>
     </Card>
@@ -571,7 +546,7 @@ const HelpModal: Component<{
   return null
 }
 
-async function getExampleOpts(inherit?: Partial<AppSchema.GenSettings>) {
+async function getExampleOpts(inherit?: PresetState) {
   const char = toChar('Rory', {
     scenario: 'Rory is strolling in the park',
     persona: toPersona('Rory is very talkative.'),

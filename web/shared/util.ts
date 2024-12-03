@@ -3,14 +3,15 @@ import * as lf from 'localforage'
 import { UnwrapBody, Validator, assertValid } from '/common/valid'
 import { AIAdapter, MODE_SETTINGS, PresetAISettings, ThirdPartyFormat } from '/common/adapters'
 import type { Option } from './Select'
-import { Component, createEffect, createMemo, JSX, onCleanup } from 'solid-js'
+import { Component, createEffect, JSX, onCleanup } from 'solid-js'
 import type { UserState } from '../store'
 import { AppSchema, UI } from '/common/types'
 import { deepClone } from '/common/util'
 import { getRootRgb } from './colors'
 import { getStore } from '../store/create'
 import { ADAPTER_SETTINGS } from './PresetSettings/settings'
-import { usePresetContext } from './PresetSettings/context'
+import { PresetState } from './PresetSettings/types'
+import { Reference } from '/common/valid/types'
 
 const [css, hooks] = createHooks(recommended)
 
@@ -264,6 +265,59 @@ export function getForm<T = {}>(evt: Event | HTMLFormElement): T {
 }
 
 type Field = HTMLSelectElement | HTMLInputElement
+
+export function toStrictInitializer<T extends Validator>(
+  valid: T,
+  partial: Partial<UnwrapBody<T>> = {}
+): UnwrapBody<T> {
+  const init: any = {}
+
+  for (const [key, type] of Object.entries(valid)) {
+    if (partial[key] !== undefined) {
+      init[key] = partial[key] as any
+      continue
+    }
+
+    init[key] = getInitValue(type)
+  }
+
+  return init
+}
+
+function getInitValue(ref: Reference): any {
+  if (ref === 'string') return ''
+  if (ref === 'boolean') return false
+  if (ref === 'number') return 0
+  if (Array.isArray(ref)) {
+    // Optional union or object
+    if (ref.some((r) => r === '?')) return
+
+    // Optional primitive
+    if (typeof ref[0] === 'string' && ref[0]?.endsWith('?')) return
+
+    // String literal union
+    if (ref.length > 1) return ref[0]
+
+    // Array of objects
+    if (typeof ref[0] === 'object') {
+      return toStrictInitializer(ref[0] as Validator, {})
+    }
+
+    console.error(ref)
+    throw new Error(`Unexpected initializer type`)
+  }
+
+  // Nested object
+  if (typeof ref === 'object') {
+    // Optional object
+    if (Object.keys(ref).some((r) => r === '?')) return
+
+    return toStrictInitializer(ref as Validator, {})
+  }
+
+  console.error(ref)
+  throw new Error(`Unexpected initializer type`)
+}
 
 export function getStrictForm<T extends Validator>(
   evt: Event | HTMLFormElement,
@@ -553,16 +607,15 @@ export function isDirty<T extends {}>(original: T, compare: T): boolean {
 }
 
 export function serviceHasSetting(
-  service: AIAdapter | undefined,
-  format: ThirdPartyFormat | undefined,
+  state: Pick<PresetState, 'service' | 'thirdPartyFormat'>,
   ...props: Array<keyof PresetAISettings>
 ) {
-  if (!service) {
+  if (!state.service) {
     return true
   }
 
   for (const prop of props) {
-    if (isValidServiceSetting(service, format, prop)) {
+    if (isValidServiceSetting(state, prop)) {
       return true
     }
   }
@@ -588,56 +641,37 @@ function isPresetSetting(key: string): key is keyof PresetAISettings {
   return key in ADAPTER_SETTINGS === true
 }
 
-export function useValidServiceSetting(prop: keyof AppSchema.GenSettings | undefined) {
-  const values = usePresetContext()
+export function hidePresetSetting(
+  state: Pick<PresetState, 'service' | 'thirdPartyFormat' | 'presetMode'>,
+  prop?: keyof PresetAISettings
+) {
+  if (!prop) return false
 
-  const valid = createMemo(() => {
-    if (!prop) return true
+  if (state.presetMode && state.presetMode !== 'advanced') {
+    const enabled = MODE_SETTINGS[state.presetMode]?.[prop]
+    if (!enabled) return true
+  }
 
-    if (values.mode && values.mode !== 'advanced') {
-      const mode: NonNullable<PresetAISettings['presetMode']> = values.mode
-      const enabled = MODE_SETTINGS[mode]?.[prop]
-      if (!enabled) return false
-    }
-
-    const services = getAISettingServices(prop)
-    if (!services) return true
-
-    if (!values.service) return true
-
-    if (services.includes(values.service)) return true
-
-    if (!values.format) return false
-
-    if (values.service !== 'kobold') return false
-
-    for (const srv of services) {
-      if (srv === values.format) return true
-    }
-
-    return false
-  })
-
-  return valid
+  const valid = isValidServiceSetting(state, prop)
+  if (valid) return false
+  return true
 }
 
 export function isValidServiceSetting(
-  service?: AIAdapter,
-  format?: AppSchema.GenSettings['thirdPartyFormat'],
+  state: Pick<PresetState, 'service' | 'thirdPartyFormat'>,
   prop?: keyof PresetAISettings
 ) {
   const services = getAISettingServices(prop)
-
   // Setting does not declare itself as a service setting
-  if (!services || !service) return true
+  if (!services || !state.service) return true
 
-  if (services.includes(service)) return true
-  if (!format) return false
+  if (services.includes(state.service)) return true
+  if (!state.thirdPartyFormat) return false
 
-  if (service !== 'kobold') return false
+  if (state.service !== 'kobold') return false
 
   for (const srv of services) {
-    if (srv === format) return true
+    if (srv === state.thirdPartyFormat) return true
   }
 
   return false

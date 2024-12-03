@@ -1,13 +1,11 @@
 import { Component, For, JSX, Show, createMemo } from 'solid-js'
 import { FormLabel } from './FormLabel'
 import './toggle.css'
-import { AIAdapter, PresetAISettings, ThirdPartyFormat } from '../../common/adapters'
-import { useValidServiceSetting } from './util'
+import { AIAdapter, ThirdPartyFormat } from '../../common/adapters'
 import { Option } from './Select'
-import { forms } from '../emitter'
 
 export const Toggle: Component<{
-  fieldName: string
+  fieldName?: string
   value?: boolean
   label?: string | JSX.Element
   ref?: (ref: HTMLInputElement) => void
@@ -19,7 +17,6 @@ export const Toggle: Component<{
   reverse?: boolean
   service?: AIAdapter
   format?: ThirdPartyFormat
-  aiSetting?: keyof PresetAISettings
   classList?: Record<string, boolean>
   recommended?: boolean
   vertLabel?: boolean
@@ -31,10 +28,7 @@ export const Toggle: Component<{
     const checked = !!ev.currentTarget.checked
     ref.checked = checked
     props.onChange?.(checked)
-    forms.emit(props.fieldName, checked)
   }
-
-  const show = useValidServiceSetting(props.aiSetting)
 
   const justify = createMemo(() =>
     props.vertLabel ? 'justify-center' : props.reverse ? 'sm:justify-start' : 'sm:justify-between'
@@ -48,7 +42,7 @@ export const Toggle: Component<{
         'sm:items-center': !props.vertLabel,
         'gap-1': props.vertLabel && !props.class?.includes('gap-'),
         'gap-2': !props.vertLabel && !props.class?.includes('gap-'),
-        hidden: !show() || props.hide,
+        hidden: props.hide,
         ...props.classList,
       }}
     >
