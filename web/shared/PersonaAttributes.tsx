@@ -1,5 +1,14 @@
 import { Plus, Trash, WandSparkles } from 'lucide-solid'
-import { Component, createMemo, createSignal, Index, onMount, Show } from 'solid-js'
+import {
+  Component,
+  createEffect,
+  createMemo,
+  createSignal,
+  Index,
+  on,
+  onMount,
+  Show,
+} from 'solid-js'
 import Button from './Button'
 import { FormLabel } from './FormLabel'
 import TextInput from './TextInput'
@@ -8,6 +17,7 @@ import { formatCharacter } from '/common/characters'
 import { AppSchema } from '/common/types'
 import { CharEditor } from '../pages/Character/editor'
 import { SetStoreFunction } from 'solid-js/store'
+import { createDebounce } from './util'
 
 type Attr = { key: string; values: string }
 
@@ -34,13 +44,58 @@ const PersonaAttributes: Component<{
   const [tokens, setTokens] = createSignal(0)
 
   onMount(() => {
-    updateCount()
+    countTokens()
   })
+
+  createEffect(
+    on(
+      () => props.state,
+      (attrs) => {
+        if (!attrs.length) return
+        if (tokens()) return
+
+        countTokens()
+      }
+    )
+  )
+
+  createEffect(
+    on(
+      () => props.schema,
+      (kind, prev) => {
+        // Convert the attributes to a text blob if switching from text -> attrs
+        if (prev !== 'text' && kind === 'text') {
+          let squished: string[] = []
+          for (const { key, values } of props.state) {
+            squished.push(`${key}:\n${values}`)
+          }
+
+          props.setter([{ key: 'text', values: squished.join('\n\n') }].concat(props.state))
+        }
+
+        // If we switch from text -> attrs, omit the 'text' attribute if it is the squished version from above
+        if (kind !== 'text' && prev === 'text') {
+          const text = props.state.find((s) => s.key === 'text')
+          if (!text) return
+
+          let matching = true
+          for (const { values } of props.state) {
+            if (!text.values.includes(values)) matching = false
+            break
+          }
+
+          if (matching) {
+            props.setter(props.state.filter((s) => s.key !== 'text'))
+          }
+        }
+      }
+    )
+  )
 
   const plainText = createMemo(() => props.schema === 'text')
 
   const updateCount = async () => {
-    if (!props.tokenCount || !props.form) return
+    if (!props.tokenCount) return
     const attributes = fromAttrs(props.state)
 
     const encoder = await getEncoder()
@@ -56,6 +111,8 @@ const PersonaAttributes: Component<{
       props.tokenCount(count)
     }
   }
+
+  const [countTokens] = createDebounce(updateCount, 1000)
 
   const add = () => {
     const next = props.state.concat({ key: '', values: '' })
@@ -75,6 +132,7 @@ const PersonaAttributes: Component<{
 
     const next = props.state.map((a, i) => (i === index ? upd : a))
     props.setter(next)
+    countTokens()
   }
 
   return (
