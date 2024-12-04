@@ -10,7 +10,7 @@ import { getUserSubscriptionTier } from '/common/util'
 import { isLoggedIn } from '/web/store/api'
 import { useNavigate } from '@solidjs/router'
 
-export const SubscriptionPage: Component = (props) => {
+export const SubscriptionPage: Component<{}> = (props) => {
   const settings = settingStore((s) => s.config)
   const user = userStore()
   const cfg = userStore((s) => {

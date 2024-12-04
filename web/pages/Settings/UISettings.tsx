@@ -29,7 +29,7 @@ const msgInlineLabels: Record<UI.MessageOption, string> = {
   trash: 'Delete',
 }
 
-const UISettings: Component = () => {
+const UISettings: Component<{}> = () => {
   const state = userStore()
   const chars = characterStore()
 
