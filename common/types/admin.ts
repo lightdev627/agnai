@@ -5,7 +5,6 @@ import type {
   OpenRouterModel,
   RegisteredAdapter,
 } from '../adapters'
-import { JsonField } from '../prompt'
 import { SubscriptionModelOption, SubscriptionTier } from './presets'
 import { ThemeColor } from './ui'
 
@@ -48,7 +47,16 @@ export type ImageModel = {
   desc: string
   override: string
   level: number
-  init: { clipSkip?: number; steps: number; cfg: number; height: number; width: number }
+  init: {
+    clipSkip?: number
+    steps: number
+    cfg: number
+    height: number
+    width: number
+    suffix: string
+    prefix: string
+    negative: string
+  }
   limit: { clipSkip?: number; steps: number; cfg: number; height: number; width: number }
 }
 
@@ -87,6 +95,7 @@ export interface Configuration {
   maintenance: boolean
 
   supportEmail: string
+  stripeCustomerPortal: string
 
   /** Markdown */
   maintenanceMessage: string
@@ -123,14 +132,6 @@ export interface Configuration {
 
   maxGuidanceTokens: number
   maxGuidanceVariables: number
-
-  modPresetId: string
-  modPrompt: string
-  modFieldPrompt: string
-  modSchema: JsonField[]
-
-  charlibPublish: 'off' | 'users' | 'subscribers' | 'moderators' | 'admins'
-  charlibGuidelines: string
 
   actionCalls: ActionCall[]
 }

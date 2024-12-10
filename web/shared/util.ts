@@ -1,9 +1,9 @@
 import { createHooks, recommended } from '@css-hooks/solid'
 import * as lf from 'localforage'
 import { UnwrapBody, Validator, assertValid } from '/common/valid'
-import { AIAdapter, MODE_SETTINGS, PresetAISettings, ThirdPartyFormat } from '/common/adapters'
+import { AIAdapter, PresetAISettings, ThirdPartyFormat } from '/common/adapters'
 import type { Option } from './Select'
-import { Component, createEffect, createSignal, JSX, on, onCleanup } from 'solid-js'
+import { Component, createEffect, JSX, onCleanup } from 'solid-js'
 import type { UserState } from '../store'
 import { AppSchema, UI } from '/common/types'
 import { deepClone } from '/common/util'
@@ -402,6 +402,45 @@ export function formatDate(value: string | number | Date) {
   return `${month} ${day} ${time}`
 }
 
+export function toShortDuration(valueSecs: number | Date | string, parts?: number) {
+  if (valueSecs instanceof Date) {
+    valueSecs = Math.round((Date.now() - valueSecs.valueOf()) / 1000)
+  } else if (typeof valueSecs === 'string') {
+    valueSecs = Math.round((Date.now() - new Date(valueSecs).valueOf()) / 1000)
+  }
+
+  if (valueSecs < 60) {
+    return '<1m'
+  }
+  const {
+    duration: [days, hours, minutes, seconds],
+  } = toRawDuration(valueSecs)
+
+  if (parts) {
+    const sects: string[] = []
+    if (days) sects.push(`${days}d`)
+    if (hours) sects.push(`${hours}h`)
+    if (minutes) sects.push(`${minutes}m`)
+    if (seconds) sects.push(`${seconds}s`)
+
+    return sects.slice(0, parts).join(' ')
+  }
+
+  if (days) {
+    return `${days}d`
+  }
+
+  if (hours) {
+    return `${hours}h`
+  }
+
+  if (minutes) {
+    return `${minutes}m`
+  }
+
+  return `${seconds}s`
+}
+
 export function toDuration(valueSecs: number | Date, full?: boolean) {
   if (valueSecs instanceof Date) {
     valueSecs = Math.round((Date.now() - valueSecs.valueOf()) / 1000)
@@ -641,48 +680,6 @@ function isPresetSetting(key: string): key is keyof PresetAISettings {
   return key in ADAPTER_SETTINGS === true
 }
 
-export function hidePresetSetting(
-  state: Pick<PresetState, 'service' | 'thirdPartyFormat' | 'presetMode'>,
-  prop?: keyof PresetAISettings
-) {
-  let initial = false
-  if (!prop) {
-    initial = false
-  } else if (state.presetMode && state.presetMode !== 'advanced') {
-    const enabled = MODE_SETTINGS[state.presetMode]?.[prop]
-    if (!enabled) initial = true
-  } else {
-    const valid = isValidServiceSetting(state, prop)
-    if (valid) initial = false
-    else initial = true
-  }
-
-  const [hide, setHide] = createSignal(initial)
-
-  createEffect(
-    on(
-      () => (state.service || '') + (state.thirdPartyFormat || '') + (state.presetMode || ''),
-      () => {
-        let next = false
-        if (!prop) {
-          next = false
-        } else if (state.presetMode && state.presetMode !== 'advanced') {
-          const enabled = MODE_SETTINGS[state.presetMode]?.[prop]
-          if (!enabled) next = true
-        } else {
-          const valid = isValidServiceSetting(state, prop)
-          if (valid) next = false
-          else next = true
-        }
-
-        setHide(next)
-      }
-    )
-  )
-
-  return hide()
-}
-
 export function isValidServiceSetting(
   state: Pick<PresetState, 'service' | 'thirdPartyFormat'>,
   prop?: keyof PresetAISettings
@@ -727,7 +724,7 @@ export function applyDotProperty<T>(obj: T, property: string, value: any) {
 export function applyStoreProperty<T>(obj: T, property: string, value: any) {
   const props = property.split('.')
 
-  let base: any = JSON.parse(JSON.stringify(obj))
+  let base: any = JSON.parse(JSON.stringify(obj || {}))
   let ref: any = base
 
   for (let i = 0; i < props.length; i++) {
@@ -932,7 +929,9 @@ export function useRowHelper<T extends object>(opts: {
 
   const updateItem = (index: number, field: string, value: any) => {
     const prev = items()
-    const item = setProperty(prev[index], field, value)
+    const base = getProperty(opts.empty(), field)
+    const parsed = typeof base === 'number' ? +value : value
+    const item = setProperty(prev[index], field, parsed)
 
     const next = prev
       .slice(0, index)
@@ -949,6 +948,7 @@ export function useRowHelper<T extends object>(opts: {
       }
 
       // Textarea and Input fields
+
       if ('currentTarget' in ev) {
         return updateItem(index, field, ev.currentTarget.value)
       }
@@ -979,6 +979,20 @@ function setProperty(obj: any, path: string, value: any): any {
     ...obj,
     [head]: rest.length ? setProperty(obj[head], rest.join('.'), value) : value,
   }
+}
+
+function getProperty(obj: any, path: string) {
+  const [head, ...props] = path.split('.')
+
+  let curr = obj[head]
+  if (curr === undefined) return
+
+  for (const prop of props) {
+    if (curr === undefined) return
+    curr = curr[prop]
+  }
+
+  return curr
 }
 
 export const sticky = {

@@ -8,6 +8,7 @@ import { store } from '../db'
 import { getUserSubscriptionTier } from '/common/util'
 import { getCachedTiers } from '../db/subscriptions'
 import { config } from '../config'
+import { fixImagePrompt } from '/common/image-prompt'
 
 const defaultSettings: SDSettings = {
   type: 'sd',
@@ -126,7 +127,13 @@ async function getConfig({ user, settings, override }: ImageRequestOpts): Promis
     `model=${temp?.name || model.name}`,
   ]
 
-  return { kind: 'agnai', host: srv.imagesHost, params: `?${params.join('&')}`, model, temp }
+  return {
+    kind: 'agnai',
+    host: srv.imagesHost,
+    params: `?${params.join('&')}`,
+    model: temp || model,
+    temp,
+  }
 }
 
 function getPayload(
@@ -138,22 +145,23 @@ function getPayload(
   const sampler =
     (kind === 'agnai' ? opts.settings?.agnai?.sampler : opts.settings?.sd?.sampler) ||
     defaultSettings.sampler
+
   const payload: SDRequest = {
     prompt: opts.prompt,
     // enable_hr: true,
     // hr_scale: 1.5,
     // hr_second_pass_steps: 15,
     // hr_upscaler: "",
-    clip_skip: opts.settings?.clipSkip ?? model?.init.clipSkip ?? 0,
-    height: opts.settings?.height ?? model?.init.height ?? 1024,
-    width: opts.settings?.width ?? model?.init.width ?? 1024,
+    clip_skip: opts.params?.clip_skip ?? opts.settings?.clipSkip ?? model?.init.clipSkip ?? 0,
+    height: opts.params?.height ?? opts.settings?.height ?? model?.init.height ?? 1024,
+    width: opts.params?.width ?? opts.settings?.width ?? model?.init.width ?? 1024,
     n_iter: 1,
     batch_size: 1,
-    negative_prompt: opts.negative,
-    sampler_name: (SD_SAMPLER_REV as any)[sampler],
-    cfg_scale: opts.settings?.cfg ?? model?.init.cfg ?? 9,
+    negative_prompt: opts.params?.negative ?? opts.negative,
+    sampler_name: (SD_SAMPLER_REV as any)[opts.params?.sampler ?? sampler],
+    cfg_scale: opts.params?.cfg_scale ?? opts.settings?.cfg ?? model?.init.cfg ?? 9,
     seed: Math.trunc(Math.random() * 1_000_000_000),
-    steps: opts.settings?.steps ?? model?.init.steps ?? 28,
+    steps: opts.params?.steps ?? opts.settings?.steps ?? model?.init.steps ?? 28,
     restore_faces: false,
     save_images: false,
     send_images: true,
@@ -161,15 +169,42 @@ function getPayload(
   }
 
   if (model) {
-    payload.steps = Math.min(model.limit.steps, payload.steps)
-    payload.cfg_scale = Math.min(model.limit.cfg, payload.cfg_scale)
-    payload.width = Math.min(model.limit.width, payload.width)
-    payload.height = Math.min(model.limit.height, payload.height)
+    payload.steps = Math.min(+model.limit.steps, payload.steps)
+    payload.cfg_scale = Math.min(+model.limit.cfg, payload.cfg_scale)
+    payload.width = Math.min(+model.limit.width, payload.width)
+    payload.height = Math.min(+model.limit.height, payload.height)
+  }
+
+  const rec = opts.user.useRecommendedImages
+  if (rec && rec !== 'none' && model) {
+    const init = model.init
+    if (init.cfg) payload.cfg_scale = +init.cfg
+    if (init.clipSkip !== undefined) payload.clip_skip = +init.clipSkip
+    if (init.steps) payload.steps = +init.steps
+
+    if (!rec.includes('size')) {
+      payload.width = +init.width
+      payload.height = +init.height
+    }
+
+    if (!rec.includes('affix')) {
+      const prompt = [
+        init.prefix || opts.settings?.prefix,
+        opts.raw_prompt,
+        init.suffix || opts.settings?.suffix,
+      ].join(',')
+
+      payload.prompt = fixImagePrompt(prompt)
+
+      if (init.negative) {
+        payload.negative_prompt = init.negative
+      }
+    }
   }
 
   // width and height must be divisible by 64
-  payload.width = Math.floor(payload.width / 64) * 64
-  payload.height = Math.floor(payload.height / 64) * 64
+  payload.width = Math.ceil(payload.width / 32) * 32
+  payload.height = Math.ceil(payload.height / 32) * 32
 
   return payload
 }

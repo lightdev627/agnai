@@ -43,6 +43,7 @@ type Props = {
   children?: any
   initialValue?: number | string
   hide?: boolean
+  variant?: 'outline'
 
   /** Do not update the input value if the value property receives a new value */
   static?: boolean
@@ -158,14 +159,14 @@ const TextInput: Component<Props> = (props) => {
 
   return (
     <div
-      class={`${props.parentClass || ''}`}
+      class={`${props.parentClass || ''} box-border`}
       classList={{
         'flex gap-0': !!props.prelabel && !props.isMultiline,
         hidden: props.parentClass?.includes('hidden') || props.hide,
       }}
     >
       <Show when={props.prelabel && !props.isMultiline}>
-        <div class="bg-600 flex h-[40px] items-center rounded-l-md px-1 text-center text-sm font-bold">
+        <div class="bg-600 flex h-full items-center rounded-l-md px-2 text-center text-sm font-bold">
           {props.prelabel}
         </div>
       </Show>
@@ -205,11 +206,16 @@ const TextInput: Component<Props> = (props) => {
             aria-placeholder={placeholder()}
             value={props.initialValue ?? value()}
             class={
-              'form-field focusable-field text-900 min-h-[40px] w-full rounded-md px-4 ' +
+              'form-field focusable-field text-900 box-border min-h-[40px] w-full rounded-md px-4 hover:border-white/20 ' +
               (props.class || '')
             }
             style={{ transition: 'height 0.2s ease-in-out', height: height() }}
-            classList={{ 'py-2': !props.class?.includes('py-'), ...props.classList }}
+            classList={{
+              'py-2': !props.class?.includes('py-'),
+              'border-0.25': props.variant === 'outline',
+              'border-[var(--bg-600)]': props.variant === 'outline',
+              ...props.classList,
+            }}
             disabled={props.disabled}
             spellcheck={props.spellcheck}
             lang={props.lang}
@@ -230,10 +236,16 @@ const TextInput: Component<Props> = (props) => {
             placeholder={placeholder()}
             aria-placeholder={placeholder()}
             value={props.initialValue ?? value()}
-            class={'form-field focusable-field rounded-md px-4 ' + (props.class || '')}
+            class={
+              'form-field focusable-field box-border rounded-md px-4 hover:border-white/20 ' +
+              (props.class || '')
+            }
             classList={{
               'w-full': !props.class?.includes('w-'),
+              'border-[1px]': props.variant === 'outline',
+              'border-[var(--bg-600)]': props.variant === 'outline',
               'py-2': !props.class?.includes('p-') && !props.class?.includes('py-'),
+              'rounded-l-none': !!props.prelabel,
               ...props.classList,
             }}
             onkeyup={(ev) => {
@@ -266,6 +278,8 @@ const TextInput: Component<Props> = (props) => {
               class={'form-field focusable-field rounded-xl px-4 py-2 ' + (props.class || '')}
               classList={{
                 'w-full': !props.class?.includes('w-'),
+                'border-[1px]': props.variant === 'outline',
+                'border-[var(--bg-600)]': props.variant === 'outline',
                 ...props.classList,
               }}
               onkeyup={(ev) => {
