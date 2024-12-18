@@ -7,8 +7,11 @@ import { AppSchema } from '/common/types'
 import { FieldUpdater, useRowHelper } from '/web/shared/util'
 import Button from '/web/shared/Button'
 import { v4 } from 'uuid'
-import { Plus } from 'lucide-solid'
+import { Plus, Trash } from 'lucide-solid'
 import { ImageModel } from '/common/types/admin'
+import { SD_SAMPLER, SD_SAMPLER_OPTS } from '/common/image'
+import Select from '/web/shared/Select'
+import Accordian from '/web/shared/Accordian'
 
 type Threshold = { steps: number; cfg: number; height: number; width: number }
 type InitThreshold = ImageModel['init']
@@ -65,6 +68,8 @@ const ImageModels: Component<{ signal: Signal<Model[]> }> = (props) => {
         suffix: '',
         negative: '',
         clipSkip: 2,
+        denoise: 1,
+        sampler: SD_SAMPLER['Euler a'],
       },
       limit: { steps: 40, cfg: 10, height: 1024, width: 1024 },
     }),
@@ -79,7 +84,7 @@ const ImageModels: Component<{ signal: Signal<Model[]> }> = (props) => {
           Add
         </Button>
       </div>
-      <div class="flex flex-col gap-2">
+      <div class="flex flex-col gap-3">
         <Index each={rows.items()}>
           {(item, i) => (
             <Model index={i} item={item()} updater={rows.updater} remove={rows.remove} />
@@ -93,7 +98,7 @@ const ImageModels: Component<{ signal: Signal<Model[]> }> = (props) => {
   )
 }
 
-const bg = 'bg-800'
+const bg = 'bg-700'
 const size = 'md'
 const opacity = 0.5
 
@@ -104,149 +109,56 @@ const Model: Component<{
   remove: (index: number) => void
 }> = (props) => {
   return (
-    <Card bg="bg-700" bgOpacity={1} class="flex flex-col gap-2">
-      <div class="flex gap-2 text-sm font-normal">
+    <Accordian title={props.item.desc} titleClickOpen open={false}>
+      <Card
+        bg="bg-900"
+        bgOpacity={1}
+        class="box-border flex flex-col gap-3 !border-[1px] !border-solid !border-[var(--bg-700)] "
+      >
         <TextInput
-          prelabel="Desc"
+          prelabel="Description"
           placeholder="Model Description..."
           onChange={props.updater(props.index, 'desc')}
-          parentClass="h-8 w-1/3"
+          parentClass="h-8 w-full"
           value={props.item.desc}
           variant="outline"
         />
+        <div class="flex gap-2 text-sm font-normal">
+          <TextInput
+            prelabel="Host"
+            placeholder="Model Name..."
+            onChange={props.updater(props.index, 'name')}
+            value={props.item.name}
+            parentClass="h-8 w-1/3"
+            variant="outline"
+          />
 
-        <TextInput
-          prelabel="Host"
-          placeholder="Model Name..."
-          onChange={props.updater(props.index, 'name')}
-          value={props.item.name}
-          parentClass="h-8 w-1/3"
-          variant="outline"
-        />
+          <TextInput
+            prelabel="Override"
+            fieldName="model.override"
+            placeholder="Override..."
+            onChange={props.updater(props.index, 'override')}
+            parentClass="h-8 w-1/3"
+            value={props.item.override || ''}
+            variant="outline"
+          />
+          <TextInput
+            prelabel="Level"
+            type="number"
+            parentClass="w-32 h-8 min-w-[7rem]"
+            onChange={props.updater(props.index, 'level')}
+            value={props.item.level ?? 0}
+            variant="outline"
+          />
 
-        <TextInput
-          prelabel="Override"
-          fieldName="model.override"
-          placeholder="Override..."
-          onChange={props.updater(props.index, 'override')}
-          parentClass="h-8 w-1/3"
-          value={props.item.override || ''}
-          variant="outline"
-        />
-        <TextInput
-          prelabel="Level"
-          type="number"
-          parentClass="w-32 h-8 min-w-[7rem]"
-          onChange={props.updater(props.index, 'level')}
-          value={props.item.level ?? 0}
-          variant="outline"
-        />
-      </div>
+          <Select
+            value={props.item.init.sampler}
+            items={[{ label: 'None', value: '' }].concat(SD_SAMPLER_OPTS)}
+            onChange={props.updater(props.index, 'init.sampler')}
+          ></Select>
+        </div>
 
-      <div class="flex flex-wrap gap-2">
-        <Card class="flex flex-col gap-1" bgOpacity={opacity} bg={bg} size={size}>
-          <div class="flex justify-center">Steps</div>
-          <div class="flex gap-1">
-            <TextInput
-              type="number"
-              parentClass="w-32 h-8"
-              prelabel="Init"
-              onChange={props.updater(props.index, 'init.steps')}
-              value={props.item.init.steps}
-              variant="outline"
-            />
-            <TextInput
-              type="number"
-              parentClass="w-32 h-8"
-              prelabel="Max"
-              onChange={props.updater(props.index, 'limit.steps')}
-              value={props.item.limit.steps}
-              variant="outline"
-            />
-          </div>
-        </Card>
-
-        <Card class="flex flex-col gap-1" bgOpacity={opacity} bg={bg} size={size}>
-          <div class="flex justify-center">CFG Scale</div>
-          <div class="flex gap-1">
-            <TextInput
-              type="number"
-              parentClass="w-32 h-8"
-              prelabel="Init"
-              onChange={props.updater(props.index, 'init.cfg')}
-              value={props.item.init.cfg}
-              variant="outline"
-            />
-            <TextInput
-              type="number"
-              parentClass="w-32 h-8"
-              prelabel="Max"
-              onChange={props.updater(props.index, 'limit.cfg')}
-              value={props.item.limit.cfg}
-              variant="outline"
-            />
-          </div>
-        </Card>
-
-        <Card class="flex flex-col gap-1" bgOpacity={opacity} bg={bg} size={size}>
-          <div class="flex justify-center">Width</div>
-          <div class="flex gap-1">
-            <TextInput
-              type="number"
-              parentClass="w-32 h-8"
-              prelabel="Init"
-              onChange={props.updater(props.index, 'init.width')}
-              value={props.item.init.width}
-              variant="outline"
-            />
-            <TextInput
-              type="number"
-              parentClass="w-32 h-8"
-              prelabel="Max"
-              onChange={props.updater(props.index, 'limit.width')}
-              value={props.item.limit.width}
-              variant="outline"
-            />
-          </div>
-        </Card>
-
-        <Card class="flex flex-col gap-1" bgOpacity={opacity} bg={bg} size={size}>
-          <div class="flex justify-center">Height</div>
-          <div class="flex gap-1">
-            <TextInput
-              type="number"
-              parentClass="w-32 h-8"
-              prelabel="Init"
-              onChange={props.updater(props.index, 'init.height')}
-              value={props.item.init.height}
-              variant="outline"
-            />
-            <TextInput
-              type="number"
-              parentClass="w-32 h-8"
-              prelabel="Max"
-              onChange={props.updater(props.index, 'limit.height')}
-              value={props.item.limit.height}
-              variant="outline"
-            />
-          </div>
-        </Card>
-
-        <Card class="flex flex-col gap-1" bgOpacity={opacity} bg={bg} size={size}>
-          <div class="flex justify-center">Clip Skip</div>
-          <div class="flex gap-1">
-            <TextInput
-              type="number"
-              parentClass="w-32 h-8"
-              prelabel="Init"
-              onChange={props.updater(props.index, 'init.clipSkip')}
-              value={props.item.init.clipSkip ?? 2}
-              variant="outline"
-            />
-          </div>
-        </Card>
-
-        <Card class="flex w-full gap-1" bgOpacity={opacity} bg={bg} size={size}>
+        <div class="flex w-full gap-3">
           <TextInput
             prelabel="Prefix"
             onChange={props.updater(props.index, 'init.prefix')}
@@ -269,8 +181,115 @@ const Model: Component<{
             variant="outline"
             parentClass="w-1/3 h-8"
           />
-        </Card>
-      </div>
-    </Card>
+          <Button schema="red" onClick={() => props.remove(props.index)}>
+            <Trash size={16} />
+          </Button>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          <Card class="flex flex-col gap-1" bgOpacity={opacity} bg={bg} size={size}>
+            <div class="flex justify-center">Steps</div>
+            <div class="flex gap-1">
+              <TextInput
+                type="number"
+                parentClass="w-32 h-8"
+                prelabel="Init"
+                onChange={props.updater(props.index, 'init.steps')}
+                value={props.item.init.steps}
+                variant="outline"
+              />
+              <TextInput
+                type="number"
+                parentClass="w-32 h-8"
+                prelabel="Max"
+                onChange={props.updater(props.index, 'limit.steps')}
+                value={props.item.limit.steps}
+                variant="outline"
+              />
+            </div>
+          </Card>
+
+          <Card class="flex flex-col gap-2" bgOpacity={opacity} bg={bg} size={size}>
+            <div class="flex justify-center">CFG Scale</div>
+            <div class="flex gap-1">
+              <TextInput
+                type="number"
+                parentClass="w-32 h-8"
+                prelabel="Init"
+                onChange={props.updater(props.index, 'init.cfg')}
+                value={props.item.init.cfg}
+                variant="outline"
+              />
+              <TextInput
+                type="number"
+                parentClass="w-32 h-8"
+                prelabel="Max"
+                onChange={props.updater(props.index, 'limit.cfg')}
+                value={props.item.limit.cfg}
+                variant="outline"
+              />
+            </div>
+          </Card>
+
+          <Card class="flex flex-col gap-2" bgOpacity={opacity} bg={bg} size={size}>
+            <div class="flex justify-center">Width</div>
+            <div class="flex gap-1">
+              <TextInput
+                type="number"
+                parentClass="w-32 h-8"
+                prelabel="Init"
+                onChange={props.updater(props.index, 'init.width')}
+                value={props.item.init.width}
+                variant="outline"
+              />
+              <TextInput
+                type="number"
+                parentClass="w-32 h-8"
+                prelabel="Max"
+                onChange={props.updater(props.index, 'limit.width')}
+                value={props.item.limit.width}
+                variant="outline"
+              />
+            </div>
+          </Card>
+
+          <Card class="flex flex-col gap-2" bgOpacity={opacity} bg={bg} size={size}>
+            <div class="flex justify-center">Height</div>
+            <div class="flex gap-1">
+              <TextInput
+                type="number"
+                parentClass="w-32 h-8"
+                prelabel="Init"
+                onChange={props.updater(props.index, 'init.height')}
+                value={props.item.init.height}
+                variant="outline"
+              />
+              <TextInput
+                type="number"
+                parentClass="w-32 h-8"
+                prelabel="Max"
+                onChange={props.updater(props.index, 'limit.height')}
+                value={props.item.limit.height}
+                variant="outline"
+              />
+            </div>
+          </Card>
+
+          <Card class="flex flex-col gap-2" bgOpacity={opacity} bg={bg} size={size}>
+            <div class="flex justify-center">Clip Skip</div>
+            <div class="flex gap-1">
+              <TextInput
+                type="number"
+                parentClass="w-32 h-8"
+                prelabel="Init"
+                onChange={props.updater(props.index, 'init.clipSkip')}
+                value={props.item.init.clipSkip ?? 2}
+                variant="outline"
+              />
+            </div>
+          </Card>
+        </div>
+      </Card>
+    </Accordian>
   )
 }

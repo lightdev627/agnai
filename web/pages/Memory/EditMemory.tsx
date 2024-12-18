@@ -189,20 +189,20 @@ const EntryCard: Component<{
     >
       <div class="flex flex-col gap-2">
         <TextInput
-          label="Keywords"
+          prelabel="Keywords"
           required
           placeholder="Comma separated words. E.g.: circle, shape, round, cylinder, oval"
           class="border-[1px]"
-          value={props.entry.keywords.map((k) => k.trim()).join(', ')}
+          value={props.entry.keywords.join(',')}
           onChange={(e) => {
             props.onChange({
-              keywords: e.currentTarget.value.split(',').map((k) => k.trim()),
+              keywords: e.currentTarget.value.split(','),
             })
           }}
         />
         <div class="flex flex-row gap-4">
           <TextInput
-            label="Priority"
+            prelabel="Priority"
             required
             type="number"
             class="border-[1px]"
@@ -212,7 +212,7 @@ const EntryCard: Component<{
             }}
           />
           <TextInput
-            label="Weight"
+            prelabel="Weight"
             required
             type="number"
             class="border-[1px]"
