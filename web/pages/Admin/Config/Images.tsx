@@ -5,7 +5,7 @@ import { Toggle } from '/web/shared/Toggle'
 import { adminStore, settingStore } from '/web/store'
 import { AppSchema } from '/common/types'
 import { FieldUpdater, useRowHelper } from '/web/shared/util'
-import Button from '/web/shared/Button'
+import Button, { ToggleButton } from '/web/shared/Button'
 import { v4 } from 'uuid'
 import { Plus, Trash } from 'lucide-solid'
 import { ImageModel } from '/common/types/admin'
@@ -23,6 +23,8 @@ type Model = {
   init: InitThreshold
   limit: Threshold
   level: number
+  host: string
+  lora: boolean
 }
 
 export const Images: Component<{ models: Signal<AppSchema.ImageModel[]> }> = (props) => {
@@ -58,7 +60,9 @@ const ImageModels: Component<{ signal: Signal<Model[]> }> = (props) => {
       name: '',
       desc: '',
       override: '',
+      host: '',
       level: 0,
+      lora: false,
       init: {
         steps: 20,
         cfg: 5,
@@ -115,14 +119,34 @@ const Model: Component<{
         bgOpacity={1}
         class="box-border flex flex-col gap-3 !border-[1px] !border-solid !border-[var(--bg-700)] "
       >
-        <TextInput
-          prelabel="Description"
-          placeholder="Model Description..."
-          onChange={props.updater(props.index, 'desc')}
-          parentClass="h-8 w-full"
-          value={props.item.desc}
-          variant="outline"
-        />
+        <div class="flex gap-3">
+          <TextInput
+            prelabel="Description"
+            placeholder="Model Description..."
+            onChange={props.updater(props.index, 'desc')}
+            parentClass="h-8 w-1/2"
+            value={props.item.desc}
+            variant="outline"
+          />
+
+          <TextInput
+            prelabel="URL"
+            placeholder=""
+            onChange={props.updater(props.index, 'host')}
+            parentClass="h-8 w-1/2"
+            value={props.item.host}
+            variant="outline"
+          />
+
+          <ToggleButton
+            class="min-w-fit"
+            value={props.item.lora ?? false}
+            onChange={props.updater(props.index, 'lora')}
+          >
+            LoRA Support
+          </ToggleButton>
+        </div>
+
         <div class="flex gap-2 text-sm font-normal">
           <TextInput
             prelabel="Host"

@@ -34,6 +34,7 @@ const init: ImageSettings = {
   agnai: {
     model: '',
     sampler: SD_SAMPLER['Euler a'],
+    draftMode: false,
   },
   horde: {
     sampler: SD_SAMPLER['Euler a'],
@@ -64,8 +65,9 @@ export const ImageSettingsModal = () => {
       size: false,
       affixes: false,
       sampler: false,
-      config: false,
       negative: false,
+      guidance: false,
+      steps: false,
     }
   )
 
@@ -74,7 +76,8 @@ export const ImageSettingsModal = () => {
       size: next,
       affixes: next,
       sampler: next,
-      config: next,
+      guidance: next,
+      steps: next,
       negative: next,
     })
 
@@ -245,10 +248,17 @@ export const ImageSettingsModal = () => {
             </ToggleButton>
             <ToggleButton
               size="sm"
-              value={defaults.config}
-              onChange={(ev) => setDefaults('config', ev)}
+              value={defaults.guidance}
+              onChange={(ev) => setDefaults('guidance', ev)}
             >
-              CFG Scale / Steps
+              Guidance
+            </ToggleButton>
+            <ToggleButton
+              size="sm"
+              value={defaults.steps}
+              onChange={(ev) => setDefaults('steps', ev)}
+            >
+              Steps
             </ToggleButton>
             <ToggleButton
               size="sm"
@@ -305,7 +315,6 @@ export const ImageSettingsModal = () => {
           step={1}
           value={store.steps ?? agnaiModel()?.init.steps ?? 50}
           label="Sampling Steps"
-          helperText="(Novel Anlas Threshold: 28)"
           onChange={(ev) => setStore('steps', ev)}
         />
 
@@ -316,7 +325,7 @@ export const ImageSettingsModal = () => {
           step={1}
           value={store.clipSkip ?? agnaiModel()?.init.clipSkip ?? 0}
           label="Clip Skip"
-          helperText="The larger the image, the less that can be retained in your local cache. (Novel Anlas Threshold: 512)"
+          helperText="The larger the image, the less that can be retained in your local cache."
           onChange={(ev) => setStore('clipSkip', ev)}
         />
 
@@ -327,7 +336,7 @@ export const ImageSettingsModal = () => {
           step={128}
           value={store.width ?? agnaiModel()?.init.width ?? 1024}
           label="Image Width"
-          helperText="The larger the image, the less that can be retained in your local cache. (Novel Anlas Threshold: 512)"
+          helperText="The larger the image, the less that can be retained in your local cache."
           onChange={(ev) => setStore('width', ev)}
         />
 
@@ -338,16 +347,30 @@ export const ImageSettingsModal = () => {
           step={128}
           value={store.height ?? agnaiModel()?.init.height ?? 1024}
           label="Image Height"
-          helperText="The larger the image, the less that can be retain in your local cache. (Novel Anlas Threshold: 512)"
+          helperText="The larger the image, the less that can be retain in your local cache."
           onChange={(ev) => setStore('height', ev)}
         />
 
         <TextInput
           fieldName="imageCfg"
           value={store.cfg ?? agnaiModel()?.init.cfg ?? 9}
-          label="CFG Scale"
+          label="Guidance Scale"
           helperText="Prompt Guidance. Classifier Free Guidance Scale - how strongly the image should conform to prompt - lower values produce more creative results."
           onChange={(ev) => setStore('cfg', +ev.currentTarget.value)}
+        />
+
+        <TextInput
+          fieldName="seed"
+          value={store.seed ?? 0}
+          label="Seed"
+          type="number"
+          helperText="Seed number (0 = random). Note: The seed will not be consistent across different servers."
+          onChange={(ev) =>
+            setStore(
+              'seed',
+              Math.max(0, Math.min(+ev.currentTarget.value, Number.MAX_SAFE_INTEGER))
+            )
+          }
         />
 
         <TextInput
