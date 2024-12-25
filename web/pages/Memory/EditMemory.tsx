@@ -110,7 +110,7 @@ const EditMemoryForm: Component<{
             <TextInput
               fieldName="search"
               placeholder="Filter by entry name..."
-              onKeyUp={(ev) => setSearch(ev.currentTarget.value)}
+              onChange={(ev) => setSearch(ev.currentTarget.value)}
             />
           </div>
           <Select
@@ -228,7 +228,7 @@ const EntryCard: Component<{
           placeholder="Memory entry. E.g. {{user}} likes fruit and vegetables"
           class="min-h-[64px] border-[1px]"
           required
-          onKeyUp={(e) => {
+          onChange={(e) => {
             props.onChange({ entry: e.currentTarget.value })
           }}
         />
