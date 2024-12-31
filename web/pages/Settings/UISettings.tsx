@@ -189,7 +189,7 @@ const UISettings: Component<{}> = () => {
 
       <Toggle
         fieldName="mobileSendOnEnter"
-        label="Send Message on Enter on Mobile"
+        label="Send on Enter on Mobile"
         helperText='Instead of adding a line break, "Enter" will send the message (Mobile only)'
         value={state.ui.mobileSendOnEnter}
         onChange={(ev) => userStore.saveUI({ mobileSendOnEnter: ev })}
@@ -388,7 +388,7 @@ const UISettings: Component<{}> = () => {
       <Divider />
       <div class="text-lg font-bold">Preview</div>
       <Show when={chars.characters.list.length > 0}>
-        <div class="bg-100 flex w-full flex-col gap-2 rounded-md p-2">
+        <div class="bg-600 flex w-full flex-col gap-2 rounded-md p-2">
           <Message
             index={-1}
             editing={false}
