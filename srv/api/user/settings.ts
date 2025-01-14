@@ -20,7 +20,7 @@ import { getLanguageModels } from '/srv/adapter/replicate'
 import { getUser, toSafeUser } from '/srv/db/user'
 import { getCachedTiers } from '/srv/db/subscriptions'
 
-export const getInitialLoad = handle(async ({ userId }) => {
+export const getInitialLoad = handle(async ({ userId, query }) => {
   const replicate = await getLanguageModels()
   if (config.ui.maintenance) {
     const appConfig = await getAppConfig()
@@ -29,7 +29,7 @@ export const getInitialLoad = handle(async ({ userId }) => {
 
   const [profile, user, presets, books, scenarios] = await Promise.all([
     store.users.getProfile(userId!),
-    getSafeUserConfig(userId!),
+    getSafeUserConfig(userId!, query.seed as string),
     store.presets.getUserPresets(userId!),
     store.memory.getBooks(userId!),
     store.scenario.getScenarios(userId!),
@@ -135,6 +135,14 @@ export const deleteFeatherlessKey = handle(async ({ userId }) => {
   return { success: true }
 })
 
+export const deleteArliKey = handle(async ({ userId }) => {
+  await store.users.updateUser(userId!, {
+    arliApiKey: '',
+  })
+
+  return { success: true }
+})
+
 export const deleteElevenLabsKey = handle(async ({ userId }) => {
   await store.users.updateUser(userId!, {
     elevenLabsApiKey: '',
@@ -170,6 +178,7 @@ const validConfig = {
   oaiKey: 'string?',
   mistralKey: 'string?',
   featherlessApiKey: 'string?',
+  arliApiKey: 'string?',
   scaleUrl: 'string?',
   scaleApiKey: 'string?',
   claudeApiKey: 'string?',
@@ -196,6 +205,7 @@ export const updatePartialConfig = handle(async ({ userId, body }) => {
       scaleApiKey: 'string?',
       claudeApiKey: 'string?',
       elevenLabsApiKey: 'string?',
+      arliApiKey: 'string?',
       patreonToken: 'string?',
       announcement: 'string?',
       defaultPreset: 'string?',
@@ -377,6 +387,10 @@ export const updateConfig = handle(async ({ userId, body }) => {
     update.featherlessApiKey = encryptText(body.featherlessApiKey)
   }
 
+  if (body.arliApiKey) {
+    update.arliApiKey = encryptText(body.arliApiKey)
+  }
+
   if (body.scaleUrl !== undefined) update.scaleUrl = body.scaleUrl
   if (body.scaleApiKey) {
     update.scaleApiKey = encryptText(body.scaleApiKey)
@@ -490,7 +504,7 @@ async function verifyHordeKey(key: string) {
   return user.result?.username
 }
 
-export async function getSafeUserConfig(userId: string) {
+export async function getSafeUserConfig(userId: string, seed?: string) {
   const user = await store.users.getUser(userId!)
   if (!user) return
 
@@ -499,5 +513,5 @@ export async function getSafeUserConfig(userId: string) {
   await store.users.updateUser(userId, { sub: next })
   user.sub = next
 
-  return toSafeUser(user)
+  return toSafeUser(user, seed)
 }
