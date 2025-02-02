@@ -114,11 +114,9 @@ export const SubscriptionModel: Component = () => {
         ...preset,
         _id: '',
         subLevel: 0,
-        subModel: '',
         subApiKey: '',
         subDisabled: false,
         allowGuestUsage: false,
-        levels: [],
       })
       return
     } else if (params.id === 'default') {
