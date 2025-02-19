@@ -221,6 +221,13 @@ export async function parseTemplate(
   //   }
   // }
 
+  /**
+   * Some placeholders require re-parsing as they also contain placeholders
+   */
+  opts.isFinal = true
+  const result = render(output, opts).replace(/\r\n/g, '\n').replace(/\n\n+/g, '\n\n').trim()
+  opts.isFinal = false
+
   /** Replace iterators */
   let history: string[] = []
   if (opts.limit && opts.limit.output) {
@@ -236,7 +243,7 @@ export async function parseTemplate(
       })
       unusedTokens = filled.unusedTokens
       const trimmed = filled.adding.slice().reverse()
-      output = output.replace(id, trimmed.join('\n'))
+      output = output.replace(new RegExp(id, 'gi'), trimmed.join('\n'))
       linesAddedCount += filled.linesAddedCount
       history = trimmed
     }
@@ -256,10 +263,6 @@ export async function parseTemplate(
     }
   }
 
-  opts.isFinal = true
-  const result = render(output, opts).replace(/\r\n/g, '\n').replace(/\n\n+/g, '\n\n').trim()
-  opts.isFinal = false
-
   sections.sections.history = history
 
   // console.log(
@@ -273,8 +276,10 @@ export async function parseTemplate(
   //   sections.sections.post.join('')
   // )
 
+  output = output.replace(/\r\n/g, '\n').replace(/\n\n+/g, '\n\n').trim()
+
   return {
-    parsed: result,
+    parsed: output,
     inserts: opts.inserts ?? new Map(),
     length: await opts.limit?.encoder?.(result),
     linesAddedCount,
