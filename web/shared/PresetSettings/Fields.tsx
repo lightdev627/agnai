@@ -8,7 +8,6 @@ import RangeInput from '../RangeInput'
 import { settingStore } from '/web/store'
 import Select from '../Select'
 import { MODEL_FORMATS } from './General'
-import { defaultPresets } from '/common/default-preset'
 import { FormLabel } from '../FormLabel'
 import { SubscriptionModelLevel } from '/common/types/presets'
 import { Card } from '../Card'
@@ -239,7 +238,7 @@ export const Temperature: Field = (props) => {
         min={0.1}
         max={props.state.presetMode === 'simple' ? 1.5 : 10}
         step={0.01}
-        value={props.state.temp || defaultPresets.basic.temp}
+        value={props.state.temp}
         disabled={props.state.disabled}
         aiSetting={'temp'}
         recommended={props.sub?.preset.temp}
