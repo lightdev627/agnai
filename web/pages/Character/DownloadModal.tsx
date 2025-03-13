@@ -1,13 +1,4 @@
-import {
-  Component,
-  Match,
-  Switch,
-  createEffect,
-  createMemo,
-  createSignal,
-  on,
-  onMount,
-} from 'solid-js'
+import { Component, Match, Switch, createEffect, createMemo, createSignal, on } from 'solid-js'
 import { AppSchema } from '/common/types/schema'
 import Select from '/web/shared/Select'
 import Modal from '/web/shared/Modal'
@@ -32,8 +23,18 @@ export const DownloadModal: Component<{
 }> = (props) => {
   let ref: any
   const [char, setChar] = createSignal<AppSchema.Character | undefined>(props.char)
-  onMount(async () => {
-    if (props.char) return
+
+  createEffect(async () => {
+    if (!props.char && !props.charId) {
+      setChar(undefined)
+      return
+    }
+
+    if (props.char) {
+      setChar(props.char)
+      return
+    }
+
     const res = await charsApi.getCharacterDetail(props.charId)
     if (res.result) {
       setChar(res.result)
@@ -80,8 +81,10 @@ export const DownloadModal: Component<{
   )
 
   const objectUrl = createMemo(() => {
+    if (!char()) return
+
     const url = URL.createObjectURL(
-      new Blob([charToJson(props.char || char()!, format())], { type: 'text/json' })
+      new Blob([charToJson(char()!, format())], { type: 'text/json' })
     )
     return url
   })
@@ -106,7 +109,7 @@ export const DownloadModal: Component<{
             </Match>
 
             <Match when={fileType() === 'png'}>
-              <Button onClick={() => downloadCharCard(props.char || props.charId, format())}>
+              <Button disabled={!char()} onClick={() => downloadCharCard(char()!, format())}>
                 <Save /> Download (PNG)
               </Button>
             </Match>
