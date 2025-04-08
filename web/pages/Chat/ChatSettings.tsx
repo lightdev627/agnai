@@ -4,14 +4,7 @@ import Button from '../../shared/Button'
 import Select from '../../shared/Select'
 import PersonaAttributes, { fromAttrs, toAttrs } from '../../shared/PersonaAttributes'
 import TextInput from '../../shared/TextInput'
-import {
-  chatStore,
-  msgStore,
-  presetStore,
-  scenarioStore,
-  settingStore,
-  userStore,
-} from '../../store'
+import { chatStore, msgStore, presetStore, scenarioStore, userStore } from '../../store'
 import { FormLabel } from '../../shared/FormLabel'
 import { defaultPresets, isDefaultPreset } from '/common/presets'
 import { Card, TitleCard } from '/web/shared/Card'
@@ -38,7 +31,6 @@ const ChatSettings: Component<{
   close: () => void
   footer: (children: any) => void
 }> = (props) => {
-  const cfg = settingStore()
   const state = chatStore((s) => ({ chat: s.active?.chat, char: s.active?.char }))
   const [edit, setEdit] = createStore(getInitState(state.chat, state.char))
   const user = userStore()
@@ -245,29 +237,27 @@ const ChatSettings: Component<{
         </Card>
       </Show>
 
-      <Show when={cfg.flags.debug}>
-        <Card>
-          <TextInput
-            class="text-sm"
-            value={edit?.name || ''}
-            onChange={(ev) => setEdit('name', ev.currentTarget.value)}
-            label={
-              <>
-                Chat name{' '}
-                <div
-                  onClick={() =>
-                    msgStore.chatQuery('Generate a name for this conversation', (msg) =>
-                      setEdit('name', msg)
-                    )
-                  }
-                >
-                  <Wand />
-                </div>
-              </>
-            }
-          />
-        </Card>
-      </Show>
+      <Card>
+        <TextInput
+          class="text-sm"
+          value={edit?.name || ''}
+          onChange={(ev) => setEdit('name', ev.currentTarget.value)}
+          label={
+            <>
+              Chat name{' '}
+              <div
+                onClick={() =>
+                  msgStore.chatQuery('Generate a name for this conversation', (msg) =>
+                    setEdit('name', msg)
+                  )
+                }
+              >
+                <Wand />
+              </div>
+            </>
+          }
+        />
+      </Card>
 
       <Card>
         <Toggle
