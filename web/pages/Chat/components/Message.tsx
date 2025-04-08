@@ -1,5 +1,5 @@
 import './Message.css'
-import * as Purify from 'dompurify'
+import Purify from 'dompurify'
 import {
   Check,
   DownloadCloud,
@@ -99,7 +99,7 @@ function getAnonName(entityId: string) {
 }
 
 const Message: Component<MessageProps> = (props) => {
-  let editRef: HTMLDivElement
+  let editRef: HTMLDivElement | undefined
   let avatarRef: any
 
   const [ctx] = useAppContext()
@@ -503,7 +503,10 @@ function anonymizeText(text: string, profile: AppSchema.Profile, i: number) {
   return text.replace(new RegExp(profile.handle.trim(), 'gi'), 'User ' + (i + 1))
 }
 
-const JsonEdit: Component<{ msg: SplitMessage; update: (next: any) => void }> = (props) => {
+const JsonEdit: Component<{
+  msg: SplitMessage
+  update: (next: any) => void
+}> = (props) => {
   const entries = createMemo(() => Object.keys(props.msg.json?.values || {}))
   const [editing, setEditing] = createStore<Record<string, string>>(props.msg.json?.values || {})
 

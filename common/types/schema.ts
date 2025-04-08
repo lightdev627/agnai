@@ -285,6 +285,9 @@ export namespace AppSchema {
 
     imageSource?: 'last-character' | 'main-character' | 'chat' | 'settings'
     imageSettings?: ImageSettings
+
+    background?: string
+    localSettings?: { bgFormat?: 'contain' | 'cover' | 'auto' }
   }
 
   export interface ChatMember {

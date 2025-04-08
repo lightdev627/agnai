@@ -1,10 +1,11 @@
-import { Check, X } from 'lucide-solid'
+import { Check, FullscreenIcon, X } from 'lucide-solid'
 import { Component, Show, JSX, createMemo, Switch, Match, createSignal } from 'solid-js'
 import Button from './Button'
 import './modal.css'
 import Tabs, { TabHook } from './Tabs'
 import { markdown } from './markdown'
 import { Portal } from 'solid-js/web'
+import { useMobileDetect } from './hooks'
 
 interface Props {
   title?: string | JSX.Element
@@ -26,10 +27,15 @@ interface Props {
 }
 
 const Modal: Component<Props> = (props) => {
-  const width = createMemo(() => {
-    if (!props.maxWidth) return `sm:max-w-lg`
+  const mobile = useMobileDetect()
+  const [full, setFull] = createSignal(false)
 
-    return props.maxWidth === 'full' ? `sm:w-[calc(100vw-64px)]` : 'sm:w-[calc(50vw)]'
+  const toggleFull = () => setFull((f) => !f)
+
+  const width = createMemo(() => {
+    if (!props.maxWidth && !full()) return `sm:max-w-lg`
+
+    return props.maxWidth === 'full' || full() ? `sm:w-[calc(100vw-64px)]` : 'sm:w-[calc(50vw)]'
   })
 
   const minHeight = createMemo(() => (props.fixedHeight ? 'modal-height-fixed' : ''))
@@ -53,7 +59,7 @@ const Modal: Component<Props> = (props) => {
               ref={autofocus}
               onSubmit={props.onSubmit || defaultSubmit}
               class={`modal-height bg-900 z-50 w-[calc(100vw-0px)] overflow-hidden rounded-lg shadow-md shadow-black transition-all ${width()} `}
-              classList={{ 'h-full': props.maxHeight, 'opacity-80': props.transparent }}
+              classList={{ 'h-full': props.maxHeight || full(), 'opacity-80': props.transparent }}
               role="dialog"
               aria-modal="true"
               aria-label={props.ariaLabel}
@@ -68,32 +74,43 @@ const Modal: Component<Props> = (props) => {
                       select={props.tabs?.select!}
                       tabs={props.tabs?.tabs!}
                     />
-                    <Show when={props.dismissable !== false}>
-                      <div
-                        onClick={props.close}
-                        class="cursor-pointer p-4"
-                        role="button"
-                        aria-label="Close dialog window"
-                      >
-                        <X aria-hidden="true" />
-                      </div>
-                    </Show>
+                    <div class="flex gap-2">
+                      <a class="icon-button" classList={{ hidden: mobile() }} onClick={toggleFull}>
+                        <FullscreenIcon />
+                      </a>
+                      <Show when={props.dismissable !== false}>
+                        <div
+                          onClick={props.close}
+                          class="cursor-pointer p-4"
+                          role="button"
+                          aria-label="Close dialog window"
+                        >
+                          <X aria-hidden="true" />
+                        </div>
+                      </Show>
+                    </div>
                   </div>
                 </Match>
 
                 <Match when>
                   <div class="flex w-full flex-row justify-between p-4 text-lg font-bold">
                     <div class="w-full">{props.title}</div>
-                    <Show when={props.dismissable !== false}>
-                      <div
-                        onClick={props.close}
-                        class="cursor-pointer"
-                        role="button"
-                        aria-label="Close window"
-                      >
-                        <X aria-hidden="true" />
-                      </div>
-                    </Show>
+                    <div class="flex gap-2">
+                      <a class="icon-button" classList={{ hidden: mobile() }} onClick={toggleFull}>
+                        <FullscreenIcon />
+                      </a>
+
+                      <Show when={props.dismissable !== false}>
+                        <div
+                          onClick={props.close}
+                          class="cursor-pointer"
+                          role="button"
+                          aria-label="Close window"
+                        >
+                          <X aria-hidden="true" />
+                        </div>
+                      </Show>
+                    </div>
                   </div>
                 </Match>
               </Switch>
@@ -119,16 +136,6 @@ const Modal: Component<Props> = (props) => {
 export default Modal
 
 export const NoTitleModal: Component<Omit<Props, 'title'>> = (props) => {
-  const width = createMemo(() => {
-    if (!props.maxWidth) return `sm:max-w-lg`
-
-    return props.maxWidth === 'full' ? `sm:w-[calc(100vw-64px)]` : 'sm:w-[calc(50vw)]'
-  })
-
-  const minHeight = createMemo(() =>
-    props.fixedHeight ? `min-h-[calc(80vh-132px)] sm:min-h-[calc(90vh-132px)]` : ''
-  )
-
   const defaultSubmit = (ev: Event) => {
     ev.preventDefault()
   }
@@ -144,9 +151,14 @@ export const NoTitleModal: Component<Omit<Props, 'title'>> = (props) => {
         </div>
         <div class="modal-body">
           <form
+            classList={{
+              'sm:max-w-lg': !props.maxWidth,
+              'sm:w-[calc(100vw-64px)]': props.maxWidth === 'full',
+              'sm:w-[calc(50vw)]': props.maxWidth === 'half',
+            }}
             ref={autofocus}
             onSubmit={props.onSubmit || defaultSubmit}
-            class={`bg-900 my-auto max-h-[80vh] w-[calc(100vw-16px)] overflow-hidden rounded-lg shadow-md shadow-black transition-all sm:max-h-[90vh] ${width()} `}
+            class={`bg-900 my-auto max-h-[80vh] w-[calc(100vw-16px)] overflow-hidden rounded-lg shadow-md shadow-black transition-all sm:max-h-[90vh]`}
             role="dialog"
             aria-modal="true"
             aria-label={props.ariaLabel}
@@ -161,7 +173,10 @@ export const NoTitleModal: Component<Omit<Props, 'title'>> = (props) => {
 
             {/* 132px is the height of the title + footer*/}
             <div
-              class={`max-h-[calc(80vh-132px)] sm:max-h-[calc(90vh-132px)] ${minHeight()} overflow-y-auto text-lg`}
+              classList={{
+                'min-h-[calc(80vh-132px)] sm:min-h-[calc(90vh-132px)]': props.fixedHeight,
+              }}
+              class={`max-h-[calc(80vh-132px)] overflow-y-auto text-lg sm:max-h-[calc(90vh-132px)]`}
             >
               {props.children}
             </div>

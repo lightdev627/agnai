@@ -9,6 +9,7 @@ import { api } from './api'
 import { createStore, getStore } from './create'
 import { AllChat as ChatData, chatsApi } from './data/chats'
 import { getPromptEntities } from './data/common'
+import { imageApi } from './data/image'
 import { usersApi } from './data/user'
 import { msgStore } from './message'
 import { subscribe } from './socket'
@@ -255,6 +256,17 @@ export const chatStore = createStore<ChatState>('chat', {
           Object.values(res.result.chat.tempCharacters || {})
         )
 
+        const background = await storage.getItem(`chat-background-${id}`)
+        const localSettings = await storage
+          .getItem(`chat-settings-${id}`)
+          .then((curr) => JSON.parse(curr || '{}'))
+
+        if (background) {
+          res.result.chat.background = background
+        }
+
+        res.result.chat.localSettings = localSettings
+
         yield {
           lastChatId: id,
           active: {
@@ -291,6 +303,47 @@ export const chatStore = createStore<ChatState>('chat', {
         return
       }
     },
+
+    async *removeChatBackground({ active }) {
+      if (!active) return
+
+      await storage.removeItem(`chat-background-${active.chat._id}`)
+
+      yield {
+        active: {
+          ...active,
+          chat: { ...active.chat, background: undefined },
+        },
+      }
+    },
+
+    async *editChatBackground({ active }, image: File) {
+      if (!active) return
+      const base64 = await imageApi.getImageData(image)
+
+      if (!base64) return
+      await storage.setItem(`chat-background-${active.chat._id}`, base64)
+
+      yield {
+        active: {
+          ...active,
+          chat: { ...active.chat, background: base64 },
+        },
+      }
+    },
+
+    async *editLocalChatSettings({ active }, settings: any) {
+      if (!active) return
+
+      const id = `chat-settings-${active.chat._id}`
+      const current = await storage.getItem(id).then((curr) => JSON.parse(curr || '{}'))
+
+      const next = { ...current, ...settings }
+      await storage.setItem(id, JSON.stringify(next))
+
+      return { active: { ...active, chat: { ...active.chat, localSettings: next } } }
+    },
+
     async *editChat(
       { char, allChats, active },
       id: string,

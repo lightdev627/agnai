@@ -4,7 +4,14 @@ import Button from '../../shared/Button'
 import Select from '../../shared/Select'
 import PersonaAttributes, { fromAttrs, toAttrs } from '../../shared/PersonaAttributes'
 import TextInput from '../../shared/TextInput'
-import { chatStore, msgStore, presetStore, scenarioStore, userStore } from '../../store'
+import {
+  chatStore,
+  msgStore,
+  presetStore,
+  scenarioStore,
+  settingStore,
+  userStore,
+} from '../../store'
 import { FormLabel } from '../../shared/FormLabel'
 import { defaultPresets, isDefaultPreset } from '/common/presets'
 import { Card, TitleCard } from '/web/shared/Card'
@@ -14,6 +21,7 @@ import { usePane } from '/web/shared/hooks'
 import Divider from '/web/shared/Divider'
 import { Image, Wand } from 'lucide-solid'
 import { createStore } from 'solid-js/store'
+import FileInput, { FileInputResult } from '/web/shared/FileInput'
 
 const formatOptions = [
   { value: 'attributes', label: 'Attributes' },
@@ -30,12 +38,26 @@ const ChatSettings: Component<{
   close: () => void
   footer: (children: any) => void
 }> = (props) => {
+  const cfg = settingStore()
   const state = chatStore((s) => ({ chat: s.active?.chat, char: s.active?.char }))
   const [edit, setEdit] = createStore(getInitState(state.chat, state.char))
   const user = userStore()
   const presets = presetStore((s) => s.presets)
   const scenarioState = scenarioStore()
   const pane = usePane()
+
+  const saveBackgroundImage = async (files: FileInputResult[]) => {
+    if (!files?.length) return
+    if (!state.chat) return
+
+    const [file] = files
+
+    chatStore.editChatBackground(file.file)
+  }
+
+  const saveLocalSettings = (update: Partial<AppSchema.Chat['localSettings']>) => {
+    chatStore.editLocalChatSettings(update)
+  }
 
   const personaFormats = createMemo(() => {
     const format = edit.personaKind
@@ -166,6 +188,38 @@ const ChatSettings: Component<{
         />
       </Card>
 
+      <Card>
+        <div class="flex gap-1">
+          <FileInput
+            fieldName="chatBackground"
+            label={
+              <div class="flex items-center justify-between gap-1">
+                Background Image{' '}
+                <div class="flex items-center gap-1">
+                  <Show when={state.chat?.background}>
+                    <Select
+                      parentClass="text-xs"
+                      items={[
+                        { label: 'Auto', value: 'auto' },
+                        { label: 'Cover', value: 'cover' },
+                        { label: 'Contain', value: 'contain' },
+                      ]}
+                      onChange={(next) => saveLocalSettings({ bgFormat: next.value as any })}
+                    />
+                    <Button size="sm" schema="red" onClick={() => chatStore.removeChatBackground()}>
+                      Remove
+                    </Button>
+                  </Show>
+                </div>
+              </div>
+            }
+            helperText="The image will be stored on your current device and not available on other devices"
+            onUpdate={saveBackgroundImage}
+            accept="image/png,image/jpeg,image/apng,image/gif,image/webp"
+          />
+        </div>
+      </Card>
+
       <Show when={activePreset()?.service !== 'horde'}>
         <Card>
           <Select
@@ -190,27 +244,31 @@ const ChatSettings: Component<{
           />
         </Card>
       </Show>
-      <Card>
-        <TextInput
-          class="text-sm"
-          value={edit?.name || ''}
-          onChange={(ev) => setEdit('name', ev.currentTarget.value)}
-          label={
-            <>
-              Chat name{' '}
-              <div
-                onClick={() =>
-                  msgStore.chatQuery('Generate a name for this conversation', (msg) =>
-                    setEdit('name', msg)
-                  )
-                }
-              >
-                <Wand />
-              </div>
-            </>
-          }
-        />
-      </Card>
+
+      <Show when={cfg.flags.debug}>
+        <Card>
+          <TextInput
+            class="text-sm"
+            value={edit?.name || ''}
+            onChange={(ev) => setEdit('name', ev.currentTarget.value)}
+            label={
+              <>
+                Chat name{' '}
+                <div
+                  onClick={() =>
+                    msgStore.chatQuery('Generate a name for this conversation', (msg) =>
+                      setEdit('name', msg)
+                    )
+                  }
+                >
+                  <Wand />
+                </div>
+              </>
+            }
+          />
+        </Card>
+      </Show>
+
       <Card>
         <Toggle
           value={edit.useOverrides}

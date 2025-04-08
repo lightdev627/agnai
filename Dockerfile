@@ -1,4 +1,4 @@
-FROM node:20.10.0-bullseye-slim
+FROM node:22.14.0-bullseye-slim
 
 # Set working directory
 WORKDIR /app
@@ -7,7 +7,7 @@ WORKDIR /app
 VOLUME [ "/app/db", "/app/assets", "/app/dist/assets", "/app/extras" ]
 
 # Install pnpm globally
-RUN npm install pnpm@8.6.0 -g
+RUN npm install pnpm@10 -g
 
 # SHA used for versioning
 ARG SHA=unknown
