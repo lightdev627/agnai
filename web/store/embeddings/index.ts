@@ -3,7 +3,6 @@ import { EmbedDocument, WorkerRequest, WorkerResponse } from './types'
 import { env } from '@xenova/transformers'
 import { AppSchema } from '/common/types'
 import { v4 } from 'uuid'
-import { slugify } from '/common/util'
 import { toastStore } from '../toasts'
 import { docCache } from './cache'
 import type { MemoryState } from '../memory'
@@ -21,6 +20,7 @@ type WikiItem = {
 
 const models = {
   // embedding: 'Xenova/all-mpnet-base-v2',
+  // embedding: 'Xenova/bge-base-en-v1.5',
   embedding: 'Xenova/all-MiniLM-L6-v2',
   // captioning: 'Xenova/vit-gpt2-image-captioning',
   // WIP
@@ -59,15 +59,24 @@ export const embedApi = {
     MEMORY_SET = setter
 
     const ids = await docCache.getIds()
-    const embeds = ids.map((id) => ({ id, state: 'not-loaded' }))
+    const embeds = ids.map((doc) => ({ id: doc._id, name: doc.name, state: 'not-loaded' }))
     setter({ embeds })
   },
-  initSimiliary: () => {
-    post('initSimilarity', { model: models.embedding })
+  initSimiliary: (disableLTM?: boolean) => {
+    const user = getStore('user').getState()
+    const chat = getStore('chat').getState().active?.chat
+    const disable = disableLTM ?? user.user?.disableLTM ?? true
+    post('initSimilarity', { model: models.embedding, disableLTM: disable })
+
+    // Load the document when embeddings are ready
+    if (chat?.userEmbedId) {
+      loadDocument(chat.userEmbedId)
+    }
   },
   encode,
   decode,
   embedChat,
+  deleteChatCache,
   embedArticle,
   embedPdf,
   embedFile,
@@ -112,10 +121,16 @@ const handlers: {
   init: (type) => {
     try {
       const user = getStore('user').getState()
+      const chat = getStore('chat').getState().active?.chat
+
       const disableLTM = user.user?.disableLTM ?? true
       if (type === 'embed') {
-        if (disableLTM) return
-        post('initSimilarity', { model: models.embedding })
+        post('initSimilarity', { model: models.embedding, disableLTM })
+
+        // This will be loaded 'on embeds ready'
+        if (chat?.userEmbedId) {
+          loadDocument(chat.userEmbedId)
+        }
       }
 
       if (type === 'image' && window.flags.caption) {
@@ -171,11 +186,11 @@ const handlers: {
     if (msg.kind === 'chat') return
     const next = embeds
       .slice()
-      .map((e) => (e.id === msg.id ? { id: msg.id, state: msg.status } : e))
+      .map((e) => (e.id === msg.id ? { id: msg.id, name: e.name, state: msg.status } : e))
 
-    if (!next.some((e) => e.id === msg.id)) {
-      next.push({ id: msg.id, state: msg.status })
-    }
+    // if (!next.some((e) => e.id === msg.id)) {
+    //   next.push({ id: msg.id, name: msg. state: msg.status })
+    // }
 
     MEMORY_SET({ embeds: next })
   },
@@ -226,6 +241,10 @@ function embedChat(chatId: string, messages: AppSchema.ChatMessage[]) {
   }
 
   post('embedChat', { chatId, messages })
+}
+
+function deleteChatCache(chatId: string) {
+  post('deleteChatCache', { chatId })
 }
 
 async function queryChat(chatId: string, text: string, before: string, path: string[]) {
@@ -373,11 +392,12 @@ async function embedArticle(wikipage: string) {
     }
   }
 
-  const slug = slugify(wikipage)
-  post('embedDocument', { documentId: slug, documents: embeds })
+  const id = v4()
+  upsertEmbeddingId(id, wikipage)
+  post('embedDocument', { documentId: id, name: wikipage, documents: embeds })
 }
 
-async function embedPdf(name: string, file: File) {
+async function embedPdf(id: string, name: string, file: File) {
   const { extractPdf } = await import('../data/pdf-import')
   const data = await extractPdf(file)
   const embed: EmbedDocument[] = []
@@ -402,20 +422,20 @@ async function embedPdf(name: string, file: File) {
     }
   }
 
-  const slug = name ? name : slugify(file.name)
-  post('embedDocument', { documentId: slug, documents: embed })
+  upsertEmbeddingId(id, name)
+  post('embedDocument', { documentId: id, name, documents: embed })
 }
 
-async function embedFile(name: string, file: File) {
+async function embedFile(id: string, name: string, file: File) {
   const buffer = await file.arrayBuffer().then((b) => Buffer.from(b))
   const text = buffer.toString()
   const dot = file.name.lastIndexOf('.')
   const filename = dot > -1 ? file.name.slice(0, dot) : file.name
 
-  return embedPlainText(name || filename, text)
+  return embedPlainText(id, name || filename, text)
 }
 
-async function embedPlainText(name: string, text: string) {
+async function embedPlainText(id: string, name: string, text: string) {
   const lines = text
     .replace(/(\\n|\r\n|\r)/g, '\n')
     .replace(/\n+/g, '\n')
@@ -423,9 +443,9 @@ async function embedPlainText(name: string, text: string) {
     .filter((l) => !!l.trim())
 
   const embeds = lines.map((line, i) => ({ msg: line, meta: { line: i + 1 } }))
-  const slug = slugify(name)
 
-  post('embedDocument', { documentId: slug, documents: embeds })
+  upsertEmbeddingId(id, name)
+  post('embedDocument', { documentId: id, name, documents: embeds })
 }
 
 function addSection<T>(
@@ -458,4 +478,19 @@ async function captionImage(dataUrl: string): Promise<string> {
       resolve(caption)
     })
   })
+}
+
+function upsertEmbeddingId(id: string, name: string) {
+  const { embeds: prev } = MEMORY_GET()
+
+  const exists = prev.some((p) => p.id === id)
+
+  if (!exists) {
+    const next = prev.concat({ id, name, state: 'not-loaded' })
+    MEMORY_SET({ embeds: next })
+    return
+  }
+
+  const next = prev.map((p) => (p.id === id ? { id, name, state: p.state } : p))
+  MEMORY_SET({ embeds: next })
 }

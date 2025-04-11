@@ -98,6 +98,10 @@ export const userStore = createStore<UserState>(
   })
 
   events.on(EVENTS.init, (init) => {
+    if (init.user) {
+      init.user.userHordeKey = init.user.hordeKey
+      init.user.hordeKey = ''
+    }
     userStore.setState({ user: init.user, profile: init.profile, userType: getUserType(init.user) })
 
     if (
@@ -122,6 +126,10 @@ export const userStore = createStore<UserState>(
       userStore.saveUI(defaultUIsettings)
     } else {
       userStore.receiveUI(init.user.ui)
+
+      if (!init.user.disableLTM) {
+        embedApi.initSimiliary(false)
+      }
     }
   })
 
@@ -407,7 +415,7 @@ export const userStore = createStore<UserState>(
 
         const prevLTM = prev?.disableLTM ?? true
         if (prevLTM && config.disableLTM === false) {
-          embedApi.initSimiliary()
+          embedApi.initSimiliary(false)
         }
 
         toastStore.success(`Updated settings`)

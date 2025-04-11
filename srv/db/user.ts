@@ -65,7 +65,23 @@ export async function updateUserUI(userId: string, props: Partial<AppSchema.User
 }
 
 export async function updateUser(userId: string, props: Partial<AppSchema.User>) {
-  await db('user').updateOne({ _id: userId }, { $set: { ...props, updatedAt: now() } })
+  try {
+    await db('user').updateOne({ _id: userId }, { $set: { ...props, updatedAt: now() } })
+  } catch (ex: any) {
+    /**
+     * A bug has caused specific API keys to be re-encrypted multiple times.
+     * If we get this error, we will need to remove the keys
+     */
+    if (ex?.name !== 'MongoServerError') {
+      throw ex
+    }
+
+    await db('user').updateOne(
+      { _id: userId },
+      { $set: { hordeKey: '' as any, featherlessApiKey: '' as any } }
+    )
+    await db('user').updateOne({ _id: userId }, { $set: { ...props, updatedAt: now() } })
+  }
   return getUser(userId)
 }
 
@@ -471,6 +487,11 @@ export function toSafeUser(user: AppSchema.User, seed?: string) {
   if (user.mistralKey) {
     user.mistralKeySet = true
     user.mistralKey = ''
+  }
+
+  if (user.featherlessApiKey) {
+    user.featherlessApiKeySet = true
+    user.featherlessApiKey = ''
   }
 
   if (user.scaleApiKey) {
