@@ -27,7 +27,6 @@ type GenerateOpts = {
 
   /** If true, the Image Settings prefix and suffix won't be applied */
   noAffix?: boolean
-  onDone: (image: string) => void
 }
 
 export const ALLOWED_TYPES = new Map([
@@ -47,7 +46,7 @@ export const imageApi = {
   ALLOWED_TYPES,
 }
 
-export async function generateImage({ chatId, messageId, onDone, ...opts }: GenerateOpts) {
+export async function generateImage({ chatId, messageId, ...opts }: GenerateOpts) {
   const entities = await getPromptEntities()
   const summary = opts.prompt
     ? await localApi.result({ response: opts.prompt })
@@ -76,6 +75,7 @@ export async function generateImage({ chatId, messageId, onDone, ...opts }: Gene
     chatId,
     characterId,
     parent: opts.parent,
+    requestId: v4(),
   })
   return res
 }
@@ -264,7 +264,7 @@ async function createSummarizedImagePrompt(opts: PromptEntities) {
     console.log('Using', opts.settings?.service, 'to summarise')
 
     const summary = await getChatSummary(opts.settings, opts.user.images?.summaryPrompt)
-    console.log('Image caption: ', summary)
+    console.log('Image caption: ', summary.result?.response)
     return summary
   }
 

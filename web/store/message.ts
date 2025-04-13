@@ -1,7 +1,6 @@
-import { v4 } from 'uuid'
 import { AppSchema } from '../../common/types/schema'
 import { EVENTS, events } from '../emitter'
-import { createDebounce, getAssetUrl } from '../shared/util'
+import { createDebounce, getAssetUrl, storage } from '../shared/util'
 import { isLoggedIn } from './api'
 import { createStore, getStore } from './create'
 import { publish, subscribe } from './socket'
@@ -31,8 +30,6 @@ import { HordeCheck } from '/common/horde-gen'
 import { botGen, GenerateOpts } from './data/bot-generate'
 
 const SOFT_PAGE_SIZE = 20
-
-type ChatId = string
 
 export type VoiceState = 'generating' | 'playing'
 
@@ -86,7 +83,7 @@ export type MsgState = {
    *
    * These will be 'inserted' into chats by 'createdAt' timestamp
    */
-  images: Record<ChatId, AppSchema.ChatMessage[]>
+  // images: Record<ChatId, AppSchema.ChatMessage[]>
 
   /** Attachments, mapped by Chat ID  */
   attachments: Record<string, { image: string } | undefined>
@@ -101,7 +98,6 @@ const initState: MsgState = {
   activeCharId: '',
   messageHistory: [],
   msgs: [],
-  images: {},
   nextLoading: false,
   imagesSaved: false,
   waiting: undefined,
@@ -116,6 +112,30 @@ const initState: MsgState = {
     tree: {},
     root: '',
   },
+}
+
+export async function getMessageImages(messageId: string) {
+  const cached = await storage
+    .getItem(`message-images-${messageId}`)
+    .then((res) => (res ? JSON.parse(res) : []))
+
+  return cached as string[]
+}
+
+export async function deleteCachedMessageImage(messageId: string, cacheId: string) {
+  await storage.removeItem(cacheId)
+  const ids = await getMessageImages(messageId)
+  const filtered = ids.filter((i) => i !== cacheId)
+
+  await storage.setItem(`message-images-${messageId}`, JSON.stringify(filtered))
+
+  console.log(`[cache] image deleted: `, cacheId)
+}
+
+async function addMessageImage(messageId: string, cacheId: string) {
+  const prev = await getMessageImages(messageId)
+  if (prev.includes(cacheId)) return
+  await storage.setItem(`message-images-${messageId}`, JSON.stringify(prev.concat(cacheId)))
 }
 
 export const msgStore = createStore<MsgState>(
@@ -243,19 +263,29 @@ export const msgStore = createStore<MsgState>(
 
       const extras = (prev.extras || []).slice()
 
-      if (position === 0) {
-        if (!extras.length) {
-          msgStore.deleteMessages(msgId, true)
+      // 'image' messages have an image in `.msg` which we treat as `position 0`
+      if (prev.adapter === 'image') {
+        if (position === 0) {
+          if (!extras.length) {
+            msgStore.deleteMessages(msgId, true)
+            return
+          }
+
+          const msg = extras.shift()
+          msgStore.editMessageProp(msgId, { msg, extras })
           return
         }
 
-        const msg = extras.shift()
-        msgStore.editMessageProp(msgId, { msg, extras })
+        extras.splice(position - 1, 1)
+        msgStore.editMessageProp(msgId, { extras })
         return
       }
 
-      extras.splice(position - 1, 1)
+      // non-image messages only have images in `.extras`
+      extras.splice(position, 1)
+
       msgStore.editMessageProp(msgId, { extras })
+      return
     },
 
     async *swapMessage({ msgs }, msgId: string, position: number, onSuccess?: Function) {
@@ -729,27 +759,30 @@ export const msgStore = createStore<MsgState>(
     },
     async *createImage(
       { msgs, activeChatId, activeCharId, waiting, graph },
-      messageId?: string,
+      sourceMessageId?: string,
       append?: boolean
     ) {
       if (waiting) return
 
-      const onDone = (image: string) => handleImage(activeChatId, image)
+      const messageId = sourceMessageId || msgs.slice(-1)[0]._id
+      const prev = messageId ? msgs.find((msg) => msg._id === messageId) : undefined
+
       yield {
         hordeStatus: undefined,
-        waiting: { chatId: activeChatId, mode: 'send', characterId: activeCharId, image: true },
+        waiting: {
+          chatId: activeChatId,
+          mode: 'send',
+          characterId: activeCharId,
+          image: true,
+          messageId,
+        },
       }
-
-      const prev = messageId ? msgs.find((msg) => msg._id === messageId) : undefined
-      const parent = prev ? prev.parent : msgs.slice(-1)[0]._id
 
       const res = await imageApi.generateImage({
         messageId,
         prompt: prev?.imagePrompt,
         append,
-        onDone,
         source: 'summary',
-        parent,
       })
       if (res.error) {
         yield { waiting: undefined }
@@ -796,10 +829,16 @@ function processQueue() {
  * @param chatId
  * @param image base64 encoded image or image url
  */
-async function handleImage(chatId: string, image: string, messageId?: string) {
-  const { msgs, activeCharId, images, imagesSaved, activeChatId } = msgStore.getState()
+async function handleImage(body: {
+  chatId: string
+  image: string
+  messageId: string
+  requestId: string
+}) {
+  let { chatId, image, messageId, requestId } = body
+  if (!messageId) return
 
-  const chatImages = images[chatId] || []
+  const { msgs, imagesSaved, activeChatId } = msgStore.getState()
 
   const isImageUrl =
     image.startsWith('/asset') ||
@@ -820,26 +859,28 @@ async function handleImage(chatId: string, image: string, messageId?: string) {
     image = image.startsWith('data') ? image : `data:image/png;base64,${image}`
   }
 
-  const newMsg: AppSchema.ChatMessage = {
-    _id: v4(),
-    chatId,
-    kind: 'chat-message',
-    msg: image,
-    adapter: 'image',
-    characterId: activeCharId,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    retries: [],
+  const cacheId = imagesSaved ? '' : `cache:${requestId}`
+  if (cacheId) {
+    const imageIds = await getMessageImages(messageId)
+
+    imageIds.push(cacheId)
+
+    await storage.setItem(cacheId, image)
+    await addMessageImage(messageId, cacheId)
+    console.log(`[cache] image cached:`, cacheId)
   }
 
-  chatImages.push(newMsg)
+  const msg = msgs.find((m) => m._id === messageId)
+  if (!msg) return
+
+  const extras = (msg.extras || []).slice().concat(cacheId ? cacheId : image)
+
+  const nextMsgs = replace(messageId, msgs, { extras })
 
   if (chatId === activeChatId) {
-    const nextMsgs = msgs.concat(newMsg)
     msgStore.setState({
       msgs: nextMsgs,
       waiting: undefined,
-      images: { ...images, [chatId]: chatImages },
     })
   }
 }
@@ -938,7 +979,7 @@ subscribe(
     json: 'any?',
   },
   async (body) => {
-    const { retrying, msgs, activeChatId, graph } = msgStore.getState()
+    const { msgs, activeChatId, graph } = msgStore.getState()
     const { characters } = getStore('character').getState()
     const { active } = getStore('chat').getState()
 
@@ -975,34 +1016,16 @@ subscribe(
       json: body.json,
     }
 
-    let tree: ChatTree | undefined
+    if (!prev) return
+    const nextMsgs = replace(body.messageId, msgs, nextMsg)
+    const replacement = { ...prev, ...nextMsg }
 
-    if (retrying?._id === body.messageId) {
-      const next = msgs.map((msg) => {
-        if (msg._id === body.messageId) {
-          const replacement = { ...msg, ...nextMsg }
-          tree = updateChatTreeNode(graph.tree, replacement)
-          return replacement
-        }
+    msgStore.setState({
+      msgs: nextMsgs,
+      graph: { ...graph, tree: updateChatTreeNode(graph.tree, replacement) },
+    })
 
-        return msg
-      })
-      msgStore.setState({ msgs: next, graph: { ...graph, tree: tree || graph.tree } })
-    } else {
-      if (activeChatId !== body.chatId || !prev) return
-      const next = msgs.map((msg) => {
-        if (msg._id === body.messageId) {
-          const replacement = { ...msg, ...nextMsg }
-          tree = updateChatTreeNode(graph.tree, replacement)
-          return replacement
-        }
-        return msg
-      })
-      msgStore.setState({ msgs: next, graph: { ...graph, tree: tree || graph.tree } })
-    }
-
-    if (active.chat._id !== body.chatId || !prev || !char) return
-
+    if (active.chat._id !== body.chatId || !char) return
     const voice = char.voice
 
     if (body.adapter === 'image' || !voice || !user) return
@@ -1165,9 +1188,15 @@ subscribe('image-failed', { chatId: 'string', error: 'string' }, (body) => {
 
 subscribe(
   'image-generated',
-  { chatId: 'string', image: 'string', messageId: 'string?' },
+  { chatId: 'string', image: 'string', messageId: 'string?', requestId: 'string' },
   (body) => {
-    handleImage(body.chatId, body.image, body.messageId)
+    if (!body.messageId) return
+    handleImage({
+      chatId: body.chatId,
+      image: body.image,
+      messageId: body.messageId,
+      requestId: body.requestId,
+    })
   }
 )
 
@@ -1222,13 +1251,15 @@ subscribe('messages-deleted', { ids: ['string'] }, (body) => {
 })
 
 const updateMsgSub = (body: {
+  chatId: string
   messageId: string
+  imagePrompt?: string
   message?: string
   retries?: string[]
   actions: any
   extras?: string[]
 }) => {
-  const { msgs, graph } = msgStore.getState()
+  const { msgs, graph, waiting } = msgStore.getState()
   const prev = findOne(body.messageId, msgs)
 
   if (!prev) return
@@ -1236,6 +1267,7 @@ const updateMsgSub = (body: {
   const next: ChatMessageExt = {
     ...prev,
     msg: body.message || prev?.msg,
+    imagePrompt: body.imagePrompt || prev.imagePrompt,
     retries: body.retries || prev?.retries,
     actions: body.actions || prev?.actions,
     voiceUrl: undefined,
@@ -1243,8 +1275,12 @@ const updateMsgSub = (body: {
   }
   const nextMsgs = replace(body.messageId, msgs, next)
 
+  const wait =
+    waiting?.chatId === body.chatId || waiting?.messageId === body.messageId ? undefined : waiting
+
   msgStore.setState({
     msgs: nextMsgs,
+    waiting: wait,
     graph: {
       tree: updateChatTreeNode(graph.tree, next),
       root: graph.root,
@@ -1296,6 +1332,7 @@ function updateMsgParents(chatId: string, parents: Record<string, string>, delet
 subscribe(
   'message-edited',
   {
+    chatId: 'string',
     messageId: 'string',
     message: 'string?',
     imagePrompt: 'string?',
@@ -1309,6 +1346,7 @@ subscribe(
 subscribe(
   'message-swapped',
   {
+    chatId: 'string',
     messageId: 'string',
     message: 'string?',
     imagePrompt: 'string?',

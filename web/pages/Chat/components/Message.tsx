@@ -6,7 +6,6 @@ import {
   Info,
   PauseCircle,
   Pencil,
-  PlusCircle,
   RefreshCw,
   Repeat1,
   Terminal,
@@ -35,16 +34,7 @@ import {
 import { BOT_REPLACE, SELF_REPLACE } from '../../../../common/prompt'
 import { AppSchema } from '../../../../common/types/schema'
 import AvatarIcon, { CharacterAvatar } from '../../../shared/AvatarIcon'
-import { getAssetUrl } from '../../../shared/util'
-import {
-  chatStore,
-  userStore,
-  msgStore,
-  settingStore,
-  toastStore,
-  ChatState,
-  VoiceState,
-} from '../../../store'
+import { chatStore, userStore, msgStore, toastStore, ChatState, VoiceState } from '../../../store'
 import { markdown } from '../../../shared/markdown'
 import Button, { ButtonSchema } from '/web/shared/Button'
 import { rootModalStore } from '/web/store/root-modal'
@@ -60,8 +50,9 @@ import { Portal } from 'solid-js/web'
 import { UI } from '/common/types'
 import { LucideProps } from 'lucide-solid/dist/types/types'
 import { createStore } from 'solid-js/store'
-import { Spinner } from '/web/shared/Loading'
+import { RelativeSpinner } from '/web/shared/Loading'
 import { LogProbs } from './LogProbs'
+import { MessageImages } from './MessageImages'
 
 type MessageProps = {
   msg: SplitMessage
@@ -384,49 +375,33 @@ const Message: Component<MessageProps> = (props) => {
             <div ref={avatarRef} classList={{ 'overflow-hidden': !user.ui.imageWrap }}>
               <Switch>
                 <Match when={props.msg.adapter === 'image'}>
-                  <div class="flex flex-wrap gap-2">
-                    <img
-                      class={'mt-2 max-h-32 max-w-[unset] cursor-pointer rounded-md'}
-                      src={getAssetUrl(props.msg.msg)}
-                      onClick={() =>
-                        settingStore.showImage(props.msg.msg, [
-                          toImageDeleteButton(props.msg._id, 0),
-                        ])
-                      }
-                    />
-                    <For each={props.msg.extras || []}>
-                      {(src, i) => (
-                        <img
-                          class={'mt-2 max-h-32 max-w-[unset] cursor-pointer rounded-md'}
-                          src={getAssetUrl(src)}
-                          onClick={() =>
-                            settingStore.showImage(src, [
-                              toImageDeleteButton(props.msg._id, i() + 1),
-                            ])
-                          }
-                        />
-                      )}
-                    </For>
-                    <div
-                      class="icon-button mx-2 flex items-center"
-                      onClick={() => msgStore.createImage(props.msg._id, true)}
-                    >
-                      <PlusCircle size={20} />
-                    </div>
-                  </div>
+                  <MessageImages msg={props.msg} />
                 </Match>
-                <Match when={!edit() && content().type === 'message'}>
+
+                <Match when={!edit()}>
                   <p
                     class={`rendered-markdown pr-1 ${content().class}`}
                     data-bot-message={!props.msg.userId}
                     data-user-message={!!props.msg.userId}
                     innerHTML={content().message}
                   />
-                  <Show when={props.msg.adapter === 'partial-response' && props.last}>
+                  <Show when={content().generating}>
                     <span class="flex h-8 w-12 items-center justify-center">
                       <span class="dot-flashing bg-[var(--hl-700)]"></span>
                     </span>
                   </Show>
+                  <Show when={ctx.waiting?.image && ctx.waiting.messageId === props.msg._id}>
+                    <div class="flex w-full justify-center">
+                      <RelativeSpinner />{' '}
+                      <span
+                        class="text-500 text-xs italic"
+                        classList={{ hidden: !ctx.status?.wait_time }}
+                      >
+                        {ctx.status?.wait_time || '0'}s
+                      </span>
+                    </div>
+                  </Show>
+                  <MessageImages msg={props.msg} />
                   <Show when={!props.partial && props.last}>
                     <div class="flex items-center justify-center gap-2">
                       <For each={props.msg.actions}>
@@ -443,31 +418,7 @@ const Message: Component<MessageProps> = (props) => {
                     </div>
                   </Show>
                 </Match>
-                <Match when={!edit() && content().type !== 'message'}>
-                  <p
-                    classList={{ hidden: content().type === 'waiting' }}
-                    class={`rendered-markdown pr-1 ${content().class}`}
-                    data-bot-message={!props.msg.userId}
-                    data-user-message={!!props.msg.userId}
-                    innerHTML={content().message}
-                  />
-                  <Show
-                    when={ctx.waiting?.image}
-                    fallback={
-                      <div class="flex h-8 w-12 items-center justify-center">
-                        <div class="dot-flashing bg-[var(--hl-700)]"></div>
-                      </div>
-                    }
-                  >
-                    <Spinner />{' '}
-                    <span
-                      class="text-500 text-xs italic"
-                      classList={{ hidden: !ctx.status?.wait_time }}
-                    >
-                      {ctx.status?.wait_time || '0'}s
-                    </span>
-                  </Show>
-                </Match>
+
                 <Match when={edit() && props.msg.json}>
                   <JsonEdit msg={props.msg} update={(next) => setJsonValues(next)} />
                 </Match>
@@ -946,17 +897,6 @@ function canShowMeta(msg: AppSchema.ChatMessage, history: any) {
   return !!msg.adapter || !!history || (!!msg.meta && Object.keys(msg.meta).length >= 1)
 }
 
-function toImageDeleteButton(msgId: string, position: number) {
-  return {
-    schema: 'red' as const,
-    text: 'Delete Image',
-    onClick: () => {
-      msgStore.removeMessageImage(msgId, position)
-      settingStore.clearImage()
-    },
-  }
-}
-
 function getMessageContent(ctx: ContextState, props: MessageProps, state: ChatState) {
   const isRetry = props.retrying?._id === props.msg._id
   const isPartial = props.msg._id === 'partial-response'
@@ -967,6 +907,7 @@ function getMessageContent(ctx: ContextState, props: MessageProps, state: ChatSt
         type: 'partial',
         message: renderMessage(ctx, props.partial!, false, 'partial'),
         class: 'streaming-markdown',
+        generating: true,
       }
     }
 
@@ -975,10 +916,11 @@ function getMessageContent(ctx: ContextState, props: MessageProps, state: ChatSt
         type: 'partial',
         message: renderMessage(ctx, props.msg.msg, false, 'partial'),
         class: 'streaming-markdown',
+        generating: true,
       }
     }
 
-    return { type: 'waiting', message: '', class: 'not-streaming' }
+    return { type: 'waiting', message: '', class: 'not-streaming', generating: true }
   }
 
   let message = props.msg.msg
