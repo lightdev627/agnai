@@ -236,12 +236,12 @@ export const msgStore = createStore<MsgState>(
     },
 
     async *editMessageProp(
-      { msgs },
+      { msgs, graph },
       msgId: string,
       update: Partial<AppSchema.ChatMessage>,
       onSuccess?: Function
     ) {
-      const prev = msgs.find((m) => m._id === msgId)
+      const prev = findOne(msgId, msgs)
       if (!prev) return toastStore.error(`Cannot find message`)
 
       const res = await msgsApi.editMessageProps(prev, update)
@@ -250,8 +250,13 @@ export const msgStore = createStore<MsgState>(
       }
 
       if (res.result) {
+        const next = { ...prev, ...update, voiceUrl: undefined }
+        const nextMsgs = replace(msgId, msgs, next)
+        const tree = updateChatTreeNode(graph.tree, next)
+
         yield {
-          msgs: msgs.map((m) => (m._id === msgId ? { ...m, ...update, voiceUrl: undefined } : m)),
+          msgs: nextMsgs,
+          graph: { ...graph, tree },
         }
         onSuccess?.()
       }
@@ -356,7 +361,7 @@ export const msgStore = createStore<MsgState>(
     },
 
     async *editMessage({ msgs, graph }, msgId: string, msg: string, onSuccess?: Function) {
-      const prev = msgs.find((m) => m._id === msgId)
+      const prev = findOne(msgId, msgs)
       if (!prev) return toastStore.error(`Cannot find message`)
 
       const res = await msgsApi.editMessage(prev, msg)
@@ -364,9 +369,10 @@ export const msgStore = createStore<MsgState>(
         toastStore.error(`Failed to update message: ${res.error}`)
       }
       if (res.result) {
+        const nextMsgs = replace(msgId, msgs, { msg, voiceUrl: undefined })
         const tree = updateChatTreeNode(graph.tree, { ...prev, msg })
         yield {
-          msgs: msgs.map((m) => (m._id === msgId ? { ...m, msg, voiceUrl: undefined } : m)),
+          msgs: nextMsgs,
           graph: { tree, root: graph.root },
         }
         onSuccess?.()
@@ -701,9 +707,6 @@ export const msgStore = createStore<MsgState>(
       }
 
       updateMsgParents(activeChatId, parents)
-      return {
-        msgs: msgs.filter((m) => !deleteIds.includes(m._id)),
-      }
     },
     stopSpeech() {
       stopSpeech()
@@ -1288,29 +1291,52 @@ const updateMsgSub = (body: {
   })
 }
 
+subscribe('message-parents', { chatId: 'string', parents: 'any' }, (body) => {
+  updateMsgParents(body.chatId, body.parents)
+})
+
 function updateMsgParents(chatId: string, parents: Record<string, string>, deleteIds?: string[]) {
   const { messageHistory, msgs, activeChatId, graph } = msgStore.getState()
   if (activeChatId !== chatId) return
 
-  let nextHist = messageHistory.slice()
-  let nextMsgs = msgs.slice()
   let tree = { ...graph.tree }
 
-  for (const [nodeId, parentId] of Object.entries(parents)) {
-    if (typeof parentId !== 'string') continue
-    const prev = graph.tree[nodeId]
-    if (!prev) continue
+  let modified = false
 
-    const next = { ...prev.msg, parent: parentId }
-    nextHist = replace(nodeId, nextHist, { parent: parentId })
-    nextMsgs = replace(nodeId, nextMsgs, { parent: parentId })
-    tree = updateChatTreeNode(tree, next)
-    tree[next._id].children = new Set(prev.children)
+  const nextMsgs = msgs.map((msg) => {
+    if (!parents[msg._id]) return msg
+    return { ...msg, parent: parents[msg._id] }
+  })
+
+  const nextHist = messageHistory.map((msg) => {
+    if (!parents[msg._id]) return msg
+    return { ...msg, parent: parents[msg._id] }
+  })
+
+  for (const [descId, parentId] of Object.entries(parents)) {
+    if (typeof parentId !== 'string') continue
+    const descendant = tree[descId]
+    if (!descendant) continue
+
+    if (descendant.msg.parent === parentId) {
+      continue
+    }
+
+    modified = true
+    const nextDesc = { ...descendant.msg, parent: parentId }
+    tree = updateChatTreeNode(tree, nextDesc)
+    tree[nextDesc._id].children = new Set(descendant.children)
 
     const parent = tree[parentId]
     if (parent) {
-      parent.children.add(next._id)
+      parent.children.add(nextDesc._id)
     }
+  }
+
+  // The caller will immediately update the tree when deleting messages
+  // This prevents this function running twice due to the 'message-parents' subscription
+  if (!modified && !deleteIds) {
+    return
   }
 
   if (deleteIds) {
