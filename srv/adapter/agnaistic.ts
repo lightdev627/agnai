@@ -22,7 +22,6 @@ import { ModelAdapter } from './type'
 import { AIAdapter, AdapterSetting } from '/common/adapters'
 import { AppSchema } from '/common/types'
 import { parseStops } from '/common/util'
-import { getTextgenCompletion } from './dispatch'
 import { handleVenus } from './venus'
 import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
 import { obtainLock, releaseLock } from '../api/chat/lock'
@@ -265,56 +264,55 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
 
   body.model_override = override
 
-  const resp = gen.streamResponse
-    ? await websocketStream({
-        url: `${subPreset.subServiceUrl || subPreset.thirdPartyUrl}/api/v1/stream?${params}`,
-        body,
-      })
-    : getTextgenCompletion(
-        'Agnastic',
-        `${subPreset.subServiceUrl || subPreset.thirdPartyUrl}/api/v1/generate?${params}`,
-        body,
-        {}
-      )
+  const resp = await websocketStream({
+    url: `${subPreset.subServiceUrl || subPreset.thirdPartyUrl}/api/v1/stream?${params}`,
+    body,
+    signal: opts.signal,
+  })
 
   let accumulated = ''
   let result = ''
 
-  while (true) {
-    let generated = await resp.next()
-
+  for await (const generated of resp) {
     // Both the streaming and non-streaming generators return a full completion and yield errors.
-    if (generated.done) {
-      break
-    }
+    // if (generated.done) {
+    //   break
+    // }
 
-    if (generated.value.meta) {
-      const meta = generated.value.meta
+    if (generated.meta) {
+      const meta = generated.meta
       yield { meta }
       if (meta.host && !opts.guest) {
         sendOne(opts.user._id, { type: 'message-meta', host: meta.host })
       }
     }
 
-    if (generated.value.error) {
-      opts.log.error({ err: generated.value.error }, 'Agnaistic request failed')
-      yield generated.value
+    if (generated.error) {
+      opts.log.error({ err: generated.error }, 'Agnaistic request failed')
+      yield generated
       await releaseLock(lockId)
       return
     }
 
     // Only the streaming generator yields individual tokens.
-    if (generated.value.token) {
-      if (opts.guidance) accumulated = generated.value.token
-      else accumulated += generated.value.token
-      yield { partial: sanitiseAndTrim(accumulated, prompt, char, opts.characters, members) }
+    if (generated.token) {
+      if (opts.guidance) accumulated = generated.token
+      else accumulated += generated.token
+
+      if (gen.streamResponse) {
+        yield { partial: sanitiseAndTrim(accumulated, prompt, char, opts.characters, members) }
+      }
     }
 
-    if (typeof generated.value === 'string') {
-      result = generated.value
+    if (typeof generated === 'string') {
+      result = generated
       break
     }
   }
+
+  // while (true) {
+  //   let generated = await resp.next()
+  // }
 
   if (+srv.lockSeconds > 0) {
     await releaseLock(lockId)

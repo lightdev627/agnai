@@ -8,13 +8,12 @@ import {
 import { store } from '../db'
 import { AppSchema } from '../../common/types/schema'
 import { AppLog, logger } from '../middleware'
-import { errors, StatusError } from '../api/wrap'
+import { StatusError } from '../api/wrap'
 import { GenerateRequestV2 } from './type'
 import {
   assemblePrompt,
   getAdapter,
   buildPromptParts,
-  resolveScenario,
   JsonField,
   getContextLimit,
 } from '../../common/prompt'
@@ -25,7 +24,6 @@ import { getTokenCounter } from '../tokenize'
 import { getAppConfig } from '../api/settings'
 import { SubscriptionPreset, getHandlers, getSubscriptionPreset } from './agnaistic'
 import { deepClone, getSubscriptionModelLimits, parseStops, tryParse } from '/common/util'
-import { isDefaultTemplate, templates } from '/common/presets/templates'
 import {
   GuidanceParams,
   calculateGuidanceCounts,
@@ -56,8 +54,6 @@ configure(async (opts) => {
   return { body: res.body, statusCode: res.statusCode, statusMessage: res.statusMessage }
 }, logger)
 
-export type ResponseEntities = Awaited<ReturnType<typeof getResponseEntities>>
-
 export type InferenceRequest = {
   requestId?: string
   prompt: string
@@ -87,6 +83,7 @@ export type InferenceRequest = {
 
   jsonSchema?: any
   jsonValues?: Record<string, any>
+  signal: AbortController
 }
 
 export async function inferenceAsync(opts: InferenceRequest) {
@@ -239,6 +236,7 @@ export async function createInferenceStream(opts: InferenceRequest) {
     jsonSchema: opts.jsonSchema,
     imageData: opts.imageData,
     jsonValues: opts.jsonValues,
+    signal: opts.signal,
   })
 
   return { stream, service: settings.service || '' }
@@ -287,19 +285,10 @@ async function getRequestPreset(opts: InferenceRequest) {
 }
 
 export async function createChatStream(
-  opts: GenerateRequestV2 & { entities?: ResponseEntities; chatSchema?: ResponseSchema },
+  opts: GenerateRequestV2 & { chatSchema?: ResponseSchema; signal: AbortController },
   log: AppLog,
   guestSocketId?: string
 ) {
-  const entities = opts.entities
-
-  if (entities) {
-    opts.settings = entities.gen
-    opts.user = entities.user
-    opts.char = entities.char
-    entities.gen.temporary = opts.settings?.temporary
-  }
-
   const subscription = await getSubscriptionPreset(opts.user, !!guestSocketId, opts.settings)
 
   /**
@@ -312,7 +301,7 @@ export async function createChatStream(
   let jsonSchema: JsonField[] | undefined
   if (
     subscription?.preset?.jsonSchemaCapable &&
-    opts.entities?.gen.jsonEnabled &&
+    opts.settings?.jsonEnabled &&
     opts.chatSchema &&
     opts.chatSchema.schema?.length
   ) {
@@ -343,14 +332,13 @@ export async function createChatStream(
    * Everything else should be up to date at this point
    */
 
-  if (entities) {
-    const { adapter, model } = getAdapter(opts.chat, entities.user, entities.gen)
+  if (!guestSocketId) {
+    const { adapter, model } = getAdapter(opts.chat, opts.user, opts.settings)
     const encoder = getTokenCounter(adapter, model)
-    const nextSettings = simplifyPreset(opts.user, entities.gen, subscription)
+    const nextSettings = simplifyPreset(opts.user, opts.settings, subscription)
     opts.settings = nextSettings
     opts.parts = await buildPromptParts(
       {
-        ...entities,
         sender: opts.sender,
         kind: opts.kind,
         settings: nextSettings,
@@ -361,7 +349,10 @@ export async function createChatStream(
         characters: opts.characters,
         chatEmbeds: opts.chatEmbeds || [],
         userEmbeds: opts.userEmbeds || [],
-        resolvedScenario: entities.resolvedScenario,
+        char: opts.char,
+        user: opts.user,
+        book: opts.book,
+        resolvedScenario: opts.resolvedScenario || '',
       },
       [...opts.lines].reverse(),
       encoder
@@ -467,6 +458,7 @@ export async function createChatStream(
     encoder,
     jsonValues: opts.jsonValues,
     contextSize: prompt.length,
+    signal: opts.signal,
   })
 
   return {
@@ -480,52 +472,7 @@ export async function createChatStream(
   }
 }
 
-export async function getResponseEntities(
-  chat: AppSchema.Chat,
-  senderId: string,
-  gen: Partial<AppSchema.GenSettings> | undefined
-) {
-  const isOwnerOrMember = senderId === chat.userId || chat.memberIds.includes(senderId)
-  if (!isOwnerOrMember) {
-    throw errors.Forbidden
-  }
-
-  const user = await store.users.getUser(chat.userId)
-  if (!user) {
-    throw errors.Forbidden
-  }
-
-  const book = chat.memoryId ? await store.memory.getBook(chat.memoryId) : undefined
-
-  const char = await store.characters.getCharacter(chat.userId, chat.characterId)
-  if (!char) {
-    throw new StatusError('Character not found', 404)
-  }
-
-  const { adapter, model } = getAdapter(chat, user, gen)
-  const genSettings = await getGenerationSettings(user, chat, adapter)
-  const settings = mapPresetsToAdapter(genSettings, adapter)
-
-  const chatScenarios = chat.scenarioIds
-    ? await store.scenario.getScenariosById(chat.scenarioIds)
-    : []
-  const resolvedScenario = resolveScenario(chat, char, chatScenarios)
-
-  if (genSettings.promptTemplateId) {
-    if (isDefaultTemplate(genSettings.promptTemplateId)) {
-      genSettings.gaslight = templates[genSettings.promptTemplateId]
-    } else {
-      const template = await store.presets.getTemplate(genSettings.promptTemplateId)
-      if (template?.userId === chat.userId) {
-        genSettings.gaslight = template.template
-      }
-    }
-  }
-
-  return { char, user, adapter, settings, gen: genSettings, model, book, resolvedScenario }
-}
-
-async function getGenerationSettings(
+export async function getGenerationSettings(
   user: AppSchema.User,
   chat: AppSchema.Chat,
   adapter: AIAdapter,
