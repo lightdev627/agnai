@@ -69,6 +69,7 @@ export function useCanSlot() {
   const cfg = settingStore((s) => {
     const parsed = tryParse<Partial<SettingState['slots']>>(s.config.serverConfig?.slots || '{}')
     return {
+      flags: s.flags,
       ready: !s.slots.provider && s.slotsLoaded && s.initLoading === false,
       provider: s.slots.provider,
       publisherId: parsed.publisherId || s.slots.publisherId,
@@ -76,12 +77,13 @@ export function useCanSlot() {
   })
 
   const user = userStore((s) => ({
+    disableSlots: cfg.flags.forceAds ? false : !!s.user?.admin || !!s.sub?.tier?.disableSlots,
     sub: s.sub,
   }))
 
   const canSlot = createMemo(() => {
     if (cfg.provider === 'google' && !cfg.publisherId) return false
-    return !!cfg.provider && !!cfg.ready && !user.sub?.tier.disableSlots
+    return !!cfg.provider && !!cfg.ready && !user.disableSlots
   })
 
   return canSlot
@@ -107,6 +109,7 @@ const Slot: Component<{
     return config
   })
   const user = userStore((s) => ({
+    disableSlots: cfg.flags.forceAds ? false : !!s.user?.admin || !!s.sub?.tier?.disableSlots,
     sub: s.sub,
     tiers: s.tiers,
   }))
@@ -122,12 +125,10 @@ const Slot: Component<{
   const [actualId, setActualId] = createSignal('...')
 
   createEffect(() => {
-    if (!user.sub) return
+    if (!user.disableSlots) return
 
-    if (user.sub?.tier.disableSlots) {
-      win.enableSticky = undefined
-      localStorage.setItem('agnai-sticky', 'false')
-    }
+    win.enableSticky = undefined
+    localStorage.setItem('agnai-sticky', 'false')
   })
 
   const id = createMemo(() => {
@@ -306,7 +307,7 @@ const Slot: Component<{
       return log('No publisher id')
     }
 
-    if (user.sub?.tier.disableSlots) {
+    if (user.disableSlots) {
       props.parent.style.display = 'hidden'
       return log('Slots are tier disabled')
     }
@@ -373,7 +374,7 @@ const Slot: Component<{
 
         window.fusetag.registerZone(id())
         FuseIds.set(id(), false)
-        invokeFuse()
+        invokeFuse(user.disableSlots)
       })
     }
 
@@ -403,7 +404,7 @@ const Slot: Component<{
   return (
     <>
       <Switch>
-        <Match when={!cfg.ready || !specs() || user.sub?.tier?.disableSlots}>{null}</Match>
+        <Match when={!cfg.ready || !specs() || user.disableSlots}>{null}</Match>
         <Match when={specs()!.video && cfg.slots.gtmVideoTag}>
           <div
             id={id()}
@@ -724,7 +725,7 @@ const [invokeEz] = createDebounce((log: (typeof console)['log'], self: number) =
   })
 }, 1000)
 
-const [invokeFuse] = createDebounce(() => {
+const [invokeFuse] = createDebounce((disableSlots: boolean) => {
   fuseReady.then((status) => {
     if (!status) return
     const ids: string[] = []
@@ -735,8 +736,12 @@ const [invokeFuse] = createDebounce(() => {
     }
     console.log(`[fuse] init ${ids}`)
     const win: any = window
-    win.enableSticky = true
-    localStorage.setItem('agnai-sticky', 'true')
+
+    const previous = JSON.parse(localStorage.getItem('agnai-sticky') || 'true')
+    const disabled = !previous || disableSlots
+
+    win.enableSticky = disabled ? undefined : true
+    localStorage.setItem('agnai-sticky', disabled ? 'false' : 'true')
     window.fusetag.que.push(() => {
       window.fusetag.pageInit({ blockingFuseIds: ids })
     })

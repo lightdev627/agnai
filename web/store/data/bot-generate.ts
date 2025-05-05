@@ -172,17 +172,18 @@ export async function generateResponse(
     }
   }
 
-  return localApi.error(`unexpected error occurred`)
+  return localApi.result({ requestId: request.requestId, generating: true, success: true })
 }
 
 async function localRequest(request: GenerateRequestV2, signal: AbortController, prompt: string) {
-  await handleLocalRequest(request, signal, prompt)
-  return
-
-  await api.post<{ requestId: string; messageId?: string }>(
-    `/chat/${request.chat._id}/generate`,
-    request
-  )
+  const res = await handleLocalRequest(request, signal, prompt)
+  if (res.result) {
+    request.response = res.result.response
+    await api.post<{ requestId: string; messageId?: string }>(
+      `/chat/${request.chat._id}/generate`,
+      request
+    )
+  }
 }
 
 async function getActivePromptOptions(
