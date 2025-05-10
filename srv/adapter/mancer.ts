@@ -4,7 +4,7 @@ import { decryptText } from '../db/util'
 import { registerAdapter } from './register'
 import { getStoppingStrings } from './prompt'
 import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
-import { streamCompletion } from './stream'
+import { streamGenerator } from './stream'
 import { requestFullCompletion } from './chat-completion'
 import { getCompletionContent } from './openai'
 
@@ -94,7 +94,7 @@ export const handleMancer: ModelAdapter = async function* (opts) {
   let response: Completion<Inference> | undefined
 
   const iter = opts.gen.streamResponse
-    ? streamCompletion({
+    ? streamGenerator({
         userId: opts.user._id,
         url,
         headers,
@@ -124,7 +124,7 @@ export const handleMancer: ModelAdapter = async function* (opts) {
       break
     }
 
-    if (generated.value.error) {
+    if ('error' in generated.value) {
       yield { error: generated.value.error }
       return
     }
