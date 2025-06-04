@@ -143,6 +143,7 @@ export interface GenSettings {
   cfgScale?: number
   cfgOppose?: string
 
+  jinjaTemplate?: string
   systemPrompt?: string
   ignoreCharacterSystemPrompt?: boolean
   gaslight?: string
@@ -156,6 +157,7 @@ export interface GenSettings {
   prefill?: string
   ignoreCharacterUjb?: boolean
   antiBond?: boolean
+  reasoning?: { start: string; end: string }
 
   frequencyPenalty?: number
   presencePenalty?: number

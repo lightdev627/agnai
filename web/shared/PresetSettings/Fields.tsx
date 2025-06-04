@@ -111,6 +111,44 @@ export const ContextSize: Field<{ subMax: Partial<SubscriptionModelLevel> }> = (
   )
 }
 
+export const ReasoningTags: Field = (props) => {
+  return (
+    <div class="flex flex-col gap-1">
+      <FormLabel
+        label="Reasoning Tags"
+        helperText="For parsing reasoning sections for reasoning models: "
+      />
+
+      <div class="flex gap-2">
+        <TextInput
+          prelabel="Start"
+          parentClass="w-1/2"
+          fieldName="reasoning.start"
+          placeholder="<think>"
+          onChange={(ev) =>
+            props.setter('reasoning', {
+              start: ev.currentTarget.value,
+              end: props.state.reasoning?.end || '',
+            })
+          }
+        />
+        <TextInput
+          prelabel="End"
+          parentClass="w-1/2"
+          fieldName="reasoning.end"
+          placeholder="</think>"
+          onChange={(ev) =>
+            props.setter('reasoning', {
+              end: ev.currentTarget.value,
+              start: props.state.reasoning?.start || '',
+            })
+          }
+        />
+      </div>
+    </div>
+  )
+}
+
 export const SystemPrompt: Field = (props) => {
   return (
     <Card classList={{ hidden: props.hides.systemPrompt ?? false }}>
@@ -158,6 +196,21 @@ export const Jailbreak: Field = (props) => {
         onChange={(ev) => props.setter('ultimeJailbreak', ev.prompt!)}
       />
     </Card>
+  )
+}
+
+export const JinjaTemplate: Field = (props) => {
+  return (
+    <TextInput
+      fieldName="jinjaTemplate"
+      label="Jinja Template"
+      helperText="For overriding third-party chat completion templates"
+      value={props.state.jinjaTemplate || ''}
+      disabled={props.state.disabled}
+      hide={props.hides.thirdPartyUrl}
+      onChange={(ev) => props.setter('jinjaTemplate', ev.currentTarget.value)}
+      isMultiline
+    />
   )
 }
 

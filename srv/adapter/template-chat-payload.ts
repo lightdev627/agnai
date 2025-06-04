@@ -1,4 +1,4 @@
-import { GenerateRequestV2 } from './type'
+import { CompletionItem, GenerateRequestV2 } from './type'
 import { replaceTags } from '/common/presets/templates'
 import { AssembledPrompt } from '/common/prompt'
 import { parseTemplate } from '/common/template-parser'
@@ -44,6 +44,29 @@ export function renderMessagesToPrompt(
   return { prompt, stop: replaceTags('</bot>', preset.modelFormat || 'ChatML') }
 }
 
+/**
+ * @destructive
+ * mutates the messages list: adds the image data (base64) to the last user message
+ */
+export function insertImageContent(
+  opts: { imageData?: string },
+  messages: Array<{ role: string; content: any }>
+) {
+  if (!opts.imageData) return messages
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.role !== 'user') continue
+    msg.content = [
+      { type: 'image_url', image_url: { url: opts.imageData } },
+      { type: 'text', text: msg.content },
+    ]
+    break
+  }
+
+  return messages
+}
+
 export async function toChatMessages(
   opts: GenerateRequestV2,
   assembled: AssembledPrompt,
@@ -58,22 +81,51 @@ export async function toChatMessages(
   const { system, post, history } = sections.sections
 
   const prefill = await parse(opts, counter, opts.settings?.prefill || '')
-  const messages: Array<{ role: string; content: any }> = [
+  const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: any }> = [
     { role: 'system', content: system.join('') },
   ]
 
+  let offset = history.length > opts.lines.length ? -1 : 0
   const sender = (opts.impersonate?.name || opts.sender.handle) + ':'
   for (let i = 0; i < history.length; i++) {
+    const isPreHistory = offset !== 0 && i === 0
     const line = history[i]
-    const original = opts.lines[i]
-    const role = original?.startsWith(sender) ? 'user' : 'assistant'
+    const original = opts.lines[i + offset]
+    const role = isPreHistory ? 'user' : original?.startsWith(sender) ? 'user' : 'assistant'
     messages.push({ role, content: line })
   }
 
   messages.push({
-    role: 'assistant',
+    role: 'user',
     content: (post.join('') + (prefill.parsed.length ? ` ${prefill.parsed}` : '')).trim(),
   })
+
+  return messages
+}
+
+/** Currently unused, intended to work with awful inflexible jinja templates */
+export function ensureUserMessageFirst(messages: CompletionItem[]): CompletionItem[] {
+  if (!messages.length) return messages
+
+  const [first, second, ...rest] = messages
+  if (first.role === 'user') return messages
+
+  if (first.role === 'assistant') {
+    messages.unshift({ role: 'user', content: '' })
+    return messages
+  }
+
+  if (first.role === 'system') {
+    if (!second) {
+      messages.push({ role: 'user', content: '...' })
+      return messages
+    }
+
+    if (second.role === 'user') return messages
+
+    const next: CompletionItem[] = [first, { role: 'user', content: '' }, second, ...rest]
+    return next
+  }
 
   return messages
 }

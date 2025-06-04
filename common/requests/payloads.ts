@@ -79,13 +79,13 @@ function getBasePayload(opts: PayloadOpts, stops: string[] = []) {
     }
 
     if (opts.imageData) {
-      body.chat_template = chat_template
+      body.chat_template = gen.jinjaTemplate || chat_template
       body.messages = [
         {
           role: 'user',
           content: [
-            { type: 'text', text: prompt },
             { type: 'image_url', image_url: { url: opts.imageData } },
+            { type: 'text', text: prompt },
           ],
         },
       ]
@@ -344,7 +344,7 @@ function getBasePayload(opts: PayloadOpts, stops: string[] = []) {
     return body
   }
 
-  if (format === 'openai' || format === 'openai-chat') {
+  if (format === 'openai' || format === 'openai-chat' || format === 'openai-chatv2') {
     const oaiModel = gen.thirdPartyModel || gen.oaiModel || defaultPresets.openai.oaiModel
     const maxResponseLength = gen.maxTokens ?? defaultPresets.openai.maxTokens
 
