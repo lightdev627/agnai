@@ -1,3 +1,4 @@
+import { AppLog } from '../middleware'
 import { CompletionItem, GenerateRequestV2 } from './type'
 import { replaceTags } from '/common/presets/templates'
 import { AssembledPrompt } from '/common/prompt'
@@ -58,8 +59,8 @@ export function insertImageContent(
     const msg = messages[i]
     if (msg.role !== 'user') continue
     msg.content = [
-      { type: 'image_url', image_url: { url: opts.imageData } },
       { type: 'text', text: msg.content },
+      { type: 'image_url', image_url: { url: opts.imageData } },
     ]
     break
   }
@@ -87,20 +88,56 @@ export async function toChatMessages(
 
   let offset = history.length > opts.lines.length ? -1 : 0
   const sender = (opts.impersonate?.name || opts.sender.handle) + ':'
+  let lastRole = ''
   for (let i = 0; i < history.length; i++) {
     const isPreHistory = offset !== 0 && i === 0
     const line = history[i]
     const original = opts.lines[i + offset]
     const role = isPreHistory ? 'user' : original?.startsWith(sender) ? 'user' : 'assistant'
     messages.push({ role, content: line })
+    lastRole = role
   }
 
-  messages.push({
-    role: 'user',
-    content: (post.join('') + (prefill.parsed.length ? ` ${prefill.parsed}` : '')).trim(),
-  })
+  const postContent = (post.join('') + (prefill.parsed.length ? ` ${prefill.parsed}` : '')).trim()
+
+  if (lastRole === 'user') {
+    const lastMsg = messages[messages.length - 1]
+    lastMsg.content += `\n\n${postContent}`
+  } else {
+    messages.push({
+      role: 'user',
+      content: postContent,
+    })
+  }
 
   return messages
+}
+
+export function stripImageContent(messages: any[]) {
+  if (!messages) return []
+  if (!Array.isArray(messages)) return messages
+
+  const last = messages.slice(-1)[0]
+  if (!Array.isArray(last.content)) return messages
+
+  const next = messages.slice(0, -1).concat({
+    role: 'user',
+    content: last.content.map((c: any) => {
+      if (c.type !== 'image_url') return c
+      return { type: 'image_url', image_url: '[REDACTED]' }
+    }),
+  })
+
+  return next
+}
+
+export function logPayload(logger: AppLog, payload: any) {
+  if (!payload.messages) {
+    logger.debug({ ...payload, prompt: null }, 'Payload')
+    return
+  }
+
+  logger.debug({ ...payload, messages: null }, 'Payload')
 }
 
 /** Currently unused, intended to work with awful inflexible jinja templates */
