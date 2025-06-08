@@ -241,6 +241,7 @@ export async function createInferenceStream(opts: InferenceRequest) {
     jsonValues: opts.jsonValues,
     signal: opts.signal,
     isThirdParty,
+    assembled: undefined,
   })
 
   return { stream, service: settings.service || '' }
@@ -463,6 +464,7 @@ export async function createChatStream(
     jsonValues: opts.jsonValues,
     contextSize: prompt.length,
     signal: opts.signal,
+    assembled: prompt,
   })
 
   return {

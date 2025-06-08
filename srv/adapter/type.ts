@@ -1,4 +1,4 @@
-import type { JsonField, PromptParts } from '../../common/prompt'
+import type { AssembledPrompt, JsonField, PromptParts } from '../../common/prompt'
 import { AppSchema } from '../../common/types/schema'
 import { AppLog } from '../middleware'
 import { ThirdPartyFormat } from '/common/adapters'
@@ -123,6 +123,7 @@ export type AdapterProps = {
 
   prompt: string
   messages?: Array<{ role: string; content: string }>
+  assembled: AssembledPrompt | undefined
 
   parts: PromptParts
   lines: string[]

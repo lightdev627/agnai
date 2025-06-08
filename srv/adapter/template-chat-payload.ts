@@ -79,12 +79,27 @@ export async function toChatMessages(
   // })
 
   const { sections } = assembled
-  const { system, post, history } = sections.sections
+  const {
+    strictSystem,
+    sections: { post, history, post_system },
+  } = sections
 
   const prefill = await parse(opts, counter, opts.settings?.prefill || '')
-  const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: any }> = [
-    { role: 'system', content: system.join('').trim().replace(/\n\n+/g, '\n\n') },
-  ]
+
+  const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: any }> = []
+  const systemPrompt = strictSystem.join('').trim().replace(/\n\n+/g, '\n\n')
+  const postSystem = post_system.join('').trim().replace(/\n\n+/g, '\n\n')
+
+  if (systemPrompt) {
+    messages.push({
+      role: 'system',
+      content: strictSystem.join('').trim().replace(/\n\n+/g, '\n\n'),
+    })
+  }
+
+  if (postSystem) {
+    messages.push({ role: 'user', content: postSystem })
+  }
 
   let offset = history.length > opts.lines.length ? -1 : 0
   const sender = (opts.impersonate?.name || opts.sender.handle) + ':'
@@ -102,7 +117,7 @@ export async function toChatMessages(
 
   if (lastRole === 'user') {
     const lastMsg = messages[messages.length - 1]
-    lastMsg.content += `\n\n${postContent}`
+    lastMsg.content = lastMsg.content.trim() + `\n\n${postContent}`
   } else {
     messages.push({
       role: 'user',
@@ -118,12 +133,13 @@ export function stripImageContent(messages: any[]) {
   if (!Array.isArray(messages)) return messages
 
   const last = messages.slice(-1)[0]
-  if (!Array.isArray(last.content)) return messages
+  const content = last?.content || last?.parts
+  if (!content) return messages
 
   const next = messages.slice(0, -1).concat({
     role: 'user',
-    content: last.content.map((c: any) => {
-      if (c.type !== 'image_url') return c
+    content: content.map((c: any) => {
+      if (c.type !== 'image_url' && !c.inlineData) return c
       return { type: 'image_url', image_url: '[REDACTED]' }
     }),
   })

@@ -1,10 +1,9 @@
 import { decryptText } from '../db/util'
-import { getEncoder, getEncoderByName } from '../tokenize'
+import { getEncoderByName } from '../tokenize'
 import { toChatCompletionPayload } from './chat-completion'
 import { getStoppingStrings } from './prompt'
-import { AdapterProps, ModelAdapter } from './type'
+import { ModelAdapter } from './type'
 import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
-import { injectPlaceholders } from '/common/prompt'
 import {
   Content,
   GenerateContentConfig,
@@ -13,7 +12,6 @@ import {
   HarmCategory,
   SafetySetting,
 } from '@google/genai'
-import { defaultSystemPrompt } from '/common/prompt-order'
 import { stripImageContent } from './template-chat-payload'
 
 const SYSTEM_INCAPABLE: Record<string, boolean> = {
@@ -52,6 +50,11 @@ export const handleGemini: ModelAdapter = async function* (opts) {
 
     let tokens = 0
     switch (effort) {
+      case 'custom': {
+        tokens = opts.gen.reasoning.maxTokens ?? 0
+        break
+      }
+
       case 'high': {
         tokens = max * 0.8
         break
@@ -73,26 +76,34 @@ export const handleGemini: ModelAdapter = async function* (opts) {
       thinkingBudget: Math.floor(tokens),
       includeThoughts: !opts.gen.reasoning.exclude,
     }
+  } else {
+    generationConfig.thinkingConfig = {
+      thinkingBudget: 0,
+      includeThoughts: false,
+    }
   }
 
-  const fallback = await fallbackSystemMessage(opts)
-  const systems: string[] = [opts.parts.systemPrompt || fallback.parsed]
+  const systems = opts.messages?.find((m) => m.role === 'system')
   const contents: Content[] = []
 
+  const canUseSystemInstruct = !SYSTEM_INCAPABLE[opts.gen.googleModel]
+
   for (const msg of messages) {
-    if (msg.role === 'system') continue
+    if (msg.role === 'system') {
+      continue
+    }
 
     contents.push({ role: msg.role === 'user' ? 'user' : 'model', parts: [{ text: msg.content }] })
     continue
   }
 
-  if (systems.length) {
-    if (!SYSTEM_INCAPABLE[opts.gen.googleModel]) {
+  if (systems) {
+    if (canUseSystemInstruct) {
       generationConfig.systemInstruction = {
-        parts: [{ text: systems.join('\n').replace(/\n\n+/g, '\n\n') }],
+        parts: [{ text: systems.content }],
       }
     } else {
-      contents.unshift({ role: 'user', parts: [{ text: systems.join('\n') }] })
+      contents.unshift({ role: 'user', parts: [{ text: systems.content }] })
     }
   }
 
@@ -133,7 +144,14 @@ export const handleGemini: ModelAdapter = async function* (opts) {
   const client = new GoogleGenAI({ apiKey: key! })
   let accum = ''
 
-  yield { prompt: stripImageContent(contents) }
+  yield {
+    prompt: [
+      {
+        role: 'system',
+        parts: (generationConfig.systemInstruction as Content)?.parts,
+      },
+    ].concat(...stripImageContent(contents)),
+  }
 
   if (!opts.gen.streamResponse) {
     const ai = await client.models
@@ -220,18 +238,6 @@ const safetySettings: SafetySetting[] = [
     threshold: HarmBlockThreshold.BLOCK_NONE,
   },
 ]
-
-function fallbackSystemMessage(opts: AdapterProps) {
-  const message = injectPlaceholders(defaultSystemPrompt, {
-    characters: opts.characters,
-    encoder: getEncoder('main').count,
-    jsonValues: {},
-    parts: opts.parts,
-    opts,
-  })
-
-  return message
-}
 
 function getMimeTypeBase64(base64: string) {
   const [start, encode] = base64.split(';')

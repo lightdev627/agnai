@@ -6,6 +6,7 @@ import {
   buildPromptParts,
   createPromptParts,
   getLinesForPrompt,
+  getTemplate,
   InferenceState,
   JsonField,
   resolveScenario,
@@ -236,6 +237,7 @@ async function createActiveChatPrompt(
 ) {
   const { active } = getStore('chat').getState()
   const { ui } = getStore('user').getState()
+  const { templates } = getStore('presets').getState()
 
   if (!active) {
     throw new Error('No active chat. Try refreshing')
@@ -243,6 +245,7 @@ async function createActiveChatPrompt(
 
   const props = await getGenerateProps(opts, active)
   const entities = props.entities
+  const template = getTemplate({ settings: entities.settings, chat: entities.chat }, templates)
 
   const resolvedScenario = resolveScenario(entities.chat, entities.char, entities.scenarios || [])
 
@@ -314,7 +317,7 @@ async function createActiveChatPrompt(
     prompt.lines.push(`Chat Query: ${opts.text}`)
   }
 
-  return { prompt, props, entities, chatEmbeds, userEmbeds }
+  return { prompt, props, entities, chatEmbeds, userEmbeds, template }
 }
 
 async function getRetrievalBreakpoint(

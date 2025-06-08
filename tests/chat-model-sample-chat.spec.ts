@@ -163,6 +163,7 @@ async function testChat(prompt: string) {
     characters,
     signal: new AbortController(),
     isThirdParty: true,
+    assembled: undefined,
   }
 
   const payload = await toChatCompletionPayload(
