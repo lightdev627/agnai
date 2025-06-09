@@ -246,7 +246,7 @@ export const ImageSettingsModal = () => {
         <TextInput
           fieldName="summaryPrompt"
           label="Summary Prompt"
-          helperText='When summarising the chat to an image caption, this is the "prompt" sent to OpenAI to summarise your conversation into an image prompt.'
+          helperText='When summarising the chat to an image caption, this is the "prompt" is used summarise your conversation into an image prompt.'
           placeholder={`Default: ${IMAGE_SUMMARY_PROMPT.other}`}
           value={store.summaryPrompt}
           onChange={(ev) => setStore('summaryPrompt', ev.currentTarget.value)}
@@ -255,7 +255,7 @@ export const ImageSettingsModal = () => {
         <Toggle
           fieldName="summariseChat"
           label="Summarise Chat"
-          helperText="When available use your AI service to summarise the chat into an image prompt. Only available with services with Instruct capabilities (Agnai, NovelAI, OpenAI, Claude, etc)"
+          helperText="Use your AI service to summarise the chat into an image prompt."
           value={store.summariseChat}
           onChange={(ev) => setStore('summariseChat', ev)}
         />
@@ -265,7 +265,7 @@ export const ImageSettingsModal = () => {
         <Show when={canUseImages() && store.type === 'agnai'}>
           <FormLabel
             label="Use Recommended Settings"
-            helperText="When available use the image model's recommended settings."
+            helperText="Use the image model's recommended settings when available."
           />
           <div class="flex flex-wrap justify-center gap-2">
             <ToggleButton size="sm" value={isAllEnabled()} onChange={(ev) => toggleDefaults(ev)}>

@@ -9,6 +9,7 @@ import { decryptText } from '../db/util'
 import { streamGenerator } from './stream'
 import { getTokenCounter } from '../tokenize'
 import { insertImageContent } from './template-chat-payload'
+import { toImageChatTemplate } from './payloads'
 
 const baseUrl = `https://api.openai.com`
 
@@ -56,8 +57,8 @@ export const handleOAI: ModelAdapter = async function* (opts) {
   body.presence_penalty = gen.presencePenalty ?? defaultPresets.openai.presencePenalty
   body.frequency_penalty = gen.frequencyPenalty ?? defaultPresets.openai.frequencyPenalty
 
-  if (gen.jinjaTemplate) {
-    body.chat_template = gen.jinjaTemplate
+  if (isThirdParty && gen.jinjaEnabled) {
+    body.chat_template = toImageChatTemplate({ format: gen.modelFormat, jinja: gen.jinjaTemplate })
   }
 
   const isChatFormat =

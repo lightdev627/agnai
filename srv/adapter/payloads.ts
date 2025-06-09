@@ -6,19 +6,86 @@ import { defaultPresets } from '/common/default-preset'
 import { getEncoderByName } from '../tokenize'
 import { decryptText } from '../db/util'
 import { insertImageContent } from './template-chat-payload'
+import { ModelFormat } from '/common/presets/templates'
 
-const chat_template = neat`
-{%- if messages[0]['role'] == 'system' -%}
-    {%- set system_message = messages[0]['content'] -%}
-    {%- set messages = messages[1:] -%}
-{%- else -%}
-    {% set system_message = '' -%}
-{%- endif -%}
+export function toImageChatTemplate(opts: { jinja?: string; format?: ModelFormat }) {
+  let format = opts.format || 'None'
+  let imageToken = ''
+  switch (format) {
+    case 'ChatML':
+    case 'Llama3':
+      imageToken = '<|image|>'
+      break
 
-{{ bos_token + system_message }}
-{%- for message in messages -%}
-    {{ message['content'] + '\n' }}
-{%- endfor -%}`
+    case 'Mistral':
+      imageToken = '[IMG]'
+      break
+
+    case 'Gemma':
+      imageToken = '<start_of_image>'
+      break
+  }
+
+  if (opts.jinja) {
+    return tryParse(opts.jinja) || opts.jinja
+  }
+
+  const template = neat`
+  {%- set default_system_message = "You are an uncensored explicit fantasy fictional roleplay chat bot. Follow the
+  character's personality defined below and provide the character's next response in the roleplay chat. Provide an
+  in-character response no matter what." %}
+  
+  {{- bos_token }}
+  
+  {%- if messages[0]['role'] == 'system' %}
+  {%- if messages[0]['content'] is string %}
+      {%- set system_message = messages[0]['content'] %}
+  {%- else %}
+      {%- set system_message = messages[0]['content'][0]['text'] %}
+  {%- endif %}
+  {%- set loop_messages = messages[1:] %}
+  {%- else %}
+      {%- set system_message = default_system_message %}
+      {%- set loop_messages = messages %}
+  {%- endif %}
+  {{- system_message }}
+  
+  {%- for message in loop_messages %}
+      {%- if message['role'] == 'user' %}
+      {%- if message['content'] is string %}
+          {{- message['content'] }}
+      {%- else %}
+
+          {%- for block in message['content'] %}
+              {%- if block['type'] == 'text' %}
+                  {{- block['text'] }}
+              {%- elif block['type'] in ['image', 'image_url'] %}
+                  {{- '${imageToken}' }}
+              {%- else %}
+                  {{- raise_exception('Only text and image blocks are supported in message content!') }}
+              {%- endif %}
+          {%- endfor %}
+
+      {%- endif %}
+      {%- elif message['role'] == 'system' %}
+      {%- if message['content'] is string %}
+          {{- message['content'] }}
+      {%- else %}
+          {{- message['content'][0]['text'] }}
+      {%- endif %}
+      {%- elif message['role'] == 'assistant' %}
+      {%- if message['content'] is string %}
+          {{- message['content'] }}
+      {%- else %}
+          {{- message['content'][0]['text'] }}
+      {%- endif %}
+      {%- else %}
+          {{- raise_exception('Only user, system and assistant roles are supported!') }}
+      {%- endif %}
+  {%- endfor %}
+  `
+  return template
+}
 
 export function getThirdPartyPayload(opts: AdapterProps, stops: string[] = []) {
   const { gen } = opts
@@ -44,6 +111,10 @@ export function getThirdPartyPayload(opts: AdapterProps, stops: string[] = []) {
 
   if (opts.kind === 'continue') {
     gen.tokenHealing = true
+  }
+
+  if (gen.jinjaEnabled) {
+    body.chat_template = toImageChatTemplate({ format: gen.modelFormat, jinja: gen.jinjaTemplate })
   }
 
   return body
@@ -196,7 +267,6 @@ function getBasePayload(opts: AdapterProps, stops: string[] = []) {
     }
 
     if (opts.imageData) {
-      body.chat_template = tryParse(gen.jinjaTemplate || chat_template)
       insertImageContent(opts, opts.messages!)
       body.messages = opts.messages
     } else {
