@@ -1,5 +1,4 @@
 import { Component, Show } from 'solid-js'
-import Select from '../../../shared/Select'
 import TextInput from '../../../shared/TextInput'
 import { userStore } from '../../../store'
 import Button from '../../../shared/Button'
@@ -12,7 +11,7 @@ const KoboldAISettings: Component<{
 }> = (props) => {
   return (
     <>
-      <TextInput
+      {/* <TextInput
         fieldName="koboldUrl"
         label="Third-Party or Self-Host URL"
         helperText="E.g. for Kobold, Textgen, Llama.cpp, Ollama, or OpenAI compatible APIs. This URL must be publicly accessible."
@@ -27,10 +26,10 @@ const KoboldAISettings: Component<{
         items={[
           { label: 'None', value: '' },
           { label: 'Kobold', value: 'kobold' },
-          { label: 'OpenAI', value: 'openai' },
           { label: 'Aphrodite', value: 'aphrodite' },
-          { label: 'OpenAI (Chat Format)', value: 'openai-chat' },
-          { label: 'OpenAI (Chat w/ Template)', value: 'openai-chatv2' },
+          { label: 'OpenAI (Completion)', value: 'openai' },
+          { label: 'OpenAI (Chat)', value: 'openai-chatv2' },
+          { label: 'OpenAI (Chat - Legacy)', value: 'openai-chat' },
           { label: 'Claude', value: 'claude' },
           { label: 'Textgen (Ooba)', value: 'ooba' },
           { label: 'Llama.cpp', value: 'llamacpp' },
@@ -41,10 +40,11 @@ const KoboldAISettings: Component<{
         ]}
         value={props.state.thirdPartyFormat ?? 'kobold'}
         onChange={(ev) => props.setter('thirdPartyFormat', ev.value as any)}
-      />
+      /> */}
+
       <TextInput
         fieldName="thirdPartyPassword"
-        label="Third-party API Key"
+        label="Third-Party API Key"
         helperText="(NEVER put an OpenAI API key here, this would expose your personal information to third parties)"
         placeholder={props.state.thirdPartyPasswordSet ? 'Password is set' : 'E.g. p4ssw0rd123'}
         type="password"

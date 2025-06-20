@@ -48,6 +48,8 @@ import FileInput, { FileInputResult, getFileAsDataURL } from '/web/shared/FileIn
 import AvatarIcon from '/web/shared/AvatarIcon'
 import { ALLOWED_TYPES } from '/web/store/data/image'
 import { api } from '/web/store/api'
+import { ThirdPartyFormat } from '/common/adapters'
+import { resizeImage } from '/web/shared/image-resize'
 
 const InputBar: Component<{
   chat: AppSchema.Chat
@@ -245,7 +247,14 @@ const InputBar: Component<{
       return
     }
 
-    msgStore.setAttachment(props.chat._id, buffer.content)
+    const win: any = window
+    if (shouldShrinkImage(ctx.preset) || win.shrink) {
+      const resized = await resizeImage(buffer, { type: 'fit', max: 768 })
+      msgStore.setAttachment(props.chat._id, resized.content)
+    } else {
+      msgStore.setAttachment(props.chat._id, buffer.content)
+    }
+
     setMenu(false)
   }
 
@@ -424,16 +433,7 @@ const InputBar: Component<{
               </Button>
             </Show>
           </Show>
-          <Show
-            when={
-              ctx.preset?.service === 'openrouter' ||
-              ctx.preset?.thirdPartyFormat === 'ollama' ||
-              ctx.preset?.thirdPartyFormat === 'vllm' ||
-              ctx.preset?.thirdPartyFormat === 'openai-chat' ||
-              ctx.preset?.thirdPartyFormat === 'openai-chatv2' ||
-              ctx.preset?.thirdPartyFormat === 'gemini'
-            }
-          >
+          <Show when={canAttachImage(ctx.preset, ctx.subPreset)}>
             <FileInput
               fieldName="imageCaption"
               parentClass="hidden"
@@ -472,3 +472,38 @@ const InputBar: Component<{
 }
 
 export default InputBar
+
+function shouldShrinkImage(preset: AppSchema.UserGenPreset | undefined) {
+  if (!preset) return false
+  if (preset.service === 'agnaistic') return true
+  if (preset.service !== 'kobold') return false
+  if (preset.thirdPartyFormat === 'tabby') return true
+  return false
+}
+
+function canAttachImage(
+  preset: AppSchema.UserGenPreset | undefined,
+  subModel: AppSchema.SubscriptionModelOption | undefined
+) {
+  if (!preset) return false
+  if (preset.service === 'openrouter') return true
+  if (preset.service === 'claude-v2') return true
+  if (preset.service === 'agnaistic') {
+    if (!subModel) return false
+    return !!subModel.preset.subVisionModel
+  }
+
+  const supportedFormats: { [key in ThirdPartyFormat]?: boolean } = {
+    'openai-chat': true,
+    'openai-chatv2': true,
+    llamacpp: true,
+    ollama: true,
+    gemini: true,
+    vllm: true,
+    aphrodite: true,
+    tabby: true,
+    featherless: true,
+  }
+
+  return !!preset.thirdPartyFormat && !!supportedFormats[preset.thirdPartyFormat]
+}

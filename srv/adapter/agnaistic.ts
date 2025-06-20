@@ -27,6 +27,7 @@ import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util
 import { obtainLock, releaseLock } from '../api/chat/lock'
 import { getServerConfiguration } from '../db/admin'
 import { handleGemini } from './gemini'
+import { insertImageContent } from './template-chat-payload'
 
 export type SubscriptionPreset = Awaited<NonNullable<ReturnType<typeof getSubscriptionPreset>>>
 
@@ -242,15 +243,23 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
   }
 
   const body = getThirdPartyPayload(opts, allStops)
+  if (opts.imageData) {
+    body.messages = opts.messages
+  }
+
   body.api_key = key
 
-  yield { prompt }
+  yield { prompt: body.messages || prompt }
 
-  log.debug({ ...body, prompt: null, imageData: null }, 'Agnaistic payload')
+  log.debug({ ...body, prompt: null, messages: null, imageData: null }, 'Agnaistic payload')
 
-  log.debug(`Prompt:\n${prompt}`)
+  log.debug(`Prompt:\n${body.messages ? JSON.stringify(body.messages, null, 2) : prompt}`)
 
   const [submodel, override = ''] = subPreset.subModel.split(',')
+
+  if (body.messages) {
+    insertImageContent(opts, body.messages)
+  }
 
   let params = [
     `type=text`,
@@ -288,7 +297,7 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
     }
 
     if (generated.error) {
-      opts.log.error({ err: generated.error }, 'Agnaistic request failed')
+      opts.log.error({ err: generated.error, model: submodel, level }, 'Agnaistic request failed')
       yield generated
       await releaseLock(lockId)
       return
@@ -398,6 +407,7 @@ export const handlers: { [key in AIAdapter]: ModelAdapter } = {
   openai: handleOAI,
   scale: handleScale,
   claude: handleClaude,
+  'claude-v2': handleClaude,
   goose: handleGooseAI,
   replicate: handleReplicate,
   openrouter: handleOpenRouter,
@@ -412,6 +422,7 @@ export function getHandlers(settings: Partial<AppSchema.GenSettings>): ModelAdap
   switch (settings.service!) {
     case 'agnaistic':
     case 'claude':
+    case 'claude-v2':
     case 'goose':
     case 'replicate':
     case 'horde':

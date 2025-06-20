@@ -1,6 +1,6 @@
 import { formatCharacter } from './characters'
 import { grammar } from './grammar'
-import { PromptParts, fillPromptWithLines } from './prompt'
+import { PromptPlaceholders, fillPromptWithLines } from './prompt'
 import { AppSchema, Memory, TokenCounter } from '/common/types'
 import peggy from 'peggy'
 import { elapsedSince } from './util'
@@ -8,9 +8,11 @@ import { v4 } from 'uuid'
 
 type Section = 'pre_system' | 'system' | 'post_system' | 'history' | 'post'
 
+let DEBUG = false
+
 export type TemplateOpts = {
   continue?: boolean
-  parts?: Partial<PromptParts>
+  parts?: Partial<PromptPlaceholders>
   chat: AppSchema.Chat
 
   isPart?: boolean
@@ -240,6 +242,24 @@ export async function parseTemplate(
 
   /** Replace iterators */
   let history: string[] = []
+
+  let sizes: string[] = []
+  let tally = 0
+
+  const addCount = async (label: string, prompt: string) => {
+    if (!opts.limit || !DEBUG) return
+    if (!sizes.length) {
+      const words = prompt.split(' ').filter((p) => !!p.trim()).length
+      sizes.push(`limit: ${opts.limit.context}, words: ${words}`)
+    }
+
+    const tokens = await opts.limit.encoder(prompt)
+    tally += tokens
+    sizes.push(`${label}: ${tokens}/${tally}`)
+  }
+
+  await addCount('init', result)
+
   if (opts.limit && opts.limit.output) {
     for (const [id, { lines, src }] of Object.entries(opts.limit.output)) {
       src
@@ -253,16 +273,19 @@ export async function parseTemplate(
         marker: id,
       })
       unusedTokens = filled.unusedTokens
-      const trimmed = filled.adding.slice().reverse()
+      const trimmed = filled.adding.slice()
       output = result.replace(new RegExp(id, 'gi'), trimmed.join('\n'))
       linesAddedCount += filled.linesAddedCount
       history = trimmed
     }
 
+    await addCount('lines', output)
+
     // Adding the low priority blocks if we still have the budget for them,
     // now that we inserted the conversation history.
-    // We start from the bottom (somewhat arbitrary design choice),
-    // hence the reverse().
+    // We start from the bottom (somewhat arbitrary design choice), hence the reverse().
+    // This is based on the idea that the template author knows that 'the bottom of the prompt is more important'
+    // Therefore we will prioritise low-priority blocks at the bottom of the prompt higher than the top of the prompt.
     for (const { id, content } of (opts.lowpriority ?? []).reverse()) {
       const contentLength = await opts.limit.encoder(content)
       if (contentLength > unusedTokens) {
@@ -271,6 +294,14 @@ export async function parseTemplate(
         output = output.replace(id, content)
         unusedTokens -= contentLength
       }
+    }
+
+    if (opts.lowpriority?.length) {
+      await addCount('low-priority', output)
+    }
+  } else {
+    for (const { id, content } of (opts.lowpriority ?? []).reverse()) {
+      output = output.replace(id, content)
     }
   }
 
@@ -291,6 +322,11 @@ export async function parseTemplate(
   // )
 
   output = output.replace(/\r\n/g, '\n').replace(/\n\n+/g, '\n\n').trim()
+  await addCount('final', output)
+
+  if (sizes.length > 1) {
+    console.log(`>>>\nContext:\n${sizes.join('\n')}\n<<<\n`)
+  }
 
   const length = await opts.limit?.encoder?.(output)
 
@@ -319,7 +355,10 @@ function readInserts(opts: TemplateOpts, ast: PNode[]): void {
     const prev = opts.inserts.get(insert.values)
     // If multiple inserts are in the same depth, we want to combine them
     const prefix = prev ? `${prev}\n` : ''
-    opts.inserts.set(insert.values, prefix + renderNodes(insert.children, opts))
+    const text = prefix + renderNodes(insert.children, opts)
+    if (text) {
+      opts.inserts.set(insert.values, text)
+    }
   }
 }
 
@@ -450,7 +489,7 @@ function renderLowPriority(node: LowPriorityNode, opts: TemplateOpts) {
   return lowpriorityBlockId
 }
 
-function renderProp(node: CNode, opts: TemplateOpts, entity: unknown, i: number) {
+function renderProp(node: CNode, opts: TemplateOpts, entity: unknown, idx: number) {
   if (typeof node === 'string') return node
 
   switch (node.kind) {
@@ -474,7 +513,7 @@ function renderProp(node: CNode, opts: TemplateOpts, entity: unknown, i: number)
       const bot = entity as AppSchema.Character
       switch (node.prop) {
         case 'i':
-          return i.toString()
+          return idx.toString()
 
         case 'name':
           return bot.name
@@ -492,7 +531,7 @@ function renderProp(node: CNode, opts: TemplateOpts, entity: unknown, i: number)
       const line = entity as string
       switch (node.prop) {
         case 'i': {
-          return i.toString()
+          return idx.toString()
         }
 
         case 'text': {
@@ -512,7 +551,7 @@ function renderProp(node: CNode, opts: TemplateOpts, entity: unknown, i: number)
       const line = entity as string
       switch (node.prop) {
         case 'i': {
-          return i.toString()
+          return idx.toString()
         }
 
         case 'message': {
@@ -578,6 +617,14 @@ function renderCondition(
     if (result) output.push(result)
   }
 
+  if (node.value === 'example_dialogue') {
+    const sample = opts.parts?.sampleChat?.join('\n').trim()
+    if (!sample) {
+      return
+    }
+    return renderLowPriority({ kind: 'lowpriority', children: [output.join('')] }, opts)
+  }
+
   return output.join('')
 }
 
@@ -613,8 +660,9 @@ function renderIterator(holder: IterableHolder, children: CNode[], opts: Templat
 
   const entities = getEntities(holder, opts)
 
-  let i = 0
+  let idx = 0
   for (const entity of entities) {
+    idx++
     let curr = ''
     for (const child of children) {
       if (typeof child === 'string') {
@@ -640,23 +688,22 @@ function renderIterator(holder: IterableHolder, children: CNode[], opts: Templat
         case 'bot-prop':
         case 'chat-embed-prop':
         case 'history-prop': {
-          const result = renderProp(child, opts, entity, i)
+          const result = renderProp(child, opts, entity, idx)
           if (result) curr += result
           break
         }
 
         case 'bot-if':
         case 'history-if': {
-          const prop = renderProp(child, opts, entity, i)
+          const prop = renderProp(child, opts, entity, idx)
           if (!prop) break
-          const result = renderEntityCondition(child.children, opts, entity, i)
+          const result = renderEntityCondition(child.children, opts, entity, idx)
           curr += result
           break
         }
       }
     }
     if (curr) output.push(curr)
-    i++
   }
 
   if (isHistory && opts.limit?.output) {
@@ -672,11 +719,11 @@ function renderIterator(holder: IterableHolder, children: CNode[], opts: Templat
   return isHistory || isChatEmbed ? output.join('\n') : output.join('')
 }
 
-function renderEntityCondition(nodes: CNode[], opts: TemplateOpts, entity: unknown, i: number) {
+function renderEntityCondition(nodes: CNode[], opts: TemplateOpts, entity: unknown, idx: number) {
   let result = ''
 
   for (const node of nodes) {
-    const res = renderProp(node, opts, entity, i)
+    const res = renderProp(node, opts, entity, idx)
     if (res) result += res.toString()
   }
 
@@ -713,8 +760,11 @@ function getPlaceholder(
     case 'user':
       return (opts.impersonate?.name || opts.sender?.handle || 'You').trim()
 
-    case 'example_dialogue':
-      return opts.parts?.sampleChat?.join('\n') || ''
+    case 'example_dialogue': {
+      const text = opts.parts?.sampleChat?.join('\n') || ''
+      const result = renderLowPriority({ kind: 'lowpriority', children: [text] }, opts)
+      return result
+    }
 
     case 'scenario':
       return opts.parts?.scenario || opts.chat.scenario || opts.char.scenario || ''

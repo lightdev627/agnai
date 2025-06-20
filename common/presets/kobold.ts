@@ -1,4 +1,3 @@
-import { OPENAI_MODELS } from '../adapters'
 import { AppSchema } from '../types/schema'
 
 export const koboldPresets = {
@@ -8,14 +7,14 @@ export const koboldPresets = {
     useMaxContext: true,
     presetMode: 'simple',
     maxTokens: 300,
-    maxContextLength: 4096,
+    maxContextLength: 8192,
     repetitionPenalty: 1,
     repetitionPenaltySlope: 1,
     repetitionPenaltyRange: 1024,
     temp: 0.8,
     topK: 0,
     topP: 1,
-    minP: 0.1,
+    minP: 0.02,
     typicalP: 1,
     topA: 0,
     tailFreeSampling: 1,
@@ -29,7 +28,7 @@ export const koboldPresets = {
     presencePenalty: 0,
     gaslight: '',
     ultimeJailbreak: '',
-    oaiModel: OPENAI_MODELS.Turbo,
+    oaiModel: '',
     streamResponse: true,
     memoryDepth: 50,
     memoryContextLimit: 500,
