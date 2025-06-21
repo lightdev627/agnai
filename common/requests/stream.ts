@@ -1,6 +1,5 @@
 import { ThirdPartyFormat } from '../adapters'
-import { logger } from '../logger'
-import { wait } from '../util'
+import type { AppLog } from '../logger'
 import type { CompletionGenerator } from '/srv/adapter/type'
 
 export type ServerSentEvent = {
@@ -11,15 +10,10 @@ export type ServerSentEvent = {
   index?: number
 }
 
-const DEBUG = typeof window !== 'undefined' ? false : true
+// const DEBUG = typeof window !== 'undefined' ? false : false
 
-export const streamGenerator: CompletionGenerator = async function* ({
-  signal,
-  url,
-  headers,
-  body,
-  format,
-}) {
+export const streamGenerator: CompletionGenerator = async function* (opts) {
+  const { signal, url, headers, body, format } = opts
   const tokens = []
   let meta = { id: '', created: 0, model: '', object: '', finish_reason: '', index: 0 }
   // let current: any = {}
@@ -47,7 +41,7 @@ export const streamGenerator: CompletionGenerator = async function* ({
     signal: signal.signal,
   })
 
-  const stream = fetchStream(response, { format })
+  const stream = fetchStream(response, { format, log: opts.log })
   let sentTokens = false
 
   for await (const data of stream) {
@@ -63,12 +57,15 @@ export const streamGenerator: CompletionGenerator = async function* ({
       Object.assign(meta, data.meta)
     }
 
-    if (data.errorObj) {
-      logger.error({ err: data.errorObj }, `Exception occurred parsing fetch stream`)
-    }
-
     if (data.error) {
       yield { error: data.error }
+    }
+
+    if (data.error || data.errorObj) {
+      opts.log?.error(
+        { err: data.error, obj: data.errorObj },
+        `Exception occurred parsing fetch stream`
+      )
     }
 
     if (data.tokens) {
@@ -100,6 +97,7 @@ export const streamGenerator: CompletionGenerator = async function* ({
 export async function* fetchStream(
   response: Response,
   opts?: {
+    log?: AppLog
     format?: ThirdPartyFormat | 'openrouter' | 'raw'
     marker?: RegExp
     prechunk?: (chunk: string) => string
@@ -108,7 +106,6 @@ export async function* fetchStream(
   const isErrorCode = response.status > 201
   const reader = response.body?.getReader()
   const decoder = new TextDecoder('utf-8')
-  const sseMarker = opts?.marker || /data: (.*)(?:\n\n|\r\r|\r\n\r\n)/
   const format = opts?.format
 
   let buffer = ''
@@ -123,12 +120,11 @@ export async function* fetchStream(
   try {
     while (true) {
       const { done, value } = await reader.read()
-      await wait(0.001)
 
       if (done) {
         if (buffer.trim().length > 0) {
           yield { warn: 'End of request contained incomplete data' }
-          logger.debug({ buffer }, 'incomplete buffer')
+          opts?.log?.debug({ buffer }, 'incomplete buffer')
           return
         }
 
@@ -146,9 +142,9 @@ export async function* fetchStream(
       }
 
       let chunk = decoder.decode(value)
-      if (DEBUG) {
-        logger.debug({ chunk, buffer }, `[fetch] chunk - ${response.url}`)
-      }
+      // if (DEBUG) {
+      //   logger.trace({ chunk, buffer }, `[fetch] chunk - ${response.url}`)
+      // }
       if (chunk.includes(': OPENROUTER PROCESSING\n')) {
         chunk = chunk.replace(/: OPENROUTER PROCESSING/g, '').trimStart()
       }
@@ -165,12 +161,14 @@ export async function* fetchStream(
         const error = tryParse(chunk)
         const isError = isErrorCode || !!error?.error
         if (isError && error) {
-          logger.error(
+          opts?.log?.error(
             { err: error, chunk: error ? undefined : chunk, url: response.url },
             `[fetch] request failed with error ${response.status}`
           )
+          const msg = error?.error?.message || error?.message || `status code ${response.status}`
+
           yield {
-            error: `inferencer returned an error ${response.status}`,
+            error: `inferencer returned an error: ${msg}`,
             errorObj: error ? error : chunk,
           }
           return
@@ -178,10 +176,11 @@ export async function* fetchStream(
       } catch (ex) {}
 
       buffer += chunk
-      let match = buffer.match(sseMarker)
+
+      let match = processBuffer(buffer)
 
       while (match) {
-        const data = match[1]
+        const data = match.match
         const json = tryParse(data)
         if (json) {
           if (format === 'raw') {
@@ -200,7 +199,7 @@ export async function* fetchStream(
                 yield { token, index }
               }
             } else {
-              logger.info({ json }, `[${format || 'fetch'}] cannot get token`)
+              opts?.log?.info({ json }, `[${format || 'fetch'}] cannot get token`)
             }
 
             const meta: any = {}
@@ -214,12 +213,12 @@ export async function* fetchStream(
             yield { meta }
           }
         } else {
-          logger.info({ chunk }, `[${format || 'fetch'}] cannot parse chunk`)
+          opts?.log?.info({ chunk }, `[${format || 'fetch'}] cannot parse chunk`)
         }
 
         try {
-          buffer = buffer.slice(match[0].length)
-          match = buffer.match(sseMarker)
+          buffer = match.next
+          match = processBuffer(buffer)
         } catch (e) {
           yield { error: `Exception occurred while parsing response stream`, errorObj: e }
           return
@@ -229,6 +228,21 @@ export async function* fetchStream(
   } finally {
     reader.releaseLock()
   }
+}
+
+const marker = /data: /
+const terminator = /\n\n|\r\r|\r\n\r\n/
+function processBuffer(buffer: string) {
+  const start = buffer.search(marker)
+  if (start < 0) return
+
+  const end = buffer.search(terminator)
+  if (end < 0 || end < start) return
+
+  const match = buffer.slice(start, end).replace('data: ', '').trim()
+  const next = buffer.slice(end).trimStart()
+
+  return { match, next }
 }
 
 function getChoiceProp<T = any>(json: any, prop: string, assign?: any) {
