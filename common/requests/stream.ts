@@ -161,14 +161,24 @@ export async function* fetchStream(
         const error = tryParse(chunk)
         const isError = isErrorCode || !!error?.error
         if (isError && error) {
+          // OpenRouter provider errors
+          const suberror = tryParse(error?.error?.metadata?.raw)?.detail
+
+          const msg =
+            suberror?.detail ||
+            error?.error?.message ||
+            error?.message ||
+            `status code ${response.status}`
+
+          const finalMsg = [msg, suberror].filter((m) => !!m).join(' - ')
+
           opts?.log?.error(
-            { err: error, chunk: error ? undefined : chunk, url: response.url },
+            { err: error, chunk: error ? undefined : chunk, url: response.url, msg: finalMsg },
             `[fetch] request failed with error ${response.status}`
           )
-          const msg = error?.error?.message || error?.message || `status code ${response.status}`
 
           yield {
-            error: `inferencer returned an error: ${msg}`,
+            error: `Request failed: ${finalMsg}`,
             errorObj: error ? error : chunk,
           }
           return
@@ -240,13 +250,26 @@ function processBuffer(buffer: string) {
   let sub = buffer.slice(start)
 
   const end = sub.search(terminator)
-  if (end < 0 || end < start) return
+  if (end < 0) return
 
   const match = sub.slice(0, end).replace('data: ', '').trim()
   const next = sub.slice(end).trimStart()
 
   return { match, next }
 }
+
+// function testBuffer() {
+//   let buffer = ``
+
+//   while (true) {
+//     const match = processBuffer(buffer)
+//     if (!match) break
+
+//     console.log(match.match)
+//     buffer = match.next
+//   }
+// }
+// testBuffer()
 
 function getChoiceProp<T = any>(json: any, prop: string, assign?: any) {
   const choice = json?.choices?.[0]
