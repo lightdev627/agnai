@@ -2,7 +2,7 @@ import needle from 'needle'
 import { streamGenerator } from './stream'
 import { PayloadOpts } from './types'
 import { toChatCompletionPayload } from '/srv/adapter/chat-completion'
-import { sanitiseAndTrim } from './util'
+import { joinUrl, sanitiseAndTrim } from './util'
 import { countTokens } from '../tokenize'
 import { tryParse } from '../util'
 import { validateChatMessagesWithImage } from '/srv/adapter/template-chat-payload'
@@ -46,9 +46,9 @@ export async function* handleOAI(opts: PayloadOpts, signal: AbortController, pay
     headers['x-api-key'] = `${gen.userThirdPartyKey}`
   }
 
-  const suffix = gen.thirdPartyUrl?.endsWith('/') ? '' : '/'
-  const urlPath =
-    gen.thirdPartyFormat === 'openai' ? `${suffix}completions` : `${suffix}chat/completions`
+  const urlPath = gen.thirdPartyFormat === 'openai' ? `/completions` : `/chat/completions`
+
+  await validateModel(gen.thirdPartyUrl || '', payload, headers)
 
   if (gen.thirdPartyFormat === 'openai') {
     payload.prompt = opts.prompt
@@ -59,7 +59,7 @@ export async function* handleOAI(opts: PayloadOpts, signal: AbortController, pay
   }
 
   payload.messages = validateChatMessagesWithImage(opts, messages)
-  const fullUrl = `${gen.thirdPartyUrl}${urlPath}`
+  const fullUrl = joinUrl(gen.thirdPartyUrl || '', urlPath)
 
   if (!gen.streamResponse) {
     const result = await requestFullCompletion(fullUrl, headers, payload, signal)
@@ -97,13 +97,6 @@ export async function* handleOAI(opts: PayloadOpts, signal: AbortController, pay
   let accumulated = ''
   let response: Completion<Inference> | undefined
 
-  /**
-   * @todo @fixme
-   * - add 'tokens' check
-   * - add 'gens' check
-   * - how to handle metadata? (generated.value.meta)
-   * - replace `if (generated.done)` logic
-   */
   while (true) {
     let generated = await stream.next()
 
@@ -222,5 +215,26 @@ function getCompletionContent(completion: Completion<Inference> | undefined) {
     return choice.text
   } else {
     return choice.message?.content
+  }
+}
+
+async function validateModel(baseURL: string, payload: any, headers: any) {
+  const res = await needle('get', joinUrl(baseURL, '/models'), {
+    headers,
+    json: true,
+  }).catch(() => null)
+
+  if (!res) return
+
+  const code = res.statusCode ?? 400
+  if (code >= 400) {
+    return
+  }
+
+  if (!Array.isArray(res.body.data)) return
+  const names = res.body.data.map((data: any) => data.id) as string[]
+
+  if (!payload.model || !names.includes(payload.model)) {
+    payload.model = names[0]
   }
 }

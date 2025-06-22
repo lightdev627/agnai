@@ -14,6 +14,7 @@ import TextInput from '/web/shared/TextInput'
 import PresetSettings from '/web/shared/PresetSettings'
 import { getPresetEditor, getPresetForm, PresetTab } from '../PresetSettings/types'
 import { ADAPTER_SETTINGS } from '../PresetSettings/settings'
+import { deepClone } from '/common/util'
 
 export const ModeGenSettings: Component<{
   onPresetChanged: (presetId: string) => void
@@ -58,10 +59,19 @@ export const ModeGenSettings: Component<{
       () => selected(),
       (id) => {
         if (!id) return
+
+        if (isDefaultPreset(id)) {
+          const clone = deepClone(defaultPresets[id])
+          presetStore.getLocalModels(clone)
+          setStore(clone)
+          return
+        }
+
         const preset = state.presets.find((p) => p._id === id)
         if (preset) {
           setStore(preset)
           presetStore.getLocalModels(preset)
+          return
         }
       }
     )
@@ -194,10 +204,10 @@ export const ModeGenSettings: Component<{
 
 function isPresetDirty(
   original: AppSchema.GenSettings,
-  compare: Omit<AppSchema.GenSettings, 'service'>
+  update: Omit<AppSchema.GenSettings, 'service'>
 ) {
   const svc = original.service
-  for (const key in compare) {
+  for (const key in update) {
     const prop = key as keyof AppSchema.GenSettings
 
     switch (prop) {
@@ -205,13 +215,13 @@ function isPresetDirty(
         continue
     }
 
-    if (compare[prop] === undefined || original[prop] === undefined) continue
+    if (update[prop] === undefined && original[prop] === undefined) continue
 
     const usable: string[] | undefined = (ADAPTER_SETTINGS as any)[prop]
 
     if (svc && usable && !usable.includes(svc)) continue
 
-    if (original[prop] !== compare[prop]) {
+    if (original[prop] !== update[prop]) {
       return true
     }
   }

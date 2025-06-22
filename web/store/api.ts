@@ -2,8 +2,7 @@ import Cookies from 'js-cookie'
 import { EVENTS, events } from '../emitter'
 import { jwtDecode } from 'jwt-decode'
 import needle from 'needle'
-import { incompleteJson, parseEvent } from '/common/requests/stream'
-import { parseSearchQuery, tryParse } from '/common/util'
+import { parseSearchQuery, tryParse, incompleteJson, parseEvent } from '/common/util'
 
 let socketId = ''
 
@@ -51,7 +50,6 @@ export const api = {
   fetchSSE,
   isCdnApi,
   getFallbackApiUrl,
-  joinUrl,
 }
 
 type Query = { [key: string]: string | number }
@@ -278,18 +276,6 @@ export function getAuthHeaders() {
   }
 
   return headers
-}
-
-function joinUrl(base: string, path: string) {
-  if (base.endsWith('/')) {
-    base = base.slice(0, -1)
-  }
-
-  if (path.startsWith('/')) {
-    path = path.slice(1)
-  }
-
-  return `${base}/${path}`
 }
 
 function headers(noAuth?: boolean) {
