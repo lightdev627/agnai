@@ -1,6 +1,5 @@
 import wiki from 'wikijs'
 import { EmbedDocument, WorkerRequest, WorkerResponse } from './types'
-import { env } from '@xenova/transformers'
 import { AppSchema } from '/common/types'
 import { v4 } from 'uuid'
 import { toastStore } from '../toasts'
@@ -18,18 +17,37 @@ type WikiItem = {
   items?: WikiItem[]
 }
 
-const models = {
-  // embedding: 'Xenova/all-mpnet-base-v2',
-  // embedding: 'Xenova/bge-base-en-v1.5',
-  embedding: 'Xenova/all-MiniLM-L6-v2',
-  // captioning: 'Xenova/vit-gpt2-image-captioning',
-  // WIP
-  captioning: 'http://localhost:5000/api/caption',
-}
+export const DEFAULT_EMBED_MODEL = 'Xenova/all-MiniLM-L6-v2'
+
+export const EMBED_MODELS = {
+  Disabled: '',
+  Small: 'Xenova/all-MiniLM-L6-v2', // 23MB quantized, 90MB full
+  Medium: 'Xenova/all-MiniLM-L6-v2', // 110MB quantized, 436MB full
+  'Large - Multi-lingual': 'Xenova/bge-base-en-v1.5', // 110MB quantized, 436M full
+  'Large - English': 'nomic-ai/nomic-embed-text-v1.5', // 96MB quantized, 374 MB full
+} as const
+
+export const CAPTION_MODELS = {
+  Disabled: '',
+  'Vit Gpt-2 (Tiny)': 'Xenova/vit-gpt2-image-captioning',
+  'Phi 3.5 (LG)': 'onnx-community/Phi-3.5-vision-instruct',
+  'MGP Str Base (XL)': 'onnx-community/mgp-str-base',
+} as const
+
+export const EMBED_MODELS_OPTS = Object.entries(EMBED_MODELS).map(([label, value]) => ({
+  value,
+  label,
+}))
+
+export const CAPTION_MODELS_OPTS = Object.entries(CAPTION_MODELS).map(([label, value]) => ({
+  value,
+  label,
+}))
 
 // @ts-ignore
-env.allowLocalModels = false
+// env.allowLocalModels = false
 
+let EMBED_ALLOWED = false
 let EMBED_READY = false
 let CAPTION_READY = false
 let MEMORY_SET: (state: Partial<MemoryState>) => void
@@ -62,16 +80,19 @@ export const embedApi = {
     const embeds = ids.map((doc) => ({ id: doc._id, name: doc.name, state: 'not-loaded' }))
     setter({ embeds })
   },
-  initSimiliary: (disableLTM?: boolean) => {
-    const user = getStore('user').getState()
+  initSimiliary: (model: string) => {
     const chat = getStore('chat').getState().active?.chat
-    const disable = disableLTM ?? user.user?.disableLTM ?? true
-    post('initSimilarity', { model: models.embedding, disableLTM: disable })
+    post('initSimilarity', { model, dtype: getLocalModelDtype() })
+
+    EMBED_ALLOWED = !!model
 
     // Load the document when embeddings are ready
     if (chat?.userEmbedId) {
       loadDocument(chat.userEmbedId)
     }
+  },
+  initCaption: (model: string) => {
+    post('initCaptioning', { model, dtype: getLocalModelDtype() })
   },
   encode,
   decode,
@@ -123,9 +144,11 @@ const handlers: {
       const user = getStore('user').getState()
       const chat = getStore('chat').getState().active?.chat
 
-      const disableLTM = user.user?.disableLTM ?? true
       if (type === 'embed') {
-        post('initSimilarity', { model: models.embedding, disableLTM })
+        post('initSimilarity', {
+          model: user.ui.embeddingModel || '',
+          dtype: getLocalModelDtype(),
+        })
 
         // This will be loaded 'on embeds ready'
         if (chat?.userEmbedId) {
@@ -133,10 +156,8 @@ const handlers: {
         }
       }
 
-      if (type === 'image' && window.flags.caption) {
-        const httpCaptioning = models.captioning.startsWith('http')
-        if (disableLTM && !httpCaptioning) return
-        post('initCaptioning', { model: models.captioning })
+      if (type === 'image' && user.ui.captionModel) {
+        post('initCaptioning', { model: user.ui.captionModel, dtype: getLocalModelDtype() })
       }
     } catch (ex) {}
   },
@@ -172,7 +193,11 @@ const handlers: {
     if (msg.kind === 'chat') return
     toastStore.info(`Embeddeding ready`)
   },
-  progress: (_, msg) => {},
+  progress: (_, msg) => {
+    if (msg.status === 'done') {
+      console.log(`loaded: ${msg.name}`)
+    }
+  },
   result: (_, msg) => {
     const listener = embedCallbacks.get(msg.requestId)
     if (!listener) return
@@ -339,6 +364,8 @@ async function decode(tokens: number[]): Promise<string> {
 }
 
 async function loadDocument(documentId: string) {
+  if (!EMBED_ALLOWED) return
+
   if (!EMBED_READY) {
     if (documentQueue.includes(documentId)) return
     documentQueue.push(documentId)
@@ -493,4 +520,11 @@ function upsertEmbeddingId(id: string, name: string) {
 
   const next = prev.map((p) => (p.id === id ? { id, name, state: p.state } : p))
   MEMORY_SET({ embeds: next })
+}
+
+function getLocalModelDtype() {
+  const mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+
+  if (mobile) return 'fp8'
+  return 'fp16'
 }

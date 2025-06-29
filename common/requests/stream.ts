@@ -10,7 +10,12 @@ export type ServerSentEvent = {
   index?: number
 }
 
-// const DEBUG = typeof window !== 'undefined' ? false : false
+const DEBUG =
+  typeof window !== 'undefined'
+    ? false
+    : typeof process !== 'undefined'
+    ? process.env.LOG_LEVEL === 'debug'
+    : false
 
 export const streamGenerator: CompletionGenerator = async function* (opts) {
   const { signal, url, headers, body, format } = opts
@@ -45,24 +50,28 @@ export const streamGenerator: CompletionGenerator = async function* (opts) {
     const err = response.err
     const message = err?.message || err
     yield {
-      error: `[local] Request failed: ${message || 'unexpect error occurred'}`,
+      error: `Request failed: ${message || 'unexpect error occurred'}`,
       errorObj: err,
     }
     return
   }
 
+  let errored = false
+  let sentError = false
+
   if (response.status === 404) {
+    errored = true
+  }
+
+  if (response.status === 401) {
     yield {
-      error: `[local] Request failed with 404 Not Found: Check your URL`,
+      error: `Request failed with 401 Unauthorized: Check your API key`,
     }
     return
   }
 
   if (response.status >= 400) {
-    yield {
-      error: `[local] Request failed: ${response.status} ${response.statusText}`,
-    }
-    return
+    errored = true
   }
 
   const stream = fetchStream(response, { format, log: opts.log })
@@ -82,6 +91,7 @@ export const streamGenerator: CompletionGenerator = async function* (opts) {
     }
 
     if (data.error) {
+      sentError = true
       yield { error: data.error }
     }
 
@@ -96,6 +106,26 @@ export const streamGenerator: CompletionGenerator = async function* (opts) {
       sentTokens = true
       yield data
     }
+  }
+
+  if (errored && !sentError) {
+    switch (response.status) {
+      case 404: {
+        yield {
+          error: `Request failed with 404 Not Found: Check your URL`,
+        }
+        break
+      }
+
+      default: {
+        yield {
+          error: `Request failed: ${response.status} ${response.statusText}`,
+        }
+        break
+      }
+    }
+
+    return
   }
 
   if (!sentTokens) {
@@ -166,9 +196,13 @@ export async function* fetchStream(
       }
 
       let chunk = decoder.decode(value)
-      // if (DEBUG) {
-      //   logger.trace({ chunk, buffer }, `[fetch] chunk - ${response.url}`)
-      // }
+
+      if (DEBUG) {
+        console.log(
+          `[fetch] chunk - ${response.url}\n${JSON.stringify({ chunk, buffer }, null, 2)}`
+        )
+      }
+
       if (chunk.includes(': OPENROUTER PROCESSING\n')) {
         chunk = chunk.replace(/: OPENROUTER PROCESSING/g, '').trimStart()
       }

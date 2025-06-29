@@ -73,6 +73,9 @@ export type UISettings = {
   contextWindowLine: boolean
   expandReasoning?: boolean
 
+  embeddingModel?: string
+  captionModel?: string
+
   dark: CustomUI
   light: CustomUI
 }

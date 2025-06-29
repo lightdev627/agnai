@@ -22,7 +22,7 @@ import {
   setRootVariable,
 } from '../shared/colors'
 import { UserType } from '/common/types/admin'
-import { embedApi } from './embeddings'
+import { EMBED_MODELS, embedApi } from './embeddings'
 
 const BACKGROUND_KEY = 'ui-bg'
 export const ACCOUNT_KEY = 'agnai-username'
@@ -124,14 +124,14 @@ export const userStore = createStore<UserState>(
     /**
      * While introducing persisted UI settings, we'll automatically persist settings that the user has in local storage
      */
+
     if (!init.user || !init.user.ui) {
       userStore.saveUI(defaultUIsettings)
     } else {
+      const embeddingsModel = getInitialEmbeddingsModel(init.user)
+      init.user.ui.embeddingsModel = embeddingsModel
       userStore.receiveUI(init.user.ui)
-
-      if (!init.user.disableLTM) {
-        embedApi.initSimiliary(false)
-      }
+      embedApi.initSimiliary(embeddingsModel)
     }
   })
 
@@ -143,6 +143,18 @@ export const userStore = createStore<UserState>(
   return {
     modal({ showProfile }, show?: boolean) {
       return { showProfile: show ?? !showProfile }
+    },
+    async updateEmbeddingModel(_, model: string) {
+      userStore.saveUI({ embeddingModel: model })
+      if (model) {
+        embedApi.initSimiliary(model)
+      }
+    },
+    async updateCaptionModel(_, model: string) {
+      userStore.saveUI({ captionModel: model })
+      if (model) {
+        embedApi.initCaption(model)
+      }
     },
     async revealApiKey(_, cb: (key: string) => void) {
       const res = await api.post('/user/config/reveal-key')
@@ -427,16 +439,11 @@ export const userStore = createStore<UserState>(
       }
     },
 
-    async updateConfig({ user: prev }, config: ConfigUpdate) {
+    async updateConfig(_, config: ConfigUpdate) {
       const res = await usersApi.updateConfig(config)
       if (res.error) toastStore.error(`Failed to update config: ${res.error}`)
       if (res.result) {
         window.usePipeline = res.result.useLocalPipeline
-
-        const prevLTM = prev?.disableLTM ?? true
-        if (prevLTM && config.disableLTM === false) {
-          embedApi.initSimiliary(false)
-        }
 
         toastStore.success(`Updated settings`)
         return { user: res.result }
@@ -1080,4 +1087,12 @@ function getUserType(user: AppSchema.User): UserType {
   if (user.sub?.level && user.sub.level > 0) return 'subscribers'
   if (user._id === 'anon') return 'guests'
   return 'users'
+}
+
+function getInitialEmbeddingsModel(user: AppSchema.User) {
+  if (!user?.ui) return EMBED_MODELS.Small
+  if (user.ui?.embeddingModel !== undefined) return user.ui.embeddingModel
+
+  if (user.disableLTM) return EMBED_MODELS.Disabled
+  return EMBED_MODELS.Small
 }

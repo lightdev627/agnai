@@ -227,6 +227,7 @@ const InputBar: Component<{
 
   const onFile = async (files: FileInputResult[]) => {
     setDragging(false)
+    setMenu(false)
     const [file] = files
     if (!file) return
 
@@ -248,7 +249,7 @@ const InputBar: Component<{
     }
 
     const win: any = window
-    if (shouldShrinkImage(ctx.preset) || win.shrink) {
+    if (shouldShrinkImage(ctx.preset, buffer.file.size) || win.shrink) {
       const resized = await resizeImage(buffer, { type: 'fit', max: 768 })
       msgStore.setAttachment(props.chat._id, resized.content)
     } else {
@@ -473,12 +474,13 @@ const InputBar: Component<{
 
 export default InputBar
 
-function shouldShrinkImage(preset: AppSchema.UserGenPreset | undefined) {
+function shouldShrinkImage(preset: AppSchema.UserGenPreset | undefined, size: number) {
+  //
+  if (size > Math.pow(1024, 3)) return true
   if (!preset) return false
   if (preset.service === 'agnaistic') return true
   if (preset.service !== 'kobold') return false
-  if (preset.thirdPartyFormat === 'tabby') return true
-  return false
+  return true
 }
 
 function canAttachImage(

@@ -127,3 +127,53 @@ export function joinUrl(base: string, path: string) {
 
   return `${base}/${path}`
 }
+
+export async function getThirdPartyModels(url: string, key: string) {
+  const headers: any = { Accept: 'application/json' }
+
+  if (key) {
+    headers.Authorization = `Bearer ${key}`
+    headers['x-api-key'] = key
+  }
+
+  {
+    const res = await fetch(joinUrl(url, 'models'), { headers, method: 'GET' })
+      .then((res) => res.json())
+      .catch((err) => ({ err }))
+
+    if (Array.isArray(res?.data) && 'err' in res === false) {
+      return res
+    }
+  }
+
+  const res = await fetch(joinUrl(url, 'v1/models'), { headers, method: 'GET' })
+    .then((res) => res.json())
+    .catch((err) => ({ err }))
+
+  if (Array.isArray(res?.data) && 'err' in res === false) {
+    return res
+  }
+
+  return
+}
+
+const OFFICIAL_OAI_URL = `https://api.openai.com`
+
+export function getOaiCompatibleUrl(
+  preset: Partial<AppSchema.GenSettings>,
+  isThirdParty?: boolean
+) {
+  if (isThirdParty && preset.thirdPartyUrl) {
+    if (preset.thirdPartyUrlNoSuffix) return { url: preset.thirdPartyUrl, changed: true }
+
+    // If the user provides a versioned API URL for their third-party API, use that. Otherwise
+    // fall back to the standard /v1 URL.
+    const version = preset.thirdPartyUrl.match(/\/v\d+/) ? '' : '/v1'
+    return { url: preset.thirdPartyUrl + version, changed: true }
+  }
+
+  return {
+    url: OFFICIAL_OAI_URL.includes('/v1') ? OFFICIAL_OAI_URL : `${OFFICIAL_OAI_URL}/v1`,
+    changed: false,
+  }
+}

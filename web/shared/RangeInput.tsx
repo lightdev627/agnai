@@ -1,4 +1,4 @@
-import { Component, Show, createEffect, createSignal, on } from 'solid-js'
+import { Component, Show, createEffect, on } from 'solid-js'
 import type { JSX } from 'solid-js'
 import { PresetAISettings, samplerDisableValues } from '../../common/adapters'
 import { markdown } from './markdown'
@@ -23,8 +23,6 @@ const RangeInput: Component<{
   let range: HTMLInputElement | undefined
   let input: HTMLInputElement | undefined
 
-  const [display, setDisplay] = createSignal(props.value.toString())
-
   function updateRangeSliders(evented: boolean, source: 'slider' | 'input', next?: string) {
     if (!range || !input) return
 
@@ -32,11 +30,11 @@ const RangeInput: Component<{
       return
     }
 
-    const parsed = next !== undefined ? next || '0' : '0'
+    const parsed = next !== undefined ? next ?? '' : ''
 
     if (isNaN(+parsed)) {
-      range.value = display()
-      input.value = display()
+      range.value = parsed
+      input.value = parsed
       return
     }
 
@@ -45,8 +43,6 @@ const RangeInput: Component<{
     if (source === 'slider') {
       input.value = parsed
     }
-
-    setDisplay(parsed)
 
     const percent = Math.min(+parsed, +range.max)
     const nextSize = ((percent - +range.min) * 100) / (+range.max - +range.min) + '% 100%'
@@ -166,8 +162,6 @@ export const InlineRangeInput: Component<{
   let range: HTMLInputElement | undefined
   let input: HTMLInputElement | undefined
 
-  const [display, setDisplay] = createSignal(props.value.toString())
-
   function updateRangeSliders(evented: boolean, source: 'slider' | 'input', next?: string) {
     if (!range || !input) return
 
@@ -175,11 +169,11 @@ export const InlineRangeInput: Component<{
       return
     }
 
-    const parsed = next !== undefined ? next || '0' : '0'
+    const parsed = next !== undefined ? next ?? '' : ''
 
     if (isNaN(+parsed)) {
-      range.value = display()
-      input.value = display()
+      range.value = parsed
+      input.value = parsed
       return
     }
 
@@ -188,8 +182,6 @@ export const InlineRangeInput: Component<{
     if (source === 'slider') {
       input.value = parsed
     }
-
-    setDisplay(parsed)
 
     const percent = Math.min(+parsed, +range.max)
     const nextSize = ((percent - +range.min) * 100) / (+range.max - +range.min) + '% 100%'

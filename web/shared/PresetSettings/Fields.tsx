@@ -15,6 +15,7 @@ import PromptEditor from '../PromptEditor'
 import { CustomSelect } from '../CustomSelect'
 import { FeatherlessModel } from '/srv/adapter/featherless'
 import { ArliModel } from '/srv/adapter/arli'
+import { Copy } from '../Copy'
 
 export type Field<T = {}> = Component<Omit<PresetTabProps, 'tab'> & T>
 
@@ -45,7 +46,7 @@ export const ResponseLength: Field<{
       label="Response Length"
       helperText="Maximum length of the response. Measured in 'tokens'"
       min={16}
-      max={1024}
+      max={2048}
       step={1}
       value={props.state.maxTokens}
       disabled={props.state.disabled}
@@ -232,8 +233,8 @@ export const ThirdPartyUrl: Field = (props) => {
   return (
     <TextInput
       fieldName="thirdPartyUrl"
-      label="Third Party URL"
-      helperText="API URL for third-party or self-hosted service"
+      label="URL"
+      helperMarkdown="API URL for **third-party** or **self-hosted** services"
       placeholder="E.g. https://some-tunnel-url.loca.lt"
       value={props.state.thirdPartyUrl || ''}
       disabled={props.state.disabled}
@@ -256,7 +257,7 @@ export const ThirdPartyKey: Field = (props) => {
         fieldName="thirdPartyKey"
         label={
           <div class="mt-1 flex gap-4">
-            <div>Third Party API Key</div>
+            <div>API Key</div>
             <Show when={props.state._id}>
               <Button
                 size="pill"
@@ -387,29 +388,38 @@ export const FeatherlessModels: Field = (props) => {
   })
 
   return (
-    <CustomSelect
-      modalTitle="Select a Model"
-      label="Featherless Model"
-      value={props.state.featherlessModel}
-      options={options()}
-      search={search}
-      header={
-        <Select
-          items={classes()}
-          value={''}
-          label={'Filter: Model Class'}
-          fieldName="featherless.classFilter"
-          onChange={(ev) => setModelclass(ev.value)}
-          parentClass="text-sm"
-        />
-      }
-      onSelect={(opt) => {
-        props.setter('featherlessModel', opt.value)
-      }}
-      buttonLabel={label()}
-      selected={props.state.featherlessModel}
-      hide={props.state.service !== 'kobold' || props.state.thirdPartyFormat !== 'featherless'}
-    />
+    <div class="flex items-end gap-1">
+      <CustomSelect
+        modalTitle="Select a Model"
+        label="Featherless Model"
+        value={props.state.featherlessModel}
+        options={options()}
+        search={search}
+        header={
+          <Select
+            items={classes()}
+            value={''}
+            label={'Filter: Model Class'}
+            fieldName="featherless.classFilter"
+            onChange={(ev) => setModelclass(ev.value)}
+            parentClass="text-sm"
+          />
+        }
+        onSelect={(opt) => {
+          props.setter('featherlessModel', opt.value)
+        }}
+        buttonLabel={label()}
+        selected={props.state.featherlessModel}
+        hide={props.state.service !== 'kobold' || props.state.thirdPartyFormat !== 'featherless'}
+      />
+      <Show
+        when={props.state.service === 'kobold' && props.state.thirdPartyFormat === 'featherless'}
+      >
+        <div class="pb-2">
+          <Copy text={props.state.featherlessModel || ''} />
+        </div>
+      </Show>
+    </div>
   )
 }
 

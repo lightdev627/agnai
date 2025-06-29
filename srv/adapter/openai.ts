@@ -1,7 +1,6 @@
-import { sanitiseAndTrim } from '/common/requests/util'
+import { getOaiCompatibleUrl, joinUrl, sanitiseAndTrim } from '/common/requests/util'
 import { ChatRole, ModelAdapter } from './type'
 import { defaultPresets } from '../../common/presets'
-import { AppSchema } from '../../common/types/schema'
 import { AppLog } from '../middleware'
 import { requestFullCompletion, toChatCompletionPayload } from './chat-completion'
 import { decryptText } from '../db/util'
@@ -10,8 +9,6 @@ import { insertImageContent, stripImageContent } from './template-chat-payload'
 import { OPENAI_CHAT_MODELS, OPENAI_MODELS } from '/common/presets/openai'
 import { streamGenerator } from '/common/requests/stream'
 import { toImageJinjaTemplate } from '/common/requests/payloads'
-
-const baseUrl = `https://api.openai.com`
 
 type CompletionContent<T> = Array<{ finish_reason: string; index: number } & ({ text: string } | T)>
 
@@ -28,7 +25,7 @@ export type Completion<T = Inference> = {
 
 export const handleOAI: ModelAdapter = async function* (opts) {
   const { char, members, user, prompt, log, gen, guest, kind, isThirdParty } = opts
-  const base = getBaseUrl(gen, isThirdParty)
+  const base = getOaiCompatibleUrl(gen, isThirdParty)
   const handle = opts.impersonate?.name || opts.sender?.handle || 'You'
   if (!user.oaiKey && !base.changed) {
     yield { error: `OpenAI request failed: No OpenAI API key not set. Check your settings.` }
@@ -62,8 +59,13 @@ export const handleOAI: ModelAdapter = async function* (opts) {
 
   if (gen.reasoning?.enabled) {
     body.reasoning = {
-      effort: gen.reasoning.effort || 'low',
       exclude: !!gen.reasoning.exclude,
+    }
+
+    if (gen.reasoning.effort === 'custom') {
+      body.reasoning.max_tokens = gen.reasoning.maxTokens
+    } else {
+      body.reasoning.effort = gen.reasoning.effort || 'low'
     }
   }
 
@@ -96,8 +98,6 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     yield { prompt }
   }
 
-  if (gen.antiBond) body.logit_bias = { 3938: -50, 11049: -50, 64186: -50, 3717: -25 }
-
   const useThirdPartyPassword = !!(base.changed && isThirdParty && gen.thirdPartyKey)
 
   let apiKey = useThirdPartyPassword ? gen.thirdPartyKey : !isThirdParty ? user.oaiKey : null
@@ -109,6 +109,8 @@ export const handleOAI: ModelAdapter = async function* (opts) {
 
   const headers: any = {
     'Content-Type': 'application/json',
+    'HTTP-Referer': 'https://agnai.chat',
+    'X-Title': 'Agnai.Chat',
   }
 
   if (apiKey) {
@@ -129,8 +131,8 @@ export const handleOAI: ModelAdapter = async function* (opts) {
   const url = gen.thirdPartyUrlNoSuffix
     ? base.url
     : useChat
-    ? `${base.url}/chat/completions`
-    : `${base.url}/completions`
+    ? joinUrl(base.url, 'chat/completions')
+    : joinUrl(base.url, 'completions')
 
   const iter = body.stream
     ? streamGenerator({
@@ -205,19 +207,6 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     yield { error: `OpenAI request failed: ${ex.message}` }
     return
   }
-}
-
-function getBaseUrl(gen: Partial<AppSchema.GenSettings>, isThirdParty?: boolean) {
-  if (isThirdParty && gen.thirdPartyUrl) {
-    if (gen.thirdPartyUrlNoSuffix) return { url: gen.thirdPartyUrl, changed: true }
-
-    // If the user provides a versioned API URL for their third-party API, use that. Otherwise
-    // fall back to the standard /v1 URL.
-    const version = gen.thirdPartyUrl.match(/\/v\d+$/) ? '' : '/v1'
-    return { url: gen.thirdPartyUrl + version, changed: true }
-  }
-
-  return { url: `${baseUrl}/v1`, changed: false }
 }
 
 export type OAIUsage = {

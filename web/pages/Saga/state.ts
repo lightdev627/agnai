@@ -39,7 +39,7 @@ const init: SagaState = {
   },
   showModal: 'none',
   state: {
-    format: 'Alpaca',
+    format: 'None',
     _id: '',
     userId: '',
     templateId: '',
@@ -113,7 +113,7 @@ export const sagaStore = createStore<SagaState>(
         state: {
           _id: 'new',
           userId: '',
-          format: state.format || 'Alpaca',
+          format: state.format || 'None',
           overrides: {},
           templateId: template._id,
           responses: [],
@@ -241,7 +241,7 @@ export const sagaStore = createStore<SagaState>(
       }
 
       if (!session.format) {
-        session.format = 'Alpaca'
+        session.format = 'None'
       }
 
       const template = templates.find((t) => t._id === session.templateId)
@@ -519,7 +519,7 @@ subscribe(
 function blankSession(templateId: string, overrides: Partial<Saga.Session> = {}): Saga.Session {
   return {
     _id: v4(),
-    format: 'Alpaca',
+    format: 'None',
     userId: '',
     templateId,
     overrides: {},

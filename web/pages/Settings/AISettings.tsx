@@ -15,7 +15,7 @@ import {
 import OpenAISettings from './components/OpenAISettings'
 import ScaleSettings from './components/ScaleSettings'
 import NovelAISettings from './components/NovelAISettings'
-import KoboldAISettings from './components/KoboldAISettings'
+import ThirdPartySettings from './components/ThirdPartySettings'
 import OobaAISettings from './components/OobaAISettings'
 import ClaudeSettings from './components/ClaudeSettings'
 import { AutoPreset, getPresetOptions } from '../../shared/adapter'
@@ -28,9 +28,11 @@ import TextInput from '/web/shared/TextInput'
 import Button from '/web/shared/Button'
 import { neat } from '/common/util'
 import { HelpModal } from '/web/shared/Modal'
-import { Toggle } from '/web/shared/Toggle'
 import { SetStoreFunction } from 'solid-js/store'
 import { UserSettings } from './util'
+import { FormLabel } from '/web/shared/FormLabel'
+import Select from '/web/shared/Select'
+import { EMBED_MODELS_OPTS } from '/web/store/embeddings'
 
 const AISettings: Component<{
   state: UserSettings
@@ -41,6 +43,7 @@ const AISettings: Component<{
   const cfg = settingStore((s) => ({
     config: s.config,
     server: s.config.serverConfig,
+    flags: s.flags,
   }))
   const presets = presetStore((s) => s.presets.filter((pre) => !!pre.service))
   const [apiKey, setApiKey] = createSignal(state.user?.apiKey || '')
@@ -117,12 +120,37 @@ const AISettings: Component<{
       </Show>
 
       <Show when={ready()}>
-        <Toggle
-          value={!props.state.disableLTM}
-          label="Enable Embeddings/Long-Term Memory"
+        <FormLabel
+          label={
+            <div class="flex flex-wrap items-center gap-1">
+              <div>Enable Embeddings/Long-Term Memory</div>
+              <Select
+                parentClass="text-sm py-1 px-2"
+                items={EMBED_MODELS_OPTS}
+                value={state.ui.embeddingModel || ''}
+                onChange={(ev) => userStore.updateEmbeddingModel(ev.value)}
+              />
+            </div>
+          }
           helperMarkdown={`Improves site performance when disabled. Disable long-term memory if your chat is _laggy_ and unresponsive.`}
-          onChange={(ev) => props.setter('disableLTM', !ev)}
         />
+
+        {/* <Show when={cfg.flags.caption}>
+          <FormLabel
+            label={
+              <div class="flex flex-wrap items-center gap-1">
+                <div>Enable Embeddings/Long-Term Memory</div>
+                <Select
+                  parentClass="text-sm py-1 px-2"
+                  items={CAPTION_MODELS_OPTS}
+                  value={state.ui.captionModel || ''}
+                  onChange={(ev) => userStore.updateCaptionModel(ev.value)}
+                />
+              </div>
+            }
+            helperMarkdown={`Improves site performance when disabled. Disable long-term memory if your chat is _laggy_ and unresponsive.`}
+          />
+        </Show> */}
 
         <Show when={!canUseApi()}>
           <PresetSelect
@@ -198,7 +226,7 @@ const AISettings: Component<{
       </div>
 
       <div class={currentTab() === ADAPTER_LABELS.kobold ? tabClass : 'hidden'}>
-        <KoboldAISettings state={props.state} setter={props.setter} />
+        <ThirdPartySettings state={props.state} setter={props.setter} />
       </div>
 
       <div class={currentTab() === ADAPTER_LABELS.ooba ? tabClass : 'hidden'}>

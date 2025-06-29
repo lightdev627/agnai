@@ -414,10 +414,11 @@ export const chatStore = createStore<ChatState>('chat', {
       }
 
       if (res.result) {
-        events.emit(EVENTS.allChars, res.result.characters)
+        const chars = res.result.characters.map((c) => ({ __type: 'list_character', ...c }))
+        events.emit(EVENTS.allChars, chars)
         const allChars = {
-          map: toMap(res.result.characters),
-          list: res.result.characters,
+          map: toMap(chars),
+          list: chars,
         }
         return {
           allChats: res.result.chats.sort(sortDesc),
@@ -456,6 +457,27 @@ export const chatStore = createStore<ChatState>('chat', {
         }
 
         onSuccess?.(res.result._id)
+      }
+    },
+
+    async *quickCreateChat(
+      { allChats, char },
+      characterId: string,
+      onDone: (newChatId: string) => void
+    ) {
+      const res = await chatsApi.createChat(characterId, {
+        name: new Date().toLocaleString(),
+        useOverrides: false,
+      })
+      if (res.error) toastStore.error(`Failed to create conversation: ${res.error}`)
+      if (res.result) {
+        yield { allChats: [res.result, ...allChats] }
+
+        if (char?.char._id === characterId) {
+          yield { char: { ...char, chats: [res.result, ...char.chats] } }
+        }
+
+        onDone(res.result._id)
       }
     },
 

@@ -4,6 +4,7 @@ import { api, isLoggedIn } from '../api'
 import { loadItem, localApi } from './storage'
 import { now, replace } from '/common/util'
 import { joinUrl } from '/common/requests/util'
+import { toastStore } from '../toasts'
 
 export type PresetUpdate = Omit<AppSchema.UserGenPreset, '_id' | 'kind' | 'userId'>
 export type PresetCreate = PresetUpdate & { chatId?: string }
@@ -20,6 +21,7 @@ export const presetApi = {
   deleteTemplate,
   deleteUserPresetKey,
   getLocalModelList,
+  getPresetModelList,
 }
 
 export async function getPresets() {
@@ -90,15 +92,18 @@ export async function deleteUserPresetKey(presetId: string) {
   return localApi.result({ success: true })
 }
 
-async function getLocalModelList(baseUrl: string, key?: string): Promise<string[]> {
+const MODEL_LIST_CACHE = new Map<string, string[]>()
+
+async function getLocalModelList(opts: { url: string; key?: string }): Promise<string[]> {
   try {
     const headers: any = {}
 
-    if (key) {
-      headers.Authorization = `Bearer ${key}`
+    if (opts.key) {
+      headers.Authorization = `Bearer ${opts.key}`
+      headers['x-api-key'] = opts.key
     }
 
-    const res = await fetch(joinUrl(baseUrl, '/models'), { headers }).then((res) => res.json())
+    const res = await fetch(joinUrl(opts.url, '/models'), { headers }).then((res) => res.json())
     const models: string[] = []
 
     for (const model of res.data) {
@@ -106,10 +111,45 @@ async function getLocalModelList(baseUrl: string, key?: string): Promise<string[
       models.push(model.id)
     }
 
-    return models
+    return models.sort((l, r) => l.localeCompare(r))
   } catch (ex: any) {
     return []
   }
+}
+
+async function getPresetModelList(opts: {
+  id: string
+  url: string
+  key?: string
+  useCache?: boolean
+}): Promise<string[]> {
+  if (opts.useCache) {
+    const cache = MODEL_LIST_CACHE.get(opts.url)
+    if (cache) return cache
+  }
+  const res = await api.post<{ data: any[] }>(`/user/preset-models`, {
+    id: opts.id,
+    url: opts.url,
+    key: opts.key,
+  })
+  const models: string[] = []
+
+  if (res.error) {
+    toastStore.error(`Could not get models: ${res.error}`)
+    return []
+  }
+
+  if (res.result) {
+    for (const model of res.result.data) {
+      if (!model || typeof model.id !== 'string') continue
+      models.push(model.id)
+    }
+  }
+
+  models.sort((l, r) => l.localeCompare(r))
+  MODEL_LIST_CACHE.set(opts.url, models)
+
+  return models
 }
 
 async function getTemplates() {

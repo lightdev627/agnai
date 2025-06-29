@@ -62,15 +62,27 @@ export const presetStore = createStore<PresetState>(
         return { presets: res.result.presets }
       }
     },
-    async getLocalModels(_, preset: Partial<AppSchema.UserGenPreset>) {
-      if (preset.service !== 'kobold' || !preset.localRequests || !preset.thirdPartyUrl) {
+    async getPresetModelList(_, preset: Partial<AppSchema.UserGenPreset>, useCache?: boolean) {
+      if (preset.service !== 'kobold' || !preset.thirdPartyUrl) {
         return { localModels: [] }
       }
 
-      const models = await presetApi.getLocalModelList(
-        preset.thirdPartyUrl,
-        preset.userThirdPartyKey
-      )
+      if (preset.localRequests) {
+        const models = await presetApi.getLocalModelList({
+          url: preset.thirdPartyUrl,
+          key: preset.userThirdPartyKey,
+        })
+        return { localModels: models }
+      }
+
+      const models = await presetApi.getPresetModelList({
+        id: preset._id || '',
+        url: preset.thirdPartyUrl,
+        // We pass this for presets that are un-saved
+        key: preset.thirdPartyKey,
+        useCache,
+      })
+
       return { localModels: models }
     },
     setImportPreset(_, preset?: AppSchema.UserGenPreset) {

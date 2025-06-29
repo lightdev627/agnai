@@ -4,8 +4,8 @@ import { PayloadOpts } from './types'
 import { toChatCompletionPayload } from '/srv/adapter/chat-completion'
 import { joinUrl, sanitiseAndTrim } from './util'
 import { countTokens } from '../tokenize'
-import { tryParse } from '../util'
 import { validateChatMessagesWithImage } from '/srv/adapter/template-chat-payload'
+import { toImageJinjaTemplate } from './payloads'
 
 type Role = 'user' | 'assistant' | 'system'
 export type CompletionItem = { role: Role; content: string; name?: string }
@@ -33,8 +33,11 @@ export async function* handleOAI(opts: PayloadOpts, signal: AbortController, pay
     opts.settings?.maxTokens!
   )
 
-  if (opts.imageData && gen.jinjaTemplate) {
-    payload.chat_template = tryParse(gen.jinjaTemplate) || gen.jinjaTemplate
+  if (opts.imageData && gen.jinjaEnabled) {
+    payload.chat_template = toImageJinjaTemplate({
+      format: gen.modelFormat,
+      jinja: gen.jinjaTemplate,
+    })
   }
 
   const headers: any = {
@@ -48,7 +51,7 @@ export async function* handleOAI(opts: PayloadOpts, signal: AbortController, pay
 
   const urlPath = gen.thirdPartyFormat === 'openai' ? `/completions` : `/chat/completions`
 
-  await validateModel(gen.thirdPartyUrl || '', payload, headers)
+  // await validateModel(gen.thirdPartyUrl || '', payload, headers)
 
   if (gen.thirdPartyFormat === 'openai') {
     payload.prompt = opts.prompt
@@ -218,23 +221,23 @@ function getCompletionContent(completion: Completion<Inference> | undefined) {
   }
 }
 
-async function validateModel(baseURL: string, payload: any, headers: any) {
-  const res = await needle('get', joinUrl(baseURL, '/models'), {
-    headers,
-    json: true,
-  }).catch(() => null)
+// async function validateModel(baseURL: string, payload: any, headers: any) {
+//   const res = await needle('get', joinUrl(baseURL, '/models'), {
+//     headers,
+//     json: true,
+//   }).catch(() => null)
 
-  if (!res) return
+//   if (!res) return
 
-  const code = res.statusCode ?? 400
-  if (code >= 400) {
-    return
-  }
+//   const code = res.statusCode ?? 400
+//   if (code >= 400) {
+//     return
+//   }
 
-  if (!Array.isArray(res.body.data)) return
-  const names = res.body.data.map((data: any) => data.id) as string[]
+//   if (!Array.isArray(res.body.data)) return
+//   const names = res.body.data.map((data: any) => data.id) as string[]
 
-  if (!payload.model || !names.includes(payload.model)) {
-    payload.model = names[0]
-  }
-}
+//   if (!payload.model || !names.includes(payload.model)) {
+//     payload.model = names[0]
+//   }
+// }
