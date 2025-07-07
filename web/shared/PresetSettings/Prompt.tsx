@@ -76,13 +76,13 @@ export const PromptSettings: Component<PresetTabProps> = (props) => {
 
           <Select
             fieldName="useAdvancedPrompt"
-            label="Use Advanced Prompting"
+            label={'Use Advanced Prompting'}
             helperMarkdown="**Advanced**: Have complete control over the prompt. No 'missing' placeholders will be inserted."
             items={[
               { label: 'Basic', value: 'basic' },
               { label: 'Advanced', value: 'no-validation' },
             ]}
-            value={props.state.useAdvancedPrompt}
+            value={props.state.useAdvancedPrompt || 'no-validation'}
             onChange={(ev) => props.setter('useAdvancedPrompt', ev.value as any)}
             hide={props.state.presetMode === 'simple'}
           />
@@ -164,6 +164,8 @@ export const PromptSettings: Component<PresetTabProps> = (props) => {
                 setter={props.setter}
                 hides={props.hides}
                 sub={props.sub}
+                page={props.page}
+                context={props.context}
               />
             </div>
           </Card>
@@ -204,8 +206,8 @@ export const PromptSettings: Component<PresetTabProps> = (props) => {
             }
             value={props.state.prefixNameAppend ?? true}
             disabled={props.state.disabled}
-            service={props.state.service}
-            format={props.state.thirdPartyFormat}
+            service={props.context.service}
+            format={props.context.format}
             hide={props.hides.prefixNameAppend}
             onChange={(ev) => props.setter('prefixNameAppend', ev)}
           />

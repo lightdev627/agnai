@@ -6,6 +6,7 @@ import { defaultPresets } from '/common/default-preset'
 import { getEncoderByName } from '../tokenize'
 import { decryptText } from '../db/util'
 import { toImageJinjaTemplate } from '/common/requests/payloads'
+import { getJsonSchemaPayload } from '/common/guidance/json-schema'
 
 export function getThirdPartyPayload(opts: AdapterProps, stops: string[] = []) {
   const { gen } = opts
@@ -121,8 +122,11 @@ function getBasePayload(opts: AdapterProps, stops: string[] = []) {
       lists: opts.lists,
       previous: opts.previous,
       json_schema_v2: ensureSafeSchema(json_schema),
+      json_schema_v3:
+        opts.jsonSchema && gen.jsonEnabled
+          ? getJsonSchemaPayload(opts.jsonSchema, 'guided_json', opts)
+          : undefined,
       reschema_prompt: opts.reschemaPrompt,
-      json_schema,
       imageData: opts.imageData,
       context_size: opts.contextSize,
       xtc_threshold: gen.xtcThreshold,
@@ -201,7 +205,7 @@ function getBasePayload(opts: AdapterProps, stops: string[] = []) {
 
   if (format === 'featherless') {
     const payload: any = {
-      model: gen.featherlessModel,
+      model: gen.featherlessModel || gen.thirdPartyModel,
       prompt,
       stop: getStoppingStrings(opts, stops),
       presence_penalty: gen.presencePenalty,
@@ -221,8 +225,9 @@ function getBasePayload(opts: AdapterProps, stops: string[] = []) {
 
   if (format === 'arli') {
     const body: any = {
-      model: gen.arliModel,
-      prompt,
+      model: gen.arliModel || gen.thirdPartyModel,
+      // prompt,
+      messages: opts.messages,
       stop: getStoppingStrings(opts, stops),
       presence_penalty: gen.presencePenalty,
       frequency_penalty: gen.frequencyPenalty,
@@ -263,6 +268,12 @@ function getBasePayload(opts: AdapterProps, stops: string[] = []) {
 
     if (body.top_k <= 0) {
       body.top_k = -1
+    }
+
+    if (gen.jsonEnabled && opts.jsonSchema) {
+      const schema = getJsonSchemaPayload(opts.jsonSchema, 'guided_json', opts)
+      body.guided_json = schema
+      // body.guided_decoding_backend = 'outlines'
     }
 
     return body
@@ -318,7 +329,7 @@ function getBasePayload(opts: AdapterProps, stops: string[] = []) {
   if (format === 'mistral') {
     const body = {
       messages: [{ role: 'user', content: prompt }],
-      model: gen.mistralModel!,
+      model: gen.mistralModel! || gen.thirdPartyModel,
       temperature: clamp(gen.temp!, 0.01, 1),
       top_p: clamp(gen.topP!, 0, 1),
       max_tokens: gen.maxTokens!,
@@ -499,6 +510,11 @@ function getBasePayload(opts: AdapterProps, stops: string[] = []) {
     if (gen.xtcThreshold) {
       body.xtc_threshold = gen.xtcThreshold
       body.xtc_probability = gen.xtcProbability
+    }
+
+    if (gen.jsonEnabled && opts.jsonSchema) {
+      const schema = getJsonSchemaPayload(opts.jsonSchema, 'guided_json', opts)
+      body.guided_json = schema
     }
 
     return body

@@ -1,5 +1,6 @@
 import { ThirdPartyFormat } from '../adapters'
 import type { AppLog } from '../logger'
+import { round } from '../util'
 import type { CompletionGenerator } from '/srv/adapter/type'
 
 export type ServerSentEvent = {
@@ -14,16 +15,21 @@ const DEBUG =
   typeof window !== 'undefined'
     ? false
     : typeof process !== 'undefined'
-    ? process.env.LOG_LEVEL === 'debug'
+    ? process.env.LOG_LEVEL === 'debug' && !!process.env.LOG_CHUNKS
     : false
 
 export const streamGenerator: CompletionGenerator = async function* (opts) {
   const { signal, url, headers, body, format } = opts
   const tokens = []
-  let meta = { id: '', created: 0, model: '', object: '', finish_reason: '', index: 0 }
+  const start = Date.now()
+  let meta: any = {
+    model: '',
+    stop: '',
+  }
   // let current: any = {}
 
   headers['Content-Type'] = 'application/json'
+
   switch (format) {
     case 'featherless': {
       headers.Accept = 'application/json'
@@ -76,26 +82,32 @@ export const streamGenerator: CompletionGenerator = async function* (opts) {
 
   const stream = fetchStream(response, { format, log: opts.log })
   let sentTokens = false
+  let errorObj: any = undefined
 
   for await (const data of stream) {
     if (!data) continue
 
     if (data.token) {
+      if (!meta.wait) {
+        meta.wait = round((Date.now() - start) / 1000, 2)
+      }
       const token = data.token as string
       tokens.push(data.token)
       yield { token }
     }
 
     if (data.meta) {
-      Object.assign(meta, data.meta)
+      if (data.meta.finish_reason) meta.stop = data.meta.finish_reason
+      if (data.meta.model) meta.model = meta.model = data.meta.model
     }
 
     if (data.error) {
       sentError = true
-      yield { error: data.error }
+      yield { error: data.error, errorObj: data.errorObj }
     }
 
     if (data.error || data.errorObj) {
+      errorObj = data.errorObj
       opts.log?.error(
         { err: data.error, obj: data.errorObj },
         `Exception occurred parsing fetch stream`
@@ -113,6 +125,7 @@ export const streamGenerator: CompletionGenerator = async function* (opts) {
       case 404: {
         yield {
           error: `Request failed with 404 Not Found: Check your URL`,
+          errorObj,
         }
         break
       }
@@ -120,6 +133,7 @@ export const streamGenerator: CompletionGenerator = async function* (opts) {
       default: {
         yield {
           error: `Request failed: ${response.status} ${response.statusText}`,
+          errorObj,
         }
         break
       }
@@ -127,6 +141,8 @@ export const streamGenerator: CompletionGenerator = async function* (opts) {
 
     return
   }
+
+  meta.time = round((Date.now() - start) / 1000, 2)
 
   if (!sentTokens) {
     yield { tokens: tokens.join('') }
@@ -191,6 +207,9 @@ export async function* fetchStream(
           yield { tokens: accum, gens: swipes }
         }
 
+        if (DEBUG) {
+          console.log(`[fetch] response: ${accum}`)
+        }
         yield { tokens: accum }
         return
       }
@@ -220,23 +239,20 @@ export async function* fetchStream(
         const isError = isErrorCode || !!error?.error
         if (isError && error) {
           // OpenRouter provider errors
-          const suberror = tryParse(error?.error?.metadata?.raw)?.detail
+          const suberror = tryParse(error?.error?.metadata?.raw)
+          const providerError = suberror?.detail || suberror?.message || suberror?.error?.message
 
-          const msg =
-            suberror?.detail ||
-            error?.error?.message ||
-            error?.message ||
-            `status code ${response.status}`
+          const msg = error?.error?.message || error?.message || `status code ${response.status}`
 
-          const finalMsg = [msg, suberror].filter((m) => !!m).join(' - ')
+          const finalMsg = [msg, providerError].filter((m) => !!m).join(' - ')
 
           opts?.log?.error(
             { err: error, chunk: error ? undefined : chunk, url: response.url, msg: finalMsg },
-            `[fetch] request failed with error ${response.status}`
+            `Request failed with error ${response.status}`
           )
 
           yield {
-            error: `Request failed: ${finalMsg}`,
+            error: `${finalMsg}`,
             errorObj: error ? error : chunk,
           }
           return
@@ -253,6 +269,25 @@ export async function* fetchStream(
         if (json) {
           if (format === 'raw') {
             yield json
+          } else if (json?.error) {
+            const msg = json.error?.message
+            const code = json.error.code || ''
+
+            opts?.log?.error({
+              err: json,
+              chunk,
+              url: response.url,
+              code,
+              msg,
+            })
+
+            if (msg) {
+              yield {
+                error: `Provider responded with an error: ${msg}${code ? ` [${code}]` : ''}`,
+                errorObj: json,
+              }
+              return
+            }
           } else {
             const token: string =
               getChoiceProp(json, 'content') || getChoiceProp(json, 'text') || json.response || ''
@@ -263,6 +298,9 @@ export async function* fetchStream(
                 if (!gens[index]) gens[index] = ''
                 gens[index] += token
               } else {
+                if (DEBUG) {
+                  console.log(`[fetch] token: ${token}`)
+                }
                 accum += token
                 yield { token, index }
               }
@@ -272,10 +310,7 @@ export async function* fetchStream(
 
             const meta: any = {}
 
-            getChoiceProp(json, 'id')
-            getChoiceProp(json, 'created', meta)
             getChoiceProp(json, 'model', meta)
-            getChoiceProp(json, 'object')
             getChoiceProp(json, 'finish_reason', meta)
 
             yield { meta }

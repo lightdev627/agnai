@@ -50,6 +50,7 @@ import { ALLOWED_TYPES } from '/web/store/data/image'
 import { api } from '/web/store/api'
 import { ThirdPartyFormat } from '/common/adapters'
 import { resizeImage } from '/web/shared/image-resize'
+import { getPresetConnection, getProviderConnection } from '/common/providers'
 
 const InputBar: Component<{
   chat: AppSchema.Chat
@@ -235,6 +236,7 @@ const InputBar: Component<{
   }
 
   const attach = async (file: File) => {
+    setMenu(false)
     const ext = file.name.split('.').slice(-1)[0].toLowerCase()
     const isAllowed = ALLOWED_TYPES.has(ext)
     if (!isAllowed) {
@@ -255,8 +257,6 @@ const InputBar: Component<{
     } else {
       msgStore.setAttachment(props.chat._id, buffer.content)
     }
-
-    setMenu(false)
   }
 
   return (
@@ -434,7 +434,7 @@ const InputBar: Component<{
               </Button>
             </Show>
           </Show>
-          <Show when={canAttachImage(ctx.preset, ctx.subPreset)}>
+          <Show when={canAttachImage(ctx.provider, ctx.preset, ctx.subPreset)}>
             <FileInput
               fieldName="imageCaption"
               parentClass="hidden"
@@ -475,22 +475,29 @@ const InputBar: Component<{
 export default InputBar
 
 function shouldShrinkImage(preset: AppSchema.UserGenPreset | undefined, size: number) {
-  //
-  if (size > Math.pow(1024, 3)) return true
-  if (!preset) return false
-  if (preset.service === 'agnaistic') return true
-  if (preset.service !== 'kobold') return false
   return true
+  //
+  // if (size > Math.pow(1024, 3)) return true
+  // if (!preset) return false
+  // if (preset.service === 'agnaistic') return true
+  // if (preset.service !== 'kobold') return false
+  // return true
 }
 
 function canAttachImage(
+  provider: AppSchema.Provider | undefined,
   preset: AppSchema.UserGenPreset | undefined,
   subModel: AppSchema.SubscriptionModelOption | undefined
 ) {
-  if (!preset) return false
-  if (preset.service === 'openrouter') return true
-  if (preset.service === 'claude-v2') return true
-  if (preset.service === 'agnaistic') {
+  const conn = provider
+    ? getProviderConnection(provider)
+    : preset
+    ? getPresetConnection(preset, [])
+    : undefined
+  if (!conn) return false
+  if (conn.service === 'openrouter') return true
+  if (conn.service === 'claude-v2') return true
+  if (conn.service === 'agnaistic') {
     if (!subModel) return false
     return !!subModel.preset.subVisionModel
   }
@@ -507,5 +514,5 @@ function canAttachImage(
     featherless: true,
   }
 
-  return !!preset.thirdPartyFormat && !!supportedFormats[preset.thirdPartyFormat]
+  return !!conn.format && !!supportedFormats[conn.format]
 }

@@ -9,6 +9,7 @@ import { insertImageContent, stripImageContent } from './template-chat-payload'
 import { OPENAI_CHAT_MODELS, OPENAI_MODELS } from '/common/presets/openai'
 import { streamGenerator } from '/common/requests/stream'
 import { toImageJinjaTemplate } from '/common/requests/payloads'
+import { JsonField } from '/common/prompt'
 
 type CompletionContent<T> = Array<{ finish_reason: string; index: number } & ({ text: string } | T)>
 
@@ -69,6 +70,40 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     }
   }
 
+  if (gen.jsonEnabled && opts.jsonSchema) {
+    const responseField = `${opts.replyAs?.name || opts.char?.name}'s response`
+    const base = {
+      [responseField]: { type: 'string' },
+    }
+    const fields = opts.jsonSchema.reduce((prev: any, field: JsonField) => {
+      const { disabled, name, type, ...rest } = field
+      prev[field.name] = {
+        type: type.type,
+        ...rest,
+      }
+      return prev
+    }, base as any)
+
+    // OpenAI format
+    // https://platform.openai.com/docs/guides/structured-outputs
+    const required = Object.keys(fields)
+    body.response_format = {
+      type: 'json_schema',
+      json_schema: {
+        name: 'response',
+        type: 'object',
+        strict: true,
+        // name: 'response',
+        schema: {
+          strict: true,
+          properties: fields,
+          required,
+          additionalProperties: false,
+        },
+      },
+    }
+  }
+
   if (isThirdParty && gen.jinjaEnabled) {
     body.chat_template = toImageJinjaTemplate({ format: gen.modelFormat, jinja: gen.jinjaTemplate })
   }
@@ -111,6 +146,7 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     'Content-Type': 'application/json',
     'HTTP-Referer': 'https://agnai.chat',
     'X-Title': 'Agnai.Chat',
+    'anthropic-version': '2023-06-01',
   }
 
   if (apiKey) {
@@ -229,9 +265,9 @@ export function getCompletionContent(completion: Completion<Inference> | undefin
     return completion
   }
 
-  if ('text' in completion.choices[0]) {
+  if ('text' in completion?.choices?.[0]) {
     return completion.choices[0].text
   } else {
-    return completion.choices[0].message.content
+    return completion?.choices?.[0]?.message?.content || ''
   }
 }

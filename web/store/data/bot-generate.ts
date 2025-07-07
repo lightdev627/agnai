@@ -1,5 +1,5 @@
 import { v4 } from 'uuid'
-import { api, getAuthHeaders } from '../api'
+import { api, getAuthHeaders, isLoggedIn } from '../api'
 import { getStore } from '../create'
 import { localApi } from './storage'
 import {
@@ -27,6 +27,7 @@ import iconv from 'iconv-lite'
 import { genApi } from './inference'
 import { isDefaultPreset } from '/common/default-preset'
 import { ThirdPartyFormat } from '/common/adapters'
+import { localEmit } from '../socket'
 
 iconv.enableStreamingAPI(require('stream'))
 
@@ -143,12 +144,35 @@ export async function generateResponse(
     request.imageData = entities.imageData
   }
 
-  if (useLocalRequest(entities.settings, entities.user._id)) {
+  if (useLocalRequest(entities.settings, entities.user)) {
     localRequest(request, opts.signal, prompt.template.parsed).then(() => {
       console.log('[done]')
     })
 
-    const input = opts.kind === 'send' ? opts.text : undefined
+    let input = opts.kind === 'send' ? opts.text : undefined
+
+    /**
+     * Edge-case: Guests using local requests need the message they sent to be persisted immediately.
+     * Otherwise it'd have to be created when the response is complete
+     */
+    if (!isLoggedIn() && opts.kind === 'send') {
+      const newMsg: AppSchema.ChatMessage = {
+        _id: v4(),
+        chatId: active.chat._id,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        kind: 'chat-message',
+        retries: [],
+        msg: opts.text || '',
+        userId: request.impersonate ? undefined : 'anon',
+        characterId: request.impersonate?._id,
+        parent: request.parent,
+      }
+      input = undefined
+      localEmit({ type: 'message-created', chatId: active.chat._id, msg: newMsg })
+      request.parent = newMsg._id
+    }
+
     return localApi.result({ generating: true, input, requestId: request.requestId })
   }
 
@@ -581,9 +605,8 @@ function emptyMsg(
   }
 }
 
-function useLocalRequest(settings: Partial<AppSchema.UserGenPreset>, userId: string) {
+function useLocalRequest(settings: Partial<AppSchema.UserGenPreset>, user: AppSchema.User) {
   if (!settings.localRequests) return false
-  if (settings.service !== 'kobold') return false
 
   const format = settings.thirdPartyFormat
   if (!isSupportedLocalRequestFormat(format)) return false
@@ -591,7 +614,7 @@ function useLocalRequest(settings: Partial<AppSchema.UserGenPreset>, userId: str
   if (settings.localRequests) {
     if (isDefaultPreset(settings._id)) return true
 
-    if (settings.userId !== userId) {
+    if (settings.userId !== user._id) {
       throw new Error(
         `Multiplayer not available for this chat: Chat is configured for local requests`
       )

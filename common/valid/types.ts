@@ -24,7 +24,6 @@ export type Reference =
   | [Validator]
   | [Validator, '?']
   | Validator
-  | (Validator & { '?': any })
   | [...string[]]
   | readonly [...string[]]
   | [...string[], null]
@@ -44,7 +43,7 @@ export type FromOptional<T extends OptionalPrimitive> = T extends 'string?'
   ? unknown | undefined
   : never
 
-export type FromPrimitve<T extends Primitive> = T extends 'string'
+export type FromPrimitive<T extends Primitive> = T extends 'string'
   ? string
   : T extends 'boolean'
   ? boolean
@@ -63,8 +62,8 @@ export type FromTuple<T> = T extends
   | readonly [infer U, '?']
   ? U extends Primitive
     ? T extends [U, '?'] | readonly [U, '?']
-      ? Array<FromPrimitve<U>> | undefined
-      : Array<FromPrimitve<U>>
+      ? Array<FromPrimitive<U>> | undefined
+      : Array<FromPrimitive<U>>
     : never
   : never
 
@@ -86,26 +85,31 @@ export type FromTupleBody<T> = T extends [infer U, infer O]
     : never
   : never
 
-export type UnwrapBody<T extends Validator> = {
-  -readonly [key in keyof T]: key extends '?'
-    ? never
-    : T[key] extends Primitive
-    ? FromPrimitve<T[key]>
-    : T[key] extends OptionalPrimitive
-    ? FromOptional<T[key]>
-    : T[key] extends [Primitive, '?'] | readonly [Primitive, '?']
-    ? FromTuple<T[key]>
-    : T[key] extends [Primitive] | readonly [Primitive]
-    ? FromTuple<T[key]>
-    : T[key] extends [OptionalPrimitive] | readonly [OptionalPrimitive]
-    ? FromOptionalTuple<T[key]>
-    : T[key] extends [Validator, '?'] | readonly [Validator, '?']
-    ? Array<UnwrapBody<T[key][0]>> | undefined
-    : T[key] extends [Validator] | readonly [Validator]
-    ? FromTupleBody<T[key]>
-    : T[key] extends Validator & { '?': any }
-    ? Omit<UnwrapBody<T[key]>, '?'> | undefined
-    : T[key] extends Validator
-    ? UnwrapBody<T[key]>
-    : FromTupleLiteral<T[key]>
+export type UnwrapBody<T extends Validator> = T extends OptionalValidator<T>
+  ? UnwrapBody<Omit<T, '__optional__'>> | undefined
+  : {
+      -readonly [key in keyof T]: T[key] extends Primitive
+        ? FromPrimitive<T[key]>
+        : T[key] extends OptionalPrimitive
+        ? FromOptional<T[key]>
+        : T[key] extends [Primitive, '?'] | readonly [Primitive, '?']
+        ? FromTuple<T[key]>
+        : T[key] extends [Primitive] | readonly [Primitive]
+        ? FromTuple<T[key]>
+        : T[key] extends [OptionalPrimitive] | readonly [OptionalPrimitive]
+        ? FromOptionalTuple<T[key]>
+        : T[key] extends [Validator, '?'] | readonly [Validator, '?']
+        ? Array<UnwrapBody<T[key][0]>> | undefined
+        : T[key] extends [Validator] | readonly [Validator]
+        ? FromTupleBody<T[key]>
+        : T[key] extends Validator
+        ? UnwrapBody<T[key]>
+        : FromTupleLiteral<T[key]>
+    }
+
+type OptionalValidator<T extends Validator> = T & { __optional__: any }
+
+export function optional<T extends Validator>(ref: T): OptionalValidator<T> {
+  ;(ref as any).__optional__ = true
+  return ref as OptionalValidator<T>
 }

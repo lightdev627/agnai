@@ -13,6 +13,7 @@ import { mapPresetsToAdapter } from '/common/presets'
 import { isDefaultTemplate, templates } from '/common/presets/templates'
 import { Response } from 'express'
 import { getAdapter } from '/common/adapters'
+import { formatJsonSchemaVars, getResponseVariable } from '/common/guidance/json-schema'
 
 type GenRequest = UnwrapBody<typeof genValidator>
 type MsgEntities = Awaited<ReturnType<typeof getMessageEntities>>
@@ -200,6 +201,7 @@ export const generateMessageV2 = handle(async (req, res) => {
   }
 
   const schema = ents.preset.jsonSource === 'character' ? replyAs.json : ents.preset.json
+  formatJsonSchemaVars(schema, body)
   const hydrator = ents.preset.jsonEnabled && schema ? jsonHydrator(schema) : undefined
 
   let hydration: HydratedJson | undefined
@@ -292,6 +294,9 @@ export const generateMessageV2 = handle(async (req, res) => {
     log.setBindings({ adapter })
 
     try {
+      const responseVar = getResponseVariable(body)
+      const aliases = { [responseVar]: 'response' }
+
       for await (const gen of stream) {
         if (!signal) {
           break
@@ -324,7 +329,7 @@ export const generateMessageV2 = handle(async (req, res) => {
         if ('partial' in gen) {
           const prefix = body.kind === 'continue' ? `${body.continuing.msg} ` : ''
           if (metadata.json && hydrator) {
-            jsonPartial = parsePartialJson(gen.partial) || jsonPartial
+            jsonPartial = parsePartialJson(gen.partial, aliases) || jsonPartial
             hydration = hydrator(jsonPartial || {})
           }
 
@@ -875,7 +880,10 @@ async function createUserMessage(req: AppRequest<GenRequest>, ents: MsgEntities)
   const { chatId, replyAs, impersonate } = ents
   let userMsg: AppSchema.ChatMessage | undefined
 
+  // If body.response is provided, it's a local request
+  // We don't need to do anything in this case
   if (ents.guest) {
+    if (req.body.response) return
     if (req.body.kind === 'send' || req.body.kind === 'ooc') {
       userMsg = newMessage(v4(), chatId, req.body.text!, {
         userId: 'anon',

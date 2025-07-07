@@ -56,7 +56,7 @@ export const handleClaude: ModelAdapter = async function* (opts) {
   const claudeModel =
     gen.service === 'kobold'
       ? gen.thirdPartyModel || gen.claudeModel
-      : gen.claudeModel || CLAUDE_MODELS.ClaudeV37_Sonnet_Latest
+      : gen.claudeModel || gen.thirdPartyModel || CLAUDE_MODELS.ClaudeV37_Sonnet_Latest
 
   const base = getBaseUrl(gen, claudeModel || defaultPresets.claude.claudeModel, isThirdParty)
 
@@ -340,12 +340,15 @@ const streamCompletion: CompletionGenerator = async function* (opts) {
       }
 
       if (event.error !== undefined) {
-        opts.log.warn({ error: event.error }, '[Claude] Received SSE error event')
+        opts.log.warn(
+          { error: event.error, errorObj: event.errorObj, url: opts.url },
+          '[Claude] Received SSE error event'
+        )
         const message = event.error
           ? `Anthropic interrupted the response: ${event.error?.message || event.error}`
           : `Anthropic interrupted the response.`
         if (!tokens.length) {
-          yield { error: message }
+          yield { error: message, errorObj: event.errorObj }
           return
         }
         sendOne(opts.userId, { type: 'notification', level: 'warn', message })

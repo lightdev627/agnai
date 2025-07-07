@@ -202,7 +202,7 @@ export async function createInferenceStream(opts: InferenceRequest) {
 
   const isThirdParty = isThirdPartyPreset(settings)
 
-  const handler = getHandlers(settings)
+  const handler = getHandlers({ user: opts.user, settings })
   const stream = handler({
     kind: 'plain',
     requestId: '',
@@ -300,13 +300,10 @@ export async function createChatStream(
    * - There is both a history and response template
    */
   let jsonSchema: JsonField[] | undefined
-  if (
-    subscription?.preset?.jsonSchemaCapable &&
-    opts.settings?.jsonEnabled &&
-    opts.chatSchema &&
-    opts.chatSchema.schema?.length
-  ) {
-    jsonSchema = opts.chatSchema.schema
+  if (opts.settings?.jsonEnabled && opts.chatSchema && opts.chatSchema.schema?.length) {
+    if (subscription?.preset?.jsonSchemaCapable || !subscription) {
+      jsonSchema = opts.chatSchema.schema
+    }
   }
 
   const fallbackContext = subscription?.preset?.maxContextLength
@@ -380,7 +377,7 @@ export async function createChatStream(
 
   const { adapter, isThirdParty, model } = getAdapter(opts.chat, opts.user, opts.settings)
   const encoder = getTokenCounter(adapter, model, subscription?.preset)
-  const handler = getHandlers(opts.settings)
+  const handler = getHandlers({ user: opts.user, settings: opts.settings })
 
   /**
    * Context limits set by the subscription need to be present before the prompt is finalised.

@@ -28,6 +28,7 @@ import { obtainLock, releaseLock } from '../api/chat/lock'
 import { getServerConfiguration } from '../db/admin'
 import { handleGemini } from './gemini'
 import { insertImageContent } from './template-chat-payload'
+import { getPresetConnection, PresetConnection } from '/common/providers'
 
 export type SubscriptionPreset = Awaited<NonNullable<ReturnType<typeof getSubscriptionPreset>>>
 
@@ -435,8 +436,20 @@ export const handlers: { [key in AIAdapter]: ModelAdapter } = {
   venus: handleVenus,
 }
 
-export function getHandlers(settings: Partial<AppSchema.GenSettings>): ModelAdapter {
-  switch (settings.service!) {
+export function getHandlers(opts: {
+  settings: Partial<AppSchema.GenSettings>
+  user?: AppSchema.User
+}): ModelAdapter {
+  const conn = getPresetConnection(opts.settings, opts.user?.providers)
+
+  if (conn.provider) {
+    const { handler } = getProviderHandler(conn)
+    Object.assign(opts.settings, conn.preset)
+    opts.settings = conn.preset
+    return handler
+  }
+
+  switch (opts.settings.service!) {
     case 'agnaistic':
     case 'claude':
     case 'claude-v2':
@@ -452,14 +465,14 @@ export function getHandlers(settings: Partial<AppSchema.GenSettings>): ModelAdap
     case 'mancer':
     case 'novel':
     case 'venus':
-      return handlers[settings.service]
+      return handlers[opts.settings.service]
   }
 
-  switch (settings.thirdPartyFormat!) {
+  switch (opts.settings.thirdPartyFormat!) {
     case 'claude':
     case 'kobold':
     case 'openai':
-      return handlers[settings.thirdPartyFormat!]
+      return handlers[opts.settings.thirdPartyFormat!]
 
     case 'openai-chat':
     case 'openai-chatv2':
@@ -474,4 +487,20 @@ export function getHandlers(settings: Partial<AppSchema.GenSettings>): ModelAdap
   }
 
   return handleThirdParty
+}
+
+function getProviderHandler({ provider, service, format, detail }: PresetConnection) {
+  // const { detail, type, category } = assertProviderDetail(provider.provider)
+
+  if (format) {
+    const handler = getHandlers({ settings: { thirdPartyFormat: format } })
+    return { handler }
+  }
+
+  if (service) {
+    const handler = getHandlers({ settings: { service } })
+    return { handler }
+  }
+
+  throw new Error(`Unknown provider: ${provider?.provider}`)
 }

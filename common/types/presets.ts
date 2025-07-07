@@ -1,7 +1,22 @@
 import { AIAdapter, OpenRouterModel, ThirdPartyFormat } from '../adapters'
 import { ModelFormat } from '../presets/templates'
+import { ProviderFormat } from '../providers'
 import { BaseImageSettings, ImageSettings } from './image-schema'
 import { ResponseSchema } from './library'
+
+export interface Provider {
+  _id: string
+  /** 'custom-* | self-* | known-*' */
+  provider: string
+
+  /** For providers that have multiple formats (Claude, OpenAI, ...) */
+  format?: ProviderFormat
+  /** User-provided name */
+  name: string
+  url: string
+  key: string
+  keySet?: boolean
+}
 
 export interface SubscriptionTier {
   kind: 'subscription-tier'
@@ -86,6 +101,7 @@ export interface GenSettings {
   presetMode?: 'simple' | 'advanced' | undefined
 
   service?: AIAdapter
+  providerId?: string
   tokenizer?: string
 
   temp: number
@@ -177,6 +193,7 @@ export interface GenSettings {
 
   frequencyPenalty?: number
   presencePenalty?: number
+
   oaiModel?: string
   novelModel?: string
   claudeModel?: string
@@ -191,6 +208,9 @@ export interface GenSettings {
   thirdPartyUrlNoSuffix?: boolean
   thirdPartyModel?: string
   thirdPartyKey?: string
+
+  /** API-controlled property */
+  thirdPartyKeySet?: boolean
 
   replicateModelName?: string
   replicateModelType?: string

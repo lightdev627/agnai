@@ -5,7 +5,7 @@ import { AppSchema } from '../../../common/types/schema'
 import Button from '../Button'
 import { toastStore, userStore } from '../../store'
 import { presetStore } from '../../store'
-import { AutoPreset, getPresetOptions } from '../adapter'
+import { getPresetOptions } from '../adapter'
 import ServiceWarning from '/web/shared/ServiceWarning'
 import { PresetSelect } from '/web/shared/PresetSelect'
 import { Card, TitleCard } from '/web/shared/Card'
@@ -31,7 +31,8 @@ export const ModeGenSettings: Component<{
     options: presets.map((pre) => ({ label: pre.name, value: pre._id })),
   }))
 
-  const [store, setStore, hides] = getPresetEditor()
+  const [store, setStore, hides, context] = getPresetEditor()
+  const [clicked, setClicked] = createSignal(false)
 
   const presetOptions = createMemo(() =>
     getPresetOptions(state.presets, { builtin: true, base: true })
@@ -50,9 +51,7 @@ export const ModeGenSettings: Component<{
     return all.concat(defaults)
   })
 
-  const [selected, setSelected] = createSignal(
-    props.presetId || user.user?.defaultPreset || AutoPreset.service
-  )
+  const [selected, setSelected] = createSignal(props.presetId || '')
 
   createEffect(
     on(
@@ -62,15 +61,15 @@ export const ModeGenSettings: Component<{
 
         if (isDefaultPreset(id)) {
           const clone = deepClone(defaultPresets[id])
-          presetStore.getPresetModelList(clone, true)
+          presetStore.getPresetModelList(clone, user.user?.providers || [], true)
           setStore(clone)
           return
         }
 
         const preset = state.presets.find((p) => p._id === id)
         if (preset) {
-          setStore(preset)
-          presetStore.getPresetModelList(preset, true)
+          setStore({ providerId: '', thirdPartyKeySet: false, ...preset })
+          presetStore.getPresetModelList(preset, user.user?.providers || [], true)
           return
         }
       }
@@ -157,6 +156,16 @@ export const ModeGenSettings: Component<{
 
   const activePreset = createMemo(() => presets().find((pre) => pre._id === selected()))
 
+  const copy = (text: string) => {
+    if (typeof navigator === undefined) return
+
+    try {
+      navigator.clipboard.writeText(text)
+      setTimeout(() => setClicked(false), 1000)
+      setClicked(true)
+    } catch (ex) {}
+  }
+
   return (
     <div class="text-sm">
       <form ref={ref} class="flex flex-col gap-4">
@@ -181,21 +190,31 @@ export const ModeGenSettings: Component<{
           <TextInput
             fieldName="name"
             value={store.name}
-            label="Preset Name"
+            label={
+              <div class="flex gap-2">
+                <div>Preset Name</div>{' '}
+                <div
+                  class="icon-button select-none text-sm"
+                  style={{ transition: '0.3s' }}
+                  classList={{ '!text-green-500': clicked() }}
+                  onClick={() => copy(store._id)}
+                >
+                  Copy ID {clicked() ? '✓' : ''}
+                </div>
+              </div>
+            }
             onChange={(ev) => setStore('name', ev.currentTarget.value)}
           />
-
-          <Show when={store._id}>
-            <TextInput prelabel="ID" value={store._id} disabled />
-          </Show>
         </Card>
 
         <PresetSettings
           store={store}
           setter={setStore}
+          context={context}
           hideTabs={props.hideTabs}
           hides={hides}
           noSave={false}
+          page="mode"
         />
       </form>
     </div>

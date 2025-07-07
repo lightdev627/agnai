@@ -1,4 +1,13 @@
-import { Component, For, JSX, Show, createMemo, createSignal, onMount } from 'solid-js'
+import {
+  Component,
+  For,
+  JSX,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onMount,
+} from 'solid-js'
 import { FormLabel } from './FormLabel'
 import Button, { ButtonSchema } from './Button'
 import { RootModal } from './Modal'
@@ -16,7 +25,7 @@ export const CustomSelect: Component<{
   onSelect: (opt: CustomOption) => void
   options?: CustomOption[]
   categories?: Array<{ name: string; options: CustomOption[] }>
-  value: any
+  // value: any
 
   header?: JSX.Element
 
@@ -31,6 +40,7 @@ export const CustomSelect: Component<{
   classList?: Record<string, boolean>
   emitter?: ComponentSubscriber<'close'>
   search?: (value: string, search: string) => boolean
+  disabled?: boolean
 }> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [filter, setFilter] = createSignal('')
@@ -38,6 +48,13 @@ export const CustomSelect: Component<{
   onMount(() => {
     if (props.emitter) {
       props.emitter('close', () => setOpen(false))
+    }
+  })
+
+  createEffect(() => {
+    const isOpening = open()
+    if (isOpening) {
+      setFilter('')
     }
   })
 
@@ -100,6 +117,7 @@ export const CustomSelect: Component<{
           alignLeft
           onClick={() => setOpen(true)}
           class="w-fit"
+          disabled={props.disabled}
         >
           {buttonLabel()}
         </Button>
@@ -112,6 +130,7 @@ export const CustomSelect: Component<{
               fieldName="options-filter"
               placeholder="Filter..."
               onChange={(ev) => setFilter(ev.currentTarget.value)}
+              value={filter()}
             />
           </Show>
 
