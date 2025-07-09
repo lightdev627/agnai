@@ -201,9 +201,9 @@ export async function createInferenceStream(opts: InferenceRequest) {
     settings.stopSequences = opts.stop
   }
 
-  const isThirdParty = isThirdPartyPreset(settings)
-
   const conn = getPresetConnection(settings, opts.user.providers)
+  const isThirdParty = isThirdPartyPreset(conn)
+
   const handler = getHandlers({ user: opts.user, settings })
   const stream = handler({
     kind: 'plain',
@@ -555,17 +555,19 @@ function simplifyPreset(
 
   if (!gen.presetMode || gen.presetMode === 'advanced') return next
 
-  const keep: any = {}
+  const recommends: any = {}
 
-  for (const [prop, usable] of Object.entries(MODE_SETTINGS[gen.presetMode] || {})) {
-    if (!usable) continue
-    const value = (gen as any)[prop]
-    if (value !== undefined) {
-      keep[prop] = value
+  if (sub?.preset) {
+    for (const [prop, usable] of Object.entries(MODE_SETTINGS[gen.presetMode] || {})) {
+      if (!usable) continue
+      const value = (sub.preset as any)[prop]
+      if (value !== undefined) {
+        recommends[prop] = value
+      }
     }
   }
 
-  Object.assign(next, keep, { useMaxContext: true })
+  Object.assign(next, recommends, { useMaxContext: true })
 
   return next
 }

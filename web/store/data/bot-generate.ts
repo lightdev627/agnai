@@ -28,6 +28,7 @@ import { genApi } from './inference'
 import { isDefaultPreset } from '/common/default-preset'
 import { ThirdPartyFormat } from '/common/adapters'
 import { localEmit } from '../socket'
+import { getPresetConnection } from '/common/providers'
 
 iconv.enableStreamingAPI(require('stream'))
 
@@ -606,7 +607,12 @@ function emptyMsg(
 }
 
 function useLocalRequest(settings: Partial<AppSchema.UserGenPreset>, user: AppSchema.User) {
-  if (!settings.localRequests) return false
+  if (!settings.providerId) {
+    if (settings.service === 'agnaistic') return false
+    if (settings.service !== 'kobold') return false
+
+    if (settings.service === 'kobold' && !settings.localRequests) return false
+  }
 
   const format = settings.thirdPartyFormat
   if (!isSupportedLocalRequestFormat(format)) return false
@@ -621,7 +627,10 @@ function useLocalRequest(settings: Partial<AppSchema.UserGenPreset>, user: AppSc
     }
   }
 
-  return true
+  const conn = getPresetConnection(settings || {}, user.providers)
+  if (conn.category === 'self') return true
+
+  return false
 }
 
 function isSupportedLocalRequestFormat(format: ThirdPartyFormat | undefined) {

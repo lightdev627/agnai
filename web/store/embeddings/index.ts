@@ -82,6 +82,14 @@ export const embedApi = {
   },
   initSimiliary: (model: string) => {
     const chat = getStore('chat').getState().active?.chat
+
+    // WIP: Only use small model on mobile
+    if (isMobile()) {
+      model = EMBED_MODELS.Small
+      console.log('[embed:init] skipped due to mobile')
+      return
+    }
+
     post('initSimilarity', { model, dtype: getLocalModelDtype() })
 
     EMBED_ALLOWED = !!model
@@ -141,6 +149,10 @@ const handlers: {
   },
   init: (type) => {
     try {
+      if (isMobile()) {
+        console.log('[embeds] skipped due to mobile')
+        return
+      }
       const user = getStore('user').getState()
       const chat = getStore('chat').getState().active?.chat
 
@@ -524,4 +536,8 @@ function upsertEmbeddingId(id: string, name: string) {
 
 function getLocalModelDtype() {
   return 'fp16'
+}
+
+function isMobile() {
+  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
 }

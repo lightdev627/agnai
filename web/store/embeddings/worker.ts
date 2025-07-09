@@ -15,7 +15,7 @@ const encoder = getEncoding('cl100k_base')
 const DEVICE = undefined
 
 // Absolutely awful workaround due to Parcel.js being extremely sucky
-const dynamicImport = new Function('a', 'b', 'return import(a, b);')
+const dynamicImport = new Function('a', 'return import(a);')
 
 type Vector = { data: number[] }
 
@@ -429,7 +429,6 @@ async function pipeline<T extends TaskType>(
   const p = api.pipeline(task, model, {
     dtype: 'fp16',
     progress_callback: callback,
-    device: DEVICE,
   })
 
   return p
