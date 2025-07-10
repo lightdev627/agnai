@@ -21,6 +21,25 @@ export const getUserPresets = handle(async ({ userId }) => {
   return { presets, templates }
 })
 
+export const testConnectionUrl = handle(async ({ body, userId, authed }) => {
+  assertValid({ providerId: 'string?', url: 'string', key: 'string?' }, body)
+
+  if (!body.key && body.providerId) {
+    const provider = authed?.providers?.find((p) => p._id === body.providerId)
+
+    if (provider?.key) {
+      body.key = body.key = decryptText(provider.key || '', true)
+    }
+  }
+
+  const models = await getThirdPartyModels(body.url, body.key!)
+  if (models) {
+    return { url: models.url, success: true }
+  }
+
+  return { success: false, url: '' }
+})
+
 export const getThirdPartyPresetModels = handle(async ({ userId, body, authed }) => {
   assertValid(
     {

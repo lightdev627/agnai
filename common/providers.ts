@@ -58,6 +58,14 @@ export const KNOWN_PROVIDERS: Record<string, ProviderDefinition> = {
     url: 'https://api.featherless.ai/v1',
     formats: [{ type: 'format', value: 'featherless' }],
   },
+  chutes: {
+    name: 'Chutes',
+    url: 'https://llm.chutes.ai/v1',
+    formats: [
+      { type: 'format', value: 'openai-chatv2' },
+      { type: 'format', value: 'openai' },
+    ],
+  },
 }
 
 export const KNOWN_SELF_HOST: Record<string, ProviderDefinition> = {
@@ -201,6 +209,8 @@ export function getPresetConnection(
     }
 
     if (conn.url) copy.thirdPartyUrl = conn.url
+    if (conn.key) copy.thirdPartyKey = conn.key
+
     copy.localRequests = conn.local
     copy.thirdPartyKey = conn.key
 
@@ -212,7 +222,7 @@ export function getPresetConnection(
       service: conn.service,
       format: conn.format,
       url: conn.url,
-      key: provider.key,
+      key: conn.key,
     }
   }
 
