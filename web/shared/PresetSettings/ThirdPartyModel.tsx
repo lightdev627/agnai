@@ -1,9 +1,9 @@
-import { Match, Show, Switch, createMemo, createSignal, onMount } from 'solid-js'
-import { FLAI_CONTEXTS } from '/common/adapters'
+import { Match, Show, Switch, createEffect, createMemo, createSignal, onMount } from 'solid-js'
+import { FLAI_CONTEXTS, GOOGLE_MODELS } from '/common/adapters'
 import TextInput from '../TextInput'
 import Button from '../Button'
 import { getStore } from '/web/store/create'
-import { settingStore, toastStore } from '/web/store'
+import { presetStore, settingStore, toastStore } from '/web/store'
 import Select, { Option } from '../Select'
 import { FormLabel } from '../FormLabel'
 import { CustomSelect } from '../CustomSelect'
@@ -17,9 +17,28 @@ import { NOVEL_MODELS } from '/common/presets/novel'
 import { CLAUDE_MODELS } from '/common/presets/claude'
 import { AgnaisticSettings } from './Agnaistic'
 import { Pill } from '../Card'
+import Accordian from '../Accordian'
 
 export const ThirdPartyModel: Field = (props) => {
   const component = createMemo(() => {
+    if (!props.state.providerId && props.context.service) {
+      switch (props.context.service) {
+        case 'claude':
+        case 'claude-v2':
+          return 'claude-external'
+
+        case 'novel':
+        case 'openrouter':
+        case 'openrouter-completion':
+          return props.context.service
+      }
+
+      switch (props.context.format) {
+        case 'gemini':
+          return props.context.format
+      }
+    }
+
     switch (props.context.service) {
       case 'novel':
       case 'openrouter':
@@ -60,6 +79,11 @@ export const ThirdPartyModel: Field = (props) => {
     }
   })
 
+  createEffect(() => {
+    const type = component()
+    console.log('component', type)
+  })
+
   return (
     <>
       <Switch>
@@ -84,6 +108,9 @@ export const ThirdPartyModel: Field = (props) => {
         </Match>
         <Match when={component() === 'arli'}>
           <ArliModels {...props} />
+        </Match>
+        <Match when={component() === 'gemini'}>
+          <GoogleModels {...props} />
         </Match>
         <Match when>{null}</Match>
       </Switch>
@@ -125,10 +152,11 @@ const CompatModel: Field = (props) => {
   }
 
   const warning = createMemo(() => {
+    if (!props.state.providerId) return
+    if (models.loading) return
     if (modelList().length <= 1) return
     const match = modelList().find((m) => m.value === props.state.thirdPartyModel)
-
-    if (match) return `Your current model is not in the model list`
+    if (!match) return `Your current model is not in the model list`
   })
 
   return (
@@ -269,6 +297,20 @@ const OpenRouterModels: Field = (props) => {
         onChange={(ev) => {
           const model = cfg.config.openRouter.models?.find((m) => m.id === ev.value)
           props.setter({ openRouterModel: model, thirdPartyModel: model?.id })
+
+          if (props.page === 'mode' && model?.id) {
+            presetStore.updatePreset(
+              props.state._id,
+              {
+                openRouterModel: model,
+                thirdPartyModel: model?.id,
+              },
+              {
+                quiet: true,
+                onSuccess: () => toastStore.success('Model changed'),
+              }
+            )
+          }
         }}
       />
 
@@ -330,10 +372,14 @@ const ArliModels: Field = (props) => {
   })
 
   const search = (value: string, input: string) => {
-    const res = input.split(' ').map((text) => new RegExp(text.replace(/\*/gi, '[a-z0-9]'), 'gi'))
+    const cleanedInput = input.replace(/[^a-z0-9_-]/gi, '').toLowerCase()
+    const cleanedValue = value.replace(/[^a-z0-9_-]/gi, '').toLowerCase()
+    const res = cleanedInput
+      .split(' ')
+      .map((text) => new RegExp(text.replace(/\*/gi, '[a-z0-9]'), 'gi'))
 
     for (const re of res) {
-      const match = value.match(re)
+      const match = cleanedValue.match(re)
       if (!match) return false
     }
 
@@ -350,6 +396,7 @@ const ArliModels: Field = (props) => {
   return (
     <div class="flex gap-1">
       <CustomSelect
+        maxHeight
         modalTitle="Select a Model"
         label="Model"
         options={options()}
@@ -389,7 +436,8 @@ const ArliModels: Field = (props) => {
 
 const FeatherlessModels: Field = (props) => {
   const state = settingStore((s) => s.featherless)
-  const [modelclass, setModelclass] = createSignal('')
+  const [selectedClasses, setClasses] = createSignal<string[]>([])
+  const [classesOpen, setClassesOpen] = createSignal(false)
 
   const label = createMemo(() => {
     const id = props.state.providerId ? props.state.thirdPartyModel : props.state.featherlessModel
@@ -408,26 +456,32 @@ const FeatherlessModels: Field = (props) => {
   })
 
   const options = createMemo(() => {
+    const modelClasses = selectedClasses().reduce((prev, curr) => {
+      prev.add(curr)
+      return prev
+    }, new Set<string>())
+
     return state.models
       .filter((s) => {
         if (s.status === 'not_deployed') return false
-        const mclass = modelclass()
-        if (!mclass) return true
-        return s.model_class === mclass
+        if (modelClasses.size === 0) return true
+        if (modelClasses.has(s.model_class)) return true
+        return false
       })
       .map((s) => ({
         label: (
           <div
-            class="flex w-full justify-between"
+            class="flex w-full flex-col"
             title={`${s.status}, ${(s.health || '...').toLowerCase()}`}
           >
             <div class="ellipsis">{s.id}</div>
             <div class="text-500 text-xs">
-              {flaiContext(s, state.classes)} {s.status}
+              {s.model_class} - {flaiContext(s, state.classes)} {s.status}
             </div>
           </div>
         ),
         value: s.id,
+        disabled: s.status !== 'active',
       }))
       .sort((l, r) => l.value.localeCompare(r.value))
   })
@@ -439,10 +493,14 @@ const FeatherlessModels: Field = (props) => {
   })
 
   const search = (value: string, input: string) => {
-    const res = input.split(' ').map((text) => new RegExp(text.replace(/\*/gi, '[a-z0-9]'), 'gi'))
+    const cleanedInput = input.replace(/[^a-z0-9_-]/gi, '').toLowerCase()
+    const cleanedValue = value.replace(/[^a-z0-9_-]/gi, '').toLowerCase()
+    const res = cleanedInput
+      .split(' ')
+      .map((text) => new RegExp(text.replace(/\*/gi, '[a-z0-9]'), 'gi'))
 
     for (const re of res) {
-      const match = value.match(re)
+      const match = cleanedValue.match(re)
       if (!match) return false
     }
 
@@ -456,31 +514,104 @@ const FeatherlessModels: Field = (props) => {
     return [{ label: 'All', value: '' }].concat(list)
   })
 
+  const availables = createMemo(() => {
+    const map: Record<string, number> = {}
+    for (const model of state.models) {
+      if (!map[model.model_class]) {
+        map[model.model_class] = 0
+      }
+
+      if (model.status === 'active') {
+        map[model.model_class]++
+      }
+    }
+
+    return map
+  })
+
+  const deselectClass = (cls: string) => {
+    const next = selectedClasses().filter((s) => s !== cls)
+    setClasses(next)
+  }
+
+  const selectClass = (cls: string) => {
+    const next = selectedClasses().concat(cls)
+    setClasses(next)
+  }
+
+  const classPills = createMemo(() => {
+    const available = availables()
+    const set = new Set<string>()
+    const selected = selectedClasses()
+    for (const cls of selected) {
+      set.add(cls)
+    }
+
+    const pills = classes()
+      .filter((cls) => available[cls.value] > 0)
+      .map((cls) => {
+        if (set.has(cls.value)) {
+          return (
+            <Pill class="select-none" small type="green" onClick={() => deselectClass(cls.value)}>
+              {cls.value}
+            </Pill>
+          )
+        }
+
+        return (
+          <Pill class="select-none" inverse small type="hl" onClick={() => selectClass(cls.value)}>
+            {cls.value}
+          </Pill>
+        )
+      })
+
+    return pills
+  })
+
   return (
     <div class="flex items-end gap-1">
       <CustomSelect
+        maxHeight
         modalTitle="Select a Model"
         label="Model"
         options={options()}
         search={search}
         header={
-          <Select
-            items={classes()}
-            value={''}
-            label={'Filter: Model Class'}
-            fieldName="featherless.classFilter"
-            onChange={(ev) => setModelclass(ev.value)}
-            parentClass="text-sm"
-          />
+          <Accordian
+            class="!bg-opacity-10 !p-1"
+            title={<span class="text-sm">Model Classes</span>}
+            open={classesOpen()}
+            onChange={(ev) => setClassesOpen(ev)}
+          >
+            <div class="flex w-full flex-wrap gap-1">
+              {classPills()}
+
+              {/* <Select
+              items={classes()}
+              value={''}
+              label={'Filter: Model Class'}
+              fieldName="featherless.classFilter"
+              onChange={(ev) => setModelclass(ev.value)}
+              parentClass="text-sm"
+              /> */}
+            </div>
+          </Accordian>
         }
         onSelect={(opt) => {
           props.setter({ featherlessModel: opt.value, thirdPartyModel: opt.value })
           if (props.page !== 'mode') return
 
-          getStore('presets').updatePreset(props.state._id, {
-            thirdPartyModel: opt.value,
-            featherlessModel: opt.value,
-          })
+          getStore('presets').updatePreset(
+            props.state._id,
+            {
+              thirdPartyModel: opt.value,
+              featherlessModel: opt.value,
+            },
+            {
+              quiet: true,
+              onSuccess: () => toastStore.success('Model changed'),
+            }
+          )
         }}
         buttonLabel={label()}
         selected={props.state.featherlessModel}
@@ -519,13 +650,17 @@ const ClaudeModel: Field = (props) => {
     ClaudeV35_Sonnet_Oct2024: `Claude v3.5 Sonnet (Oct 2024)`,
     ClaudeV37_Sonnet_Latest: 'Claude v3.7 Sonnet (Latest)',
     ClaudeV37_Sonnet_Feb2025: 'Claude v3.7 Sonnet (Feb 2025)',
+    ClaudeV4_Opus_May2025: 'Claude v4 Opus (May 2025)',
+    ClaudeV4_Sonnet_May2025: 'Claude v4 Sonnet (May 2025)',
   } satisfies Record<keyof typeof CLAUDE_MODELS, string>
 
   const claudeModels: () => Option<string>[] = createMemo(() => {
     const models = new Map(Object.entries(CLAUDE_MODELS) as [keyof typeof CLAUDE_MODELS, string][])
     const labels = Object.entries(CLAUDE_LABELS) as [keyof typeof CLAUDE_MODELS, string][]
 
-    return labels.map(([key, label]) => ({ label, value: models.get(key)! }))
+    const options = labels.map(([key, label]) => ({ label, value: models.get(key)! }))
+    options.unshift({ label: 'None', value: '' })
+    return options
   })
 
   return (
@@ -536,7 +671,59 @@ const ClaudeModel: Field = (props) => {
       helperText="Which Claude model to use, models marked as 'Latest' will automatically switch when a new minor version is released."
       value={props.state.claudeModel ?? defaultPresets.claude.claudeModel}
       disabled={props.state.disabled}
-      onChange={(ev) => props.setter('claudeModel', ev.value)}
+      onChange={(ev) => {
+        props.setter({ claudeModel: ev.value, thirdPartyModel: ev.value })
+        if (props.page === 'mode') {
+          presetStore.updatePreset(
+            props.state._id,
+            { claudeModel: ev.value, thirdPartyModel: ev.value },
+            {
+              quiet: true,
+              onSuccess: () => toastStore.success('Model changed'),
+            }
+          )
+        }
+      }}
+    />
+  )
+}
+
+const GoogleModels: Field = (props) => {
+  const label = createMemo(() => {
+    const id = props.state.googleModel
+    if (!id) return 'None Selected'
+    const match = Object.values(GOOGLE_MODELS).find((model) => model.id === id)
+
+    if (!match) return 'Invalid Model'
+    return match.label
+  })
+
+  const options = createMemo(() => {
+    const list = Object.values(GOOGLE_MODELS).map(({ label, id }) => ({ label, value: id }))
+    return list
+  })
+
+  return (
+    <CustomSelect
+      modalTitle="Select a Model"
+      label="Google Model"
+      options={options()}
+      search={(value, search) => value.toLowerCase().includes(search.toLowerCase())}
+      onSelect={(opt) => {
+        props.setter({ googleModel: opt.value, thirdPartyModel: opt.value })
+        if (props.page === 'mode') {
+          presetStore.updatePreset(
+            props.state._id,
+            { googleModel: opt.value, thirdPartyModel: opt.value },
+            {
+              quiet: true,
+              onSuccess: () => toastStore.success('Model changed'),
+            }
+          )
+        }
+      }}
+      buttonLabel={label()}
+      selected={props.state.googleModel || props.state.thirdPartyModel}
     />
   )
 }
