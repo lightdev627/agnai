@@ -16,10 +16,12 @@ import {
   Split,
   MoreHorizontal,
   Braces,
+  ImagePlus,
 } from 'lucide-solid'
 import {
   Accessor,
   Component,
+  createEffect,
   createMemo,
   createSignal,
   For,
@@ -34,18 +36,23 @@ import {
 import { BOT_REPLACE, SELF_REPLACE } from '../../../../common/prompt'
 import { AppSchema } from '../../../../common/types/schema'
 import AvatarIcon, { CharacterAvatar } from '../../../shared/AvatarIcon'
-import { chatStore, userStore, msgStore, toastStore, ChatState, VoiceState } from '../../../store'
+import {
+  chatStore,
+  userStore,
+  msgStore,
+  toastStore,
+  ChatState,
+  VoiceState,
+  settingStore,
+} from '../../../store'
 import { markdown } from '../../../shared/markdown'
 import Button, { ButtonSchema } from '/web/shared/Button'
-import { rootModalStore } from '/web/store/root-modal'
 import { ContextState, useAppContext } from '/web/store/context'
 import { hydrateTemplate, trimSentence } from '/common/util'
 import { EVENTS, events } from '/web/emitter'
 import TextInput from '/web/shared/TextInput'
 import { Card, Pill } from '/web/shared/Card'
-import { FeatureFlags } from '/web/store/flags'
 import { DropMenu } from '/web/shared/DropMenu'
-import { ChatTree } from '/common/chat'
 import { Portal } from 'solid-js/web'
 import { UI } from '/common/types'
 import { LucideProps } from 'lucide-solid/dist/types/types'
@@ -53,6 +60,13 @@ import { createStore } from 'solid-js/store'
 import { RelativeSpinner } from '/web/shared/Loading'
 import { LogProbs } from './LogProbs'
 import { MessageImages } from './MessageImages'
+import Select from '/web/shared/Select'
+import { FileInputResult, getFileAsDataURL } from '/web/shared/FileInput'
+import { resizeImage } from '/web/shared/image-resize'
+import { MsgAttachment } from '/srv/adapter/type'
+import { ALLOWED_TYPES } from '/web/store/data/image'
+import { MessageAttachments } from './Attachments'
+import Modal from '/web/shared/Modal'
 
 type MessageProps = {
   msg: SplitMessage
@@ -97,6 +111,7 @@ const Message: Component<MessageProps> = (props) => {
   const user = userStore()
   const state = chatStore()
   const [edit, setEdit] = createSignal(false)
+  const [editSender, setEditSender] = createSignal<string>()
   const isBot = !!props.msg.characterId
   const isUser = !!props.msg.userId
   const [img, setImg] = createSignal('h-full')
@@ -121,6 +136,9 @@ const Message: Component<MessageProps> = (props) => {
   })
 
   const saveEdit = () => {
+    const senderJson = editSender()
+    const sender = senderJson ? JSON.parse(senderJson) : {}
+
     if (props.msg.json) {
       const json = jsonValues()
       const update = getJsonUpdate(
@@ -131,7 +149,12 @@ const Message: Component<MessageProps> = (props) => {
       )
 
       if (update) {
-        msgStore.editMessageProp(props.msg._id, update)
+        msgStore.editMessageProp(props.msg._id, {
+          ...update,
+          characterId: '',
+          userId: '',
+          ...sender,
+        })
       }
 
       setEdit(false)
@@ -140,7 +163,12 @@ const Message: Component<MessageProps> = (props) => {
 
     if (!editRef) return
 
-    msgStore.editMessage(props.msg._id, editRef.innerText)
+    msgStore.editMessageProp(props.msg._id, {
+      msg: editRef.innerText,
+      characterId: '',
+      userId: '',
+      ...sender,
+    })
     setEdit(false)
   }
 
@@ -148,6 +176,12 @@ const Message: Component<MessageProps> = (props) => {
 
   const startEdit = () => {
     setEdit(true)
+
+    if (!props.msg.characterId) {
+      setEditSender(JSON.stringify({ userId: props.msg.userId }))
+    } else {
+      setEditSender(JSON.stringify({ characterId: props.msg.characterId }))
+    }
     if (editRef) {
       editRef.innerText = props.msg.msg
     }
@@ -167,6 +201,63 @@ const Message: Component<MessageProps> = (props) => {
     const next = ctx.waiting?.image ?? 1
     return next
   })
+
+  const senderOptions = createMemo(() => {
+    if (!edit()) return []
+
+    const opts: Array<{ label: string; value: string }> = []
+    const seen = new Set<string>()
+    let impersonated = false
+
+    for (const { msg } of Object.values(ctx.chatTree)) {
+      if (!msg.characterId) continue
+      if (seen.has(msg.characterId)) continue
+
+      const bot = ctx.allBots[msg.characterId]
+      if (!bot) continue
+
+      seen.add(msg.characterId)
+
+      if (ctx.impersonate && bot._id === ctx.impersonate._id) {
+        impersonated = true
+      }
+
+      opts.push({
+        label: `Bot: ${bot.name}`,
+        value: JSON.stringify({ characterId: bot._id }),
+      })
+    }
+
+    if (!impersonated && ctx.impersonate && !seen.has(ctx.impersonate._id)) {
+      opts.push({
+        label: `Bot: ${ctx.impersonate.name}`,
+        value: JSON.stringify({ characterId: ctx.impersonate._id }),
+      })
+    }
+
+    if (ctx.profile && ctx.user) {
+      opts.push({
+        label: `Profile: ${ctx.profile?.handle || 'You'}`,
+        value: JSON.stringify({ userId: ctx.user._id }),
+      })
+    }
+
+    return opts
+  })
+
+  const editMessageMeta = () => {
+    msgStore.setMetadataMsg(props.msg)
+    // rootModalStore.info(
+    //   'Message Information',
+    //   <Meta
+    //     msg={props.msg}
+    //     history={ctx.promptHistory[props.msg._id]}
+    //     flags={ctx.flags}
+    //     tree={ctx.chatTree}
+    //     loading={!!ctx.waiting}
+    //   />
+    // )
+  }
 
   return (
     <div
@@ -246,7 +337,7 @@ const Message: Component<MessageProps> = (props) => {
             </span>
             <span class="flex flex-row justify-between pb-1">
               <span
-                class={`flex min-w-0 shrink flex-col items-start gap-1 overflow-hidden`}
+                class={`flex min-w-0 shrink flex-col items-start gap-1 overflow-hidden align-middle`}
                 classList={{
                   'sm:flex-col': props.isPaneOpen,
                   'sm:gap-1': props.isPaneOpen,
@@ -256,22 +347,37 @@ const Message: Component<MessageProps> = (props) => {
                   italic: props.msg.ooc,
                 }}
               >
-                <b
-                  class={`chat-name text-900 mr-2 max-w-[160px] overflow-hidden  text-ellipsis whitespace-nowrap sm:max-w-[400px]`}
-                  // Necessary to override text-md and text-lg's line height, for proper alignment
-                  style="line-height: 1;"
-                  data-bot-name={isBot}
-                  data-user-name={isUser}
-                  classList={{
-                    hidden: !!props.msg.event,
-                    'sm:text-base': props.isPaneOpen,
-                    'sm:text-lg': !props.isPaneOpen,
-                  }}
+                <Show
+                  when={!edit()}
+                  fallback={
+                    <>
+                      <Select
+                        parentClass="!pr-1"
+                        class="!py-0.5 !pl-2 !text-sm"
+                        items={senderOptions()}
+                        value={editSender()}
+                        onChange={(ev) => setEditSender(ev.value)}
+                      />
+                    </>
+                  }
                 >
-                  {ctx.anonymize && !props.msg.characterId
-                    ? getAnonName(props.msg.userId!)
-                    : props.msg.handle}
-                </b>
+                  <b
+                    class={`chat-name text-900 mr-2 max-w-[160px] overflow-hidden  text-ellipsis whitespace-nowrap sm:max-w-[400px]`}
+                    // Necessary to override text-md and text-lg's line height, for proper alignment
+                    style="line-height: 1;"
+                    data-bot-name={isBot}
+                    data-user-name={isUser}
+                    classList={{
+                      hidden: !!props.msg.event,
+                      'sm:text-base': props.isPaneOpen,
+                      'sm:text-lg': !props.isPaneOpen,
+                    }}
+                  >
+                    {ctx.anonymize && !props.msg.characterId
+                      ? getAnonName(props.msg.userId!)
+                      : props.msg.handle}
+                  </b>
+                </Show>
 
                 <span
                   classList={{ invisible: ctx.anonymize }}
@@ -297,17 +403,7 @@ const Message: Component<MessageProps> = (props) => {
                   >
                     <span
                       class="text-600 hover:text-900 ml-1 cursor-pointer"
-                      onClick={() =>
-                        rootModalStore.info(
-                          'Message Information',
-                          <Meta
-                            msg={props.msg}
-                            history={ctx.promptHistory[props.msg._id]}
-                            flags={ctx.flags}
-                            tree={ctx.chatTree}
-                          />
-                        )
-                      }
+                      onClick={editMessageMeta}
                     >
                       <Info size={14} />
                     </span>
@@ -336,6 +432,7 @@ const Message: Component<MessageProps> = (props) => {
                     show={opts}
                     showMore={showOpt}
                     textBeforeGenMore={props.textBeforeGenMore}
+                    ctx={ctx}
                   />
                 </Match>
 
@@ -380,7 +477,7 @@ const Message: Component<MessageProps> = (props) => {
             <div ref={avatarRef} classList={{ 'overflow-hidden': !user.ui.imageWrap }}>
               <Switch>
                 <Match when={props.msg.adapter === 'image'}>
-                  <MessageImages msg={props.msg} />
+                  <MessageImages msg={props.msg} onEditClick={editMessageMeta} />
                 </Match>
 
                 <Match when={!edit()}>
@@ -425,7 +522,9 @@ const Message: Component<MessageProps> = (props) => {
                     </div>
                   </Show>
 
-                  <MessageImages msg={props.msg} />
+                  <MessageImages msg={props.msg} onEditClick={editMessageMeta} />
+                  <MessageAttachments msg={props.msg} ctx={ctx} />
+
                   <Show when={!props.partial && props.last}>
                     <div class="flex items-center justify-center gap-2">
                       <For each={props.msg.actions}>
@@ -526,7 +625,10 @@ const MessageOptions: Component<{
   textBeforeGenMore?: string
   onRemove: () => void
   showMore: Signal<boolean>
+  ctx: ContextState
 }> = (props) => {
+  let menuParent: any
+
   const closer = (action: () => void) => {
     return () => {
       action()
@@ -606,6 +708,23 @@ const MessageOptions: Component<{
         icon: Braces,
       },
 
+      attach: {
+        key: 'attach',
+        class: '',
+        label: 'Attach',
+        outer: { outer: false, pos: 0 },
+        icon: ImagePlus,
+        show:
+          props.ctx.canUseAttachments &&
+          (props.msg.userId === props.ctx.user?._id ||
+            props.ctx.impersonate?._id === props.msg.characterId),
+        onClick: () =>
+          settingStore.openAttach(
+            { multiple: true, accept: 'image/jpg,image/png,image/jpeg' },
+            (files) => attachImages(props.msg._id, files)
+          ),
+      },
+
       trash: {
         key: 'trash',
         label: 'Delete',
@@ -668,6 +787,7 @@ const MessageOptions: Component<{
         class="flex items-center"
         classList={{ 'tour-message-opts': props.index === 0, hidden: !showInner() }}
         onClick={() => props.showMore[1](true)}
+        ref={menuParent}
       >
         <MoreHorizontal class="icon-button" />
       </div>
@@ -679,6 +799,7 @@ const MessageOptions: Component<{
           vert="down"
           show={open()}
           close={() => props.showMore[1](false)}
+          parent={menuParent}
         >
           <div class="flex flex-col gap-1" id={`inner-${props.msg._id}`}></div>
         </DropMenu>
@@ -812,85 +933,110 @@ function parseMessage(msg: string, ctx: ContextState, isUser: boolean, adapter?:
   return parsed
 }
 
-const Meta: Component<{
-  msg: AppSchema.ChatMessage
-  history?: any
-  flags: FeatureFlags
-  tree: ChatTree
-}> = (props) => {
-  if (!props.msg) return null
-  const [prompt, setPrompt] = createSignal(props.msg?.imagePrompt || '')
+export const MessageMeta: Component = () => {
+  const [ctx] = useAppContext()
+  const state = msgStore((s) => ({ msg: s.metadata, graph: s.graph }))
+  const [prompt, setPrompt] = createSignal(state.msg?.imagePrompt || '')
+
+  const close = () => {
+    msgStore.setState({ metadata: undefined })
+  }
+
+  createEffect(() => {
+    if (!state.msg) return
+    setPrompt(state.msg.imagePrompt || '')
+  })
 
   const updateImagePrompt = () => {
-    msgStore.editMessageProp(props.msg._id, { imagePrompt: prompt() }, () => {
+    if (!state.msg) return
+    msgStore.editMessageProp(state.msg?._id, { imagePrompt: prompt() }, () => {
       toastStore.success('Image prompt updated')
     })
   }
 
   const descendants = createMemo(() => {
-    const self = props.tree[props.msg._id]
+    if (!state.msg) return []
+    const self = state.graph.tree[state.msg._id]
     if (!self) return []
 
     return Array.from(self.children.values())
   })
 
-  const depth = props.tree[props.msg._id]?.depth || -1
+  const depth = createMemo(() => {
+    if (!state.msg) return -1
+    return state.graph.tree[state.msg._id]?.depth || -1
+  })
 
   return (
-    <form class="flex w-full flex-col gap-2">
-      <Card>
-        <LogProbs msg={props.msg} />
-        <table class="text-sm">
-          <Show when={props.msg.adapter}>
-            <tr>
-              <td class="pr-2">
-                <b>Adapter</b>
-              </td>
-              <td>{props.msg.adapter}</td>
-            </tr>
-          </Show>
-          <Show when={depth >= 0}>
-            <tr>
-              <td>
-                <b>depth</b>
-              </td>
-              <td>#{depth + 1}</td>
-            </tr>
-          </Show>
-          <Show when={descendants().length > 0 && props.flags.debug}>
-            <tr>
-              <td>
-                <b>descendants</b>
-              </td>
-              <td>
-                {descendants()
-                  .map((d) => d.slice(0, 4))
-                  .join(', ')}
-              </td>
-            </tr>
-          </Show>
-          <For each={Object.entries(props.msg.meta || {}).filter(([key]) => key !== 'probs')}>
-            {([key, value]) => (
+    <Modal show={!!state.msg} close={close} title="Message Info" maxWidth="half">
+      <div class="flex w-full flex-col gap-2">
+        <Card>
+          <LogProbs msg={state.msg!} />
+          <table class="text-sm">
+            <Show when={state.msg!.adapter}>
               <tr>
                 <td class="pr-2">
-                  <b>{key}</b>
+                  <b>Adapter</b>
                 </td>
-                <td>{value as string}</td>
+                <td>{state.msg!.adapter}</td>
               </tr>
-            )}
-          </For>
-        </table>
-      </Card>
+            </Show>
+            <Show when={depth() >= 0}>
+              <tr>
+                <td>
+                  <b>depth</b>
+                </td>
+                <td>#{depth() + 1}</td>
+              </tr>
+            </Show>
+            <Show when={descendants().length > 0 && ctx.flags.debug}>
+              <tr>
+                <td>
+                  <b>descendants</b>
+                </td>
+                <td>
+                  {descendants()
+                    .map((d) => d.slice(0, 4))
+                    .join(', ')}
+                </td>
+              </tr>
+            </Show>
+            <For each={Object.entries(state.msg!.meta || {}).filter(([key]) => key !== 'probs')}>
+              {([key, value]) => (
+                <tr>
+                  <td class="pr-2">
+                    <b>{key}</b>
+                  </td>
+                  <td>{value as string}</td>
+                </tr>
+              )}
+            </For>
+          </table>
+        </Card>
 
-      <Show when={props.msg.imagePrompt}>
         <Card>
           <TextInput
             helperText={
               <>
-                Image Prompt -{' '}
-                <span class="link" onClick={updateImagePrompt}>
-                  Save
-                </span>
+                <div class="flex items-center gap-1">
+                  Image Prompt -{' '}
+                  <Button
+                    size="sm"
+                    schema="secondary"
+                    onClick={updateImagePrompt}
+                    disabled={prompt() === state.msg!.imagePrompt}
+                  >
+                    Save
+                  </Button>
+                  <Button
+                    size="sm"
+                    schema="secondary"
+                    onClick={() => msgStore.generateImagePrompt((summary) => setPrompt(summary))}
+                    disabled={!!ctx.waiting}
+                  >
+                    Generate
+                  </Button>
+                </div>
               </>
             }
             parentClass="text-sm"
@@ -899,19 +1045,19 @@ const Meta: Component<{
             onChange={(ev) => setPrompt(ev.currentTarget.value)}
           />
         </Card>
-      </Show>
 
-      <Show when={props.history}>
-        <pre class="overflow-x-auto whitespace-pre-wrap break-words rounded-sm bg-[var(--bg-700)] p-1 text-sm">
-          <Show
-            when={typeof props.history === 'string'}
-            fallback={JSON.stringify(props.history, null, 2)}
-          >
-            {props.history}
-          </Show>
-        </pre>
-      </Show>
-    </form>
+        <Show when={ctx.promptHistory[state.msg!._id]}>
+          <pre class="overflow-x-auto whitespace-pre-wrap break-words rounded-sm bg-[var(--bg-700)] p-1 text-sm">
+            <Show
+              when={typeof ctx.promptHistory[state.msg!._id] === 'string'}
+              fallback={JSON.stringify(ctx.promptHistory[state.msg!._id], null, 2)}
+            >
+              {ctx.promptHistory[state.msg!._id]}
+            </Show>
+          </pre>
+        </Show>
+      </div>
+    </Modal>
   )
 }
 
@@ -1065,4 +1211,23 @@ const Thought: Component<{ expanded?: boolean; children: any }> = (props) => {
       </Show>
     </div>
   )
+}
+
+async function attachImages(msgId: string, files: FileInputResult[]) {
+  if (!msgId || msgId === 'partial') return
+  const add: MsgAttachment[] = []
+
+  for (const file of files) {
+    const ext = file.file.name.split('.').slice(-1)[0].toLowerCase()
+    if (!ALLOWED_TYPES.has(ext)) {
+      continue
+    }
+
+    const buffer = await getFileAsDataURL(file.file)
+    if (!buffer) continue
+    const shrink = await resizeImage(buffer, { type: 'fit', max: 768 })
+    add.push({ type: 'image', image: shrink.content })
+  }
+
+  msgStore.addAttachment(msgId, add)
 }

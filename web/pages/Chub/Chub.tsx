@@ -68,19 +68,23 @@ const Chub: Component = () => {
         />
       </div>
       <div class="flex flex-col gap-4">
-        <div class={currentTab() === 'characters' ? tabClass : 'hidden'}>
-          <CharList
-            loading={() => setLoading(true)}
-            setChar={(char, fullPath) => {
-              setCharModal({ char, fullPath })
-              setLoading(false)
-            }}
-          />
-        </div>
+        <Show when={currentTab() === 'characters'}>
+          <div class={currentTab() === 'characters' ? tabClass : 'hidden'}>
+            <CharList
+              loading={() => setLoading(true)}
+              setChar={(char, fullPath) => {
+                setCharModal({ char, fullPath })
+                setLoading(false)
+              }}
+            />
+          </div>
+        </Show>
 
-        <div class={currentTab() === 'lorebooks' ? tabClass : 'hidden'}>
-          <BookList setBook={(book, fullPath) => setBookModal({ book, fullPath })} />
-        </div>
+        <Show when={currentTab() === 'lorebooks'}>
+          <div class={currentTab() === 'lorebooks' ? tabClass : 'hidden'}>
+            <BookList setBook={(book, fullPath) => setBookModal({ book, fullPath })} />
+          </div>
+        </Show>
       </div>
       <div>
         <sub>
@@ -107,7 +111,22 @@ const Chub: Component = () => {
       <Modal
         show={filter()}
         close={() => setFilter(false)}
-        footer={<Button onClick={() => setFilter(false)}>Close</Button>}
+        footer={
+          <>
+            <Button schema="secondary" onClick={() => setFilter(false)}>
+              Close
+            </Button>
+
+            <Button
+              onClick={() => {
+                chubStore.setPage(1)
+                chubStore.getEntities()
+              }}
+            >
+              Search
+            </Button>
+          </>
+        }
       >
         <FilterSettings />
       </Modal>

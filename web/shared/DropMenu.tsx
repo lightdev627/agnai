@@ -1,7 +1,8 @@
 import { ChevronDown, ChevronUp } from 'lucide-solid'
-import { Component, createMemo, createSignal, Show } from 'solid-js'
+import { Component, createEffect, createMemo, createSignal, Show } from 'solid-js'
 import { useEffect } from './hooks'
 import { v4 } from 'uuid'
+import { getAbsolutePosition } from './util'
 
 export const Dropup: Component<{ children: any }> = (props) => {
   const [show, setShow] = createSignal(false)
@@ -52,6 +53,7 @@ export const DropMenu: Component<{
   vert?: Vert
   customPosition?: string
   class?: string
+  parent?: HTMLElement
 }> = (props) => {
   let ref: HTMLDivElement | undefined
   const [auto, setAuto] = createSignal<{ horz?: Horz; vert?: Vert }>()
@@ -63,6 +65,24 @@ export const DropMenu: Component<{
     setTimeout(() => {
       setOpened(true)
     }, 1)
+
+    if (props.parent) {
+      const pos = getAbsolutePosition(props.parent)
+
+      if (!props.horz || props.horz === 'left') {
+        el.style.left = `${pos.left}px`
+      } else {
+        el.style.right = `${pos.right}px`
+      }
+
+      if (!props.vert || props.vert === 'down') {
+        el.style.top = `${pos.top}px`
+      } else {
+        el.style.bottom = `${pos.bottom}px`
+      }
+
+      return
+    }
 
     if (props.customPosition) {
       setAuto()
@@ -90,6 +110,11 @@ export const DropMenu: Component<{
 
     return setAuto({ vert, horz })
   }
+
+  createEffect(() => {
+    if (props.show) return
+    setOpened(false)
+  })
 
   useEffect(() => {
     const handler = (event: MouseEvent | TouchEvent) => {
@@ -123,7 +148,10 @@ export const DropMenu: Component<{
         event.preventDefault()
         event.stopPropagation()
         setOpened(false)
-        props.close()
+
+        if (props.show) {
+          props.close()
+        }
       }
     }
 
@@ -136,24 +164,30 @@ export const DropMenu: Component<{
     }
   })
 
-  const position = createMemo(() => {
-    if (props.customPosition) return props.customPosition
-
-    const vert = auto() ? auto()?.vert : props.vert
-    const horz = auto() ? auto()?.horz : props.horz
-
-    return `${vert === 'up' ? 'bottom-6' : ''} ${horz === 'left' ? 'right-0' : ''}`
+  const classes = createMemo(() => {
+    return {
+      bottom:
+        !props.parent && !props.customPosition && (auto()?.vert === 'up' || props.vert === 'up')
+          ? 'bottom-6'
+          : '',
+      right:
+        !props.parent &&
+        !props.customPosition &&
+        !!(auto()?.horz === 'left' || props.horz === 'left')
+          ? 'right-0'
+          : '',
+    }
   })
 
   return (
     <>
-      <div ref={ref!} class="relative z-50 text-sm" data-id={id()}>
+      <div ref={ref!} class="z-50 text-sm" data-id={id()} classList={{ relative: !props.parent }}>
         <Show when={props.show}>
           <div
             ref={onRef}
-            class={`absolute ${position()} bg-800 w-fit rounded-md border-[1px] border-[var(--bg-600)] ${
+            class={`bg-800 absolute w-fit rounded-md border-[1px] border-[var(--bg-600)] ${
               props.class || ''
-            }`}
+            } ${classes().bottom} ${classes().right}`}
           >
             {props.children}
           </div>

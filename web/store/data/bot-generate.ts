@@ -117,6 +117,7 @@ export async function generateResponse(
     settings: entities.settings,
     replacing: props.replacing,
     continuing: props.continuing,
+    indexes: prompt.indexes,
     replyAs: removeAvatar(
       opts.kind === 'self' && props.impersonate ? props.impersonate : props.replyAs
     ),
@@ -142,7 +143,7 @@ export async function generateResponse(
     opts.kind === 'self' ||
     opts.kind === 'chat-query'
   ) {
-    request.imageData = entities.imageData
+    request.attachments = entities.attachments
   }
 
   if (useLocalRequest(entities.settings, entities.user)) {
@@ -178,6 +179,8 @@ export async function generateResponse(
   }
 
   request.eventStream = true
+
+  console.log(`${opts.kind} cx:${!!opts.signal} p:${request.parent?.slice(0, 5) || 'none'}`)
 
   api.fetchSSE({
     path: `/chat/${entities.chat._id}/generate`,
@@ -241,10 +244,10 @@ async function getActivePromptOptions(
     jsonValues: props.json,
   }
 
-  const lines = await getLinesForPrompt(promptOpts, encoder)
+  const { lines, indexes } = await getLinesForPrompt(promptOpts, encoder)
   const parts = await buildPromptPlaceholders(promptOpts, lines, encoder)
 
-  return { lines, parts, entities, props }
+  return { lines, parts, entities, props, indexes }
 }
 
 type EventKind =

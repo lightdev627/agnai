@@ -6,6 +6,9 @@ import { ThirdPartyFormat } from '/common/adapters'
 import { PresetConnection } from '/common/providers'
 import { Memory, TokenCounter } from '/common/types'
 
+export type MsgAttachment = { type: 'image'; image: string }
+export type RequestAttachments = { [messageId: string]: MsgAttachment[] }
+
 export type ChatRole = 'user' | 'assistant' | 'system'
 
 export type Completion<T = Inference> = {
@@ -88,6 +91,11 @@ export type GenerateRequestV2 = {
   /** Base64 */
   imageData?: string
 
+  /** Base64 attachments */
+  attachments?: RequestAttachments
+  indexes?: { [messageId: string]: number }
+  hasAttachments?: boolean
+
   /** Chat Tree  */
   parent?: string
 
@@ -142,7 +150,11 @@ export type AdapterProps = {
   reschemaPrompt?: string
   jsonValues: Record<string, any> | undefined
 
+  hasAttachments?: boolean
   imageData?: string
+  attachments?: RequestAttachments
+  indexes?: { [messageId: string]: number }
+
   guidance?: boolean
   placeholders?: Record<string, string>
   lists?: Record<string, string[]>

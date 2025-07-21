@@ -3,6 +3,120 @@ import { CompletionItem, GenerateRequestV2 } from './type'
 import { replaceTags } from '/common/presets/templates'
 import { assemblePrompt } from '/common/prompt'
 import { AppSchema, TokenCounter } from '/common/types'
+import { findLast } from '/common/util'
+
+export async function toChatMessages(req: GenerateRequestV2, counter: TokenCounter) {
+  const assembled = await assemblePrompt(req, counter)
+
+  const { sections } = assembled
+  const {
+    strictSystem,
+    sections: { post, history, post_system },
+  } = sections
+
+  const prefill = (req.parts.prefill || '').trim()
+
+  const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: any }> = []
+  const systemPrompt = strictSystem.join('').trim().replace(/\n\n+/g, '\n\n')
+  const postSystem = post_system.join('').trim().replace(/\n\n+/g, '\n\n')
+
+  if (systemPrompt) {
+    messages.push({
+      role: 'system',
+      content: strictSystem.join('').trim().replace(/\n\n+/g, '\n\n'),
+    })
+  }
+
+  if (postSystem) {
+    messages.push({ role: 'user', content: postSystem })
+  }
+
+  let offset = history.length > req.lines.length ? -1 : 0
+  const sender = (req.impersonate?.name || req.sender.handle) + ':'
+  // let lastRole = ''
+
+  const map: { [pos: number]: string } = {}
+  if (req.indexes) {
+    for (const [id, pos] of Object.entries(req.indexes)) {
+      map[pos] = id
+    }
+  }
+
+  for (let i = 0; i < history.length; i++) {
+    const isPreHistory = offset !== 0 && i === 0
+    const line = history[i]
+    const original = req.lines[i + offset]
+    const role = isPreHistory ? 'user' : original?.startsWith(sender) ? 'user' : 'assistant'
+
+    const id = map[history.length - i - offset - 1]
+    const attachments = getAttachments(req, id)
+
+    if (role === 'user' && attachments?.length) {
+      req.hasAttachments = true
+      messages.push({
+        role,
+        content: [{ type: 'text', content: line.trim(), text: line.trim() }, ...attachments],
+      })
+    } else {
+      messages.push({ role, content: line.trim() })
+    }
+
+    // lastRole = role
+  }
+  const lastUserIndex = findLast(messages, (m) => m.role === 'user')
+  const unused = Object.values(req.attachments || {}).flat()
+
+  if (req.imageData) {
+    unused.push({ type: 'image', image: req.imageData })
+  }
+
+  if (unused.length && lastUserIndex > 0) {
+    req.hasAttachments = true
+    const msg = messages[lastUserIndex]
+    if (!Array.isArray(msg.content)) {
+      msg.content = [{ type: 'text', content: msg.content, text: msg.content }]
+    }
+
+    for (const image of unused) {
+      msg.content.push({ type: 'image_url', image_url: { url: image.image } })
+    }
+  }
+
+  const postContent = post.join('').trim()
+
+  // if (lastRole === 'user') {
+  //   const lastMsg = messages[messages.length - 1]
+  //   lastMsg.content = lastMsg.content.trim()
+  // } else {
+  //   messages.push({
+  //     role: 'user',
+  //     content: postContent,
+  //   })
+  // }
+
+  messages.push({ role: 'assistant', content: `${postContent}${prefill}` })
+
+  return { messages, assembled }
+}
+
+function getAttachments(req: GenerateRequestV2, id: string | undefined) {
+  if (!id || !req.attachments || !req.indexes) return
+
+  const list = req.attachments[id]
+  if (!list?.length) return
+
+  delete req.attachments[id]
+  // Remove from the list so we can track which images we've attached
+
+  const messages: any[] = []
+  for (const item of list) {
+    if (item.type !== 'image') continue
+    messages.push({ type: 'image_url', image_url: { url: item.image } })
+  }
+
+  if (messages.length) return messages
+  return
+}
 
 export function renderMessagesToPrompt(
   preset: AppSchema.GenSettings,
@@ -48,85 +162,58 @@ export function renderMessagesToPrompt(
  * @destructive
  * mutates the messages list: adds the image data (base64) to the last user message
  */
-export function insertImageContent(
-  opts: { imageData?: string },
+export function remapMessages(
   messages: Array<{ role: string; content: any }>,
-  block?: {}
+  maps: { image?: (image: string) => any; text?: (text: string) => any }
 ) {
-  if (!opts.imageData || !messages) return messages
+  if (!messages) return messages
 
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]
-    if (msg.role !== 'user') continue
-    msg.content = [
-      { type: 'text', text: msg.content },
-      block || { type: 'image_url', image_url: { url: opts.imageData } },
-    ]
-    break
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) {
+      continue
+    }
+
+    for (let i = 0; i < msg.content.length; i++) {
+      const item = msg.content[i]
+      if (item.type === 'text') {
+        item[i] = maps.text?.(item) || item
+        continue
+      }
+
+      if (item.image_url?.url) continue
+      item[i] = maps.image?.(item.image_url.url) || item
+      continue
+    }
   }
 
   return messages
 }
 
-export async function toChatMessages(req: GenerateRequestV2, counter: TokenCounter) {
-  const assembled = await assemblePrompt(req, counter)
+/**
+ * @destructive
+ * mutates the messages list: adds the image data (base64) to the last user message
+ */
+export function remapImageContent(
+  messages: Array<{ role: string; content: any }>,
+  block: (image: string) => any
+) {
+  if (!messages) return messages
 
-  const { sections } = assembled
-  const {
-    strictSystem,
-    sections: { post, history, post_system },
-  } = sections
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue
 
-  const prefill = (req.parts.prefill || '').trim()
-
-  const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: any }> = []
-  const systemPrompt = strictSystem.join('').trim().replace(/\n\n+/g, '\n\n')
-  const postSystem = post_system.join('').trim().replace(/\n\n+/g, '\n\n')
-
-  if (systemPrompt) {
-    messages.push({
-      role: 'system',
-      content: strictSystem.join('').trim().replace(/\n\n+/g, '\n\n'),
-    })
+    for (let i = 0; i < msg.content.length; i++) {
+      const item = msg.content[i]
+      if (item.type === 'text') continue
+      if (item.image_url?.url) continue
+      item[i] = block(item.image_url.url)
+    }
   }
 
-  if (postSystem) {
-    messages.push({ role: 'user', content: postSystem })
-  }
-
-  let offset = history.length > req.lines.length ? -1 : 0
-  const sender = (req.impersonate?.name || req.sender.handle) + ':'
-  // let lastRole = ''
-  for (let i = 0; i < history.length; i++) {
-    const isPreHistory = offset !== 0 && i === 0
-    const line = history[i]
-    const original = req.lines[i + offset]
-    const role = isPreHistory ? 'user' : original?.startsWith(sender) ? 'user' : 'assistant'
-    messages.push({ role, content: line.trim() })
-    // lastRole = role
-  }
-
-  const postContent = post.join('').trim()
-
-  // if (lastRole === 'user') {
-  //   const lastMsg = messages[messages.length - 1]
-  //   lastMsg.content = lastMsg.content.trim()
-  // } else {
-  //   messages.push({
-  //     role: 'user',
-  //     content: postContent,
-  //   })
-  // }
-
-  messages.push({ role: 'assistant', content: `${postContent}${prefill}` })
-
-  return { messages, assembled }
+  return messages
 }
 
-export function validateChatMessagesWithImage(
-  opts: { imageData?: string },
-  messages: CompletionItem[]
-) {
+export function validateChatMessages(messages: CompletionItem[]) {
   let lastRole = ''
   const next: CompletionItem[] = []
 
@@ -146,11 +233,6 @@ export function validateChatMessagesWithImage(
       }
       continue
     }
-  }
-
-  if (opts.imageData) {
-    const inserted = insertImageContent(opts, next)
-    return inserted
   }
 
   return next

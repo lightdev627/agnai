@@ -108,7 +108,7 @@ function getBasePayload(opts: PayloadOpts, stops: string[] = []) {
       body.top_p = -1
     }
 
-    if (opts.imageData && gen.jinjaEnabled) {
+    if (gen.jinjaEnabled) {
       body.chat_template = toImageJinjaTemplate({
         jinja: gen.jinjaTemplate,
         format: gen.modelFormat,
@@ -155,12 +155,6 @@ function getBasePayload(opts: PayloadOpts, stops: string[] = []) {
     if (opts.jsonSchema) {
       const schema = JSON.stringify(opts.jsonSchema, null, 2)
       payload.prompt += `\nRespond using the following JSON Schema:\n${schema}`
-    }
-
-    if (opts.imageData) {
-      const comma = opts.imageData.indexOf(',')
-      const base64 = opts.imageData.slice(comma + 1)
-      payload.images = [base64]
     }
 
     return payload

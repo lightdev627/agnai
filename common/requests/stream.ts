@@ -224,6 +224,10 @@ export async function* fetchStream(
 
       if (chunk.includes(': OPENROUTER PROCESSING\n')) {
         chunk = chunk.replace(/: OPENROUTER PROCESSING/g, '').trimStart()
+
+        // if (accum.length > 0) {
+        //   console.warn('[processing] warning: are we done here?')
+        // }
       }
 
       if (chunk.includes(': FEATHERLESS PROCESSING\n')) {
@@ -240,7 +244,11 @@ export async function* fetchStream(
         if (isError && error) {
           // OpenRouter provider errors
           const suberror = tryParse(error?.error?.metadata?.raw)
-          const providerError = suberror?.detail || suberror?.message || suberror?.error?.message
+          const providerError =
+            suberror?.detail ||
+            suberror?.message ||
+            suberror?.error?.message ||
+            error?.error?.metadata?.raw
 
           const msg = error?.error?.message || error?.message || `status code ${response.status}`
 
