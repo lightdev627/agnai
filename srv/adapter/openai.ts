@@ -8,9 +8,8 @@ import { getTokenCounter } from '../tokenize'
 import { ensureMessagesAlternate, stripImageContent } from './template-chat-payload'
 import { OPENAI_CHAT_MODELS, OPENAI_MODELS } from '/common/presets/openai'
 import { streamGenerator } from '/common/requests/stream'
-import { toImageJinjaTemplate } from '/common/requests/payloads'
+import { getStoppingStrings, toImageJinjaTemplate } from '/common/requests/payloads'
 import { JsonField } from '/common/prompt'
-import { getStoppingStrings } from './prompt'
 
 type CompletionContent<T> = Array<{ finish_reason: string; index: number } & ({ text: string } | T)>
 
@@ -35,14 +34,13 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     return
   }
 
-  const oaiModel =
-    opts.gen.service === 'openai'
-      ? gen.oaiModel || defaultPresets.openai.oaiModel
-      : gen.thirdPartyModel || ''
-
+  const oaiModel = gen.thirdPartyModel || ''
   const maxResponseLength = gen.maxTokens ?? defaultPresets.openai.maxTokens
 
-  const stops = getStoppingStrings(opts)
+  const stops = getStoppingStrings(opts, opts.gen)
+  if (!base.changed) {
+    stops.splice(4, stops.length - 4)
+  }
 
   const body: any = {
     model: oaiModel,
@@ -222,7 +220,15 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     // Only the streaming generator yields individual tokens.
     if ('token' in generated.value) {
       accumulated += generated.value.token
-      yield { partial: sanitiseAndTrim(accumulated, prompt, char, opts.characters, members) }
+      yield {
+        partial: sanitiseAndTrim({
+          text: accumulated,
+          char,
+          characters: opts.characters,
+          members,
+          gen: opts.gen,
+        }),
+      }
     }
 
     if ('meta' in generated.value) {
@@ -248,8 +254,20 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     }
 
     gen.swipesPerGeneration! > 1
-      ? yield sanitiseAndTrim(accumulated, prompt, char, opts.characters, members)
-      : yield sanitiseAndTrim(text, prompt, opts.replyAs, opts.characters, members)
+      ? yield sanitiseAndTrim({
+          text: accumulated,
+          char,
+          characters: opts.characters,
+          members,
+          gen: opts.gen,
+        })
+      : yield sanitiseAndTrim({
+          text,
+          char: opts.replyAs,
+          characters: opts.characters,
+          members,
+          gen: opts.gen,
+        })
   } catch (ex: any) {
     log.error({ err: ex }, 'OpenAI failed to parse')
     yield { error: `OpenAI request failed: ${ex.message}` }

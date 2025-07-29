@@ -2,11 +2,11 @@ import needle from 'needle'
 import { Completion, Inference, ModelAdapter } from './type'
 import { decryptText } from '../db/util'
 import { registerAdapter } from './register'
-import { getStoppingStrings } from './prompt'
 import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
 import { requestFullCompletion } from './chat-completion'
 import { streamGenerator } from '/common/requests/stream'
 import { getCompletionContent } from './openai'
+import { getStoppingStrings } from '/common/requests/payloads'
 
 const mancerOptions: Record<string, string> = {}
 
@@ -52,7 +52,7 @@ export const handleMancer: ModelAdapter = async function* (opts) {
     frequency_penalty: opts.gen.frequencyPenalty,
     tfs: opts.gen.tailFreeSampling,
     seed: -1,
-    stop: getStoppingStrings(opts),
+    stop: getStoppingStrings(opts, opts.gen),
     smoothing_factor: gen.smoothingFactor,
     smoothing_curve: gen.smoothingCurve,
     stream: opts.gen.streamResponse,
@@ -74,7 +74,7 @@ export const handleMancer: ModelAdapter = async function* (opts) {
     return
   }
 
-  const key = opts.user.adapterConfig?.mancer?.apiKey
+  const key = opts.gen.thirdPartyKey || opts.user.adapterConfig?.mancer?.apiKey
   if (!key) {
     yield { error: `Mancer request failed: API key not set` }
     return
@@ -133,13 +133,13 @@ export const handleMancer: ModelAdapter = async function* (opts) {
     if ('token' in generated.value) {
       accumulated += generated.value.token
       yield {
-        partial: sanitiseAndTrim(
-          accumulated,
-          opts.prompt,
-          opts.char,
-          opts.characters,
-          opts.members
-        ),
+        partial: sanitiseAndTrim({
+          text: accumulated,
+          char: opts.char,
+          characters: opts.characters,
+          members: opts.members,
+          gen: opts.gen,
+        }),
       }
     }
   }

@@ -54,7 +54,7 @@ export async function toChatMessages(req: GenerateRequestV2, counter: TokenCount
     if (role === 'user' && attachments?.length) {
       req.hasAttachments = true
       messages.push({
-        role,
+        role: `${role}`,
         content: [{ type: 'text', content: line.trim(), text: line.trim() }, ...attachments],
       })
     } else {
@@ -74,7 +74,7 @@ export async function toChatMessages(req: GenerateRequestV2, counter: TokenCount
     req.hasAttachments = true
     const msg = messages[lastUserIndex]
     if (!Array.isArray(msg.content)) {
-      msg.content = [{ type: 'text', content: msg.content, text: msg.content }]
+      msg.content = [{ type: 'text', content: `${msg.content}`, text: msg.content }]
     }
 
     for (const image of unused) {
@@ -176,12 +176,12 @@ export function remapMessages(
     for (let i = 0; i < msg.content.length; i++) {
       const item = msg.content[i]
       if (item.type === 'text') {
-        item[i] = maps.text?.(item) || item
+        msg.content[i] = maps.text?.(item.text) || item
         continue
       }
 
-      if (item.image_url?.url) continue
-      item[i] = maps.image?.(item.image_url.url) || item
+      if (!item.image_url?.url) continue
+      msg.content[i] = maps.image?.(item.image_url.url) || item
       continue
     }
   }
@@ -206,14 +206,16 @@ export function remapImageContent(
       const item = msg.content[i]
       if (item.type === 'text') continue
       if (item.image_url?.url) continue
-      item[i] = block(item.image_url.url)
+      msg.content[i] = block(item.image_url.url)
     }
   }
 
   return messages
 }
 
-export function validateChatMessages(messages: Array<{ role: string; content: any }>) {
+type OutgoingMsg = { role: string; content: any }
+
+export function validateChatMessages(messages: OutgoingMsg[]) {
   let lastRole = ''
   const next: typeof messages = []
 
@@ -226,16 +228,53 @@ export function validateChatMessages(messages: Array<{ role: string; content: an
     }
 
     const last = next.slice(-1)[0]
-    if (last) {
+    if (!last) continue
+
+    if (!Array.isArray(last.content) && !Array.isArray(msg.content)) {
       next[next.length - 1] = {
         ...last,
         content: `${last.content.trim()}\n\n${msg.content}`,
       }
       continue
     }
+
+    const joined = joinMessages(last, msg)
+    next[next.length - 1] = joined
   }
 
   return next
+}
+
+function joinMessages(head: OutgoingMsg, tail: OutgoingMsg) {
+  const first = splitMessage(head)
+  const second = splitMessage(tail)
+
+  const text = [first.text, second.text].filter((t) => !!t.trim()).join('\n\n')
+
+  return {
+    role: second.role,
+    content: [{ type: 'text', text, content: text }, ...first.attachments, ...second.attachments],
+  }
+}
+
+function splitMessage(msg: OutgoingMsg) {
+  if (!Array.isArray(msg.content)) {
+    return { role: msg.role, text: msg.content, attachments: [] }
+  }
+
+  const texts: string[] = []
+  const attachments: any[] = []
+
+  for (const part of msg.content) {
+    if (part.type === 'text') {
+      texts.push(part.text)
+      continue
+    }
+
+    attachments.push(part)
+  }
+
+  return { role: msg.role, text: texts.join('\n\n'), attachments }
 }
 
 export function stripImageContent(messages: any[]) {

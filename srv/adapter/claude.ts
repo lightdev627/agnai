@@ -20,7 +20,7 @@ import { GenSettings } from '/common/types/presets'
 import { OPENAI_MODELS } from '/common/presets/openai'
 import { CLAUDE_MODELS, CLAUDE_TEXT_MODELS } from '/common/presets/claude'
 import { fetchStream } from '/common/requests/stream'
-import { remapImageContent, stripImageContent } from './template-chat-payload'
+import { remapImageContent, stripImageContent, toChatMessages } from './template-chat-payload'
 import { getMimeTypeBase64 } from '/common/util'
 
 const CHAT_URL = `https://api.anthropic.com/v1/messages`
@@ -252,7 +252,13 @@ export const handleClaude: ModelAdapter = async function* (opts) {
     if ('token' in generated.value) {
       acc += generated.value.token
       yield {
-        partial: sanitiseAndTrim(acc, payload.prompt, opts.replyAs, opts.characters, members),
+        partial: sanitiseAndTrim({
+          text: acc,
+          char: opts.replyAs,
+          characters: opts.characters,
+          members,
+          gen: opts.gen,
+        }),
       }
     }
   }
@@ -263,7 +269,13 @@ export const handleClaude: ModelAdapter = async function* (opts) {
       log.error({ body: resp }, 'Claude request failed: Empty response')
       yield { error: `Claude request failed: Received empty response. Try again.` }
     } else {
-      yield sanitiseAndTrim(completion, payload.prompt, opts.replyAs, opts.characters, members)
+      yield sanitiseAndTrim({
+        text: completion,
+        char: opts.replyAs,
+        characters: opts.characters,
+        members,
+        gen: opts.gen,
+      })
     }
   } catch (ex: any) {
     log.error({ err: ex }, 'Claude failed to parse')
@@ -277,9 +289,9 @@ function getBaseUrl(gen: Partial<GenSettings>, model: string, isThirdParty?: boo
   if (gen.providerId && (gen.service === 'claude' || gen.service === 'claude-v2')) {
     switch (isChatModel) {
       case true:
-        return { url: joinUrl(gen.thirdPartyUrl!, 'messages'), changed: true }
+        return { url: joinUrl(gen.thirdPartyUrl!, 'messages'), changed: false }
       case false:
-        return { url: joinUrl(gen.thirdPartyUrl!, 'complete'), changed: true }
+        return { url: joinUrl(gen.thirdPartyUrl!, 'complete'), changed: false }
     }
   }
 
@@ -435,6 +447,22 @@ const streamCompletion: CompletionGenerator = async function* (opts) {
 
   yield { meta }
   return
+}
+
+export async function createClaudeChatCompletionV2(opts: AdapterProps) {
+  let messages = opts.messages
+  if (!messages) {
+    const result = await toChatMessages(opts, getTokenCounter('claude', ''))
+    messages = result.messages
+  }
+
+  // Last message must be 'thinking' block or role 'user'
+  const lastMsg = messages?.slice(-1)?.[0]
+  if (lastMsg?.role === 'assistant') {
+    lastMsg.role = 'user'
+  }
+
+  return messages
 }
 
 export async function createClaudeChatCompletion(opts: AdapterProps) {

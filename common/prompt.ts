@@ -519,6 +519,7 @@ export async function buildPromptPlaceholders(
   for (const bot of Object.values(opts.characters || {})) {
     if (!bot) continue
     if (personalities.has(bot._id)) continue
+    if (bot._id === opts.impersonate?._id) continue
 
     const temp = opts.chat.tempCharacters?.[bot._id]
     if (temp?.deletedAt || temp?.favorite === false) continue
@@ -539,7 +540,7 @@ export async function buildPromptPlaceholders(
   // we use the BOT_REPLACE here otherwise later it'll get replaced with the
   // replyAs instead of the main character
   // (we always use the main character's scenario, not replyAs)
-  parts.scenario = opts.resolvedScenario.replace(BOT_REPLACE, char.name)
+  parts.scenario = replace(opts.resolvedScenario, char.name)
 
   parts.sampleChat = (
     replyAs._id === char._id && !!chat.overrides

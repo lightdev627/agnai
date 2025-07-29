@@ -48,7 +48,7 @@ import {
 import { markdown } from '../../../shared/markdown'
 import Button, { ButtonSchema } from '/web/shared/Button'
 import { ContextState, useAppContext } from '/web/store/context'
-import { hydrateTemplate, inline, trimSentence } from '/common/util'
+import { hydrateTemplate, trimSentence } from '/common/util'
 import { EVENTS, events } from '/web/emitter'
 import TextInput from '/web/shared/TextInput'
 import { Card, Pill } from '/web/shared/Card'
@@ -151,8 +151,6 @@ const Message: Component<MessageProps> = (props) => {
       if (update) {
         msgStore.editMessageProp(props.msg._id, {
           ...update,
-          characterId: '',
-          userId: '',
           ...sender,
         })
       }
@@ -165,8 +163,6 @@ const Message: Component<MessageProps> = (props) => {
 
     msgStore.editMessageProp(props.msg._id, {
       msg: editRef.innerText,
-      characterId: '',
-      userId: '',
       ...sender,
     })
     setEdit(false)
@@ -392,7 +388,8 @@ const Message: Component<MessageProps> = (props) => {
                         <b>id</b>
                       </td>
                       <td>
-                        id:{props.msg._id.slice(0, 4)} up:{props.msg.parent?.slice(0, 4)}
+                        id:{props.msg._id.slice(0, 4)} up:{props.msg.parent?.slice(0, 4)}{' '}
+                        {`${!!props.msg.userId}`}
                       </td>
                     </tr>
                   </Show>
@@ -792,12 +789,7 @@ const MessageOptions: Component<{
           menuParent = ref
         }}
       >
-        <MoreHorizontal
-          class="icon-button"
-          ref={(r) => {
-            console.log(inline(r.getBoundingClientRect()))
-          }}
-        />
+        <MoreHorizontal class="icon-button" />
       </div>
 
       <Show when={showInner()}>
@@ -1192,7 +1184,7 @@ function extractReasoning(content: string, tags: AppSchema.UserGenPreset['reason
     break
   }
 
-  return { thoughts, content }
+  return { thoughts: thoughts.filter((t) => !!t.trim()), content }
 }
 
 const Reasoning: Component<{ thoughts: string[]; expanded?: boolean }> = (props) => {
