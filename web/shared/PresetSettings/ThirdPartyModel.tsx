@@ -1,14 +1,4 @@
-import {
-  Component,
-  Match,
-  Show,
-  Switch,
-  createEffect,
-  createMemo,
-  createSignal,
-  on,
-  onMount,
-} from 'solid-js'
+import { Component, Match, Show, Switch, createMemo, createSignal, onMount } from 'solid-js'
 import { FLAI_CONTEXTS, GOOGLE_MODELS } from '/common/adapters'
 import TextInput from '../TextInput'
 import Button from '../Button'
@@ -45,18 +35,7 @@ type Selector = Component<SelectorProps>
 export const ThirdPartyModel: Component<{ page?: string; sub?: SubscriptionModelOption }> = (
   props
 ) => {
-  const [ctx] = useAppContext()
   const [state, setter, _, context] = getPresetEditor()
-
-  createEffect(
-    on(
-      () => `${ctx.preset?._id}`,
-      () => {
-        if (state._id === ctx.preset?._id) return
-        setter({ providerId: '', thirdPartyKeySet: false, ...ctx.preset })
-      }
-    )
-  )
 
   const component = createMemo(() => {
     if (!state.providerId && context.service) {
@@ -116,11 +95,6 @@ export const ThirdPartyModel: Component<{ page?: string; sub?: SubscriptionModel
       case 'tabby':
         return 'compat'
     }
-  })
-
-  createEffect(() => {
-    const type = component()
-    console.log('component', type)
   })
 
   return (
@@ -205,7 +179,8 @@ const CompatModel: Selector = (props) => {
     <div class="flex w-full flex-col gap-1">
       <div class="flex gap-2">
         <CustomSelect
-          emitter={emitter.on}
+          size="sm"
+          closeSub={emitter.on}
           modalTitle={
             <div class="flex flex-col gap-2">
               <div>Select a Model: {new URL(models.url).host || '...'}</div>
@@ -234,7 +209,6 @@ const CompatModel: Selector = (props) => {
             </div>
           }
           parentClass="flex"
-          size="sm"
           selected={
             props.state.providerModels?.[props.state.providerId || 'na'] ||
             props.state.thirdPartyModel
@@ -242,17 +216,19 @@ const CompatModel: Selector = (props) => {
           options={modelList()}
           onSelect={(ev) => onModelSelect(ev.value)}
           search={tokenizedSearch}
+          buttonParentClass={'max-w-[260px]'}
+          buttonClass="ellipsis"
           buttonLabel={
-            <div class="text-md p-1">
-              {props.state.providerModels?.[props.state.providerId! || '...'] ||
-                props.state.thirdPartyModel ||
-                'Model - None selected'}
-            </div>
+            props.state.providerModels?.[props.state.providerId! || '...'] ||
+            props.state.thirdPartyModel ||
+            'Model - None selected'
           }
-          disabled={models.loading || modelList().length <= 1}
+          disabled={models.loading}
+          footer={SelectorFooter}
         />
 
         <Button
+          size="sm"
           onClick={() =>
             getStore('presets').getPresetModelList(props.state, state.providers, false)
           }
@@ -302,6 +278,7 @@ const NovelAIModel: Selector = (props) => {
   return (
     <div class="flex flex-wrap gap-2">
       <CustomSelect
+        size="sm"
         modalTitle="Select a Model"
         options={novelModels()}
         selected={
@@ -368,9 +345,10 @@ const OpenRouterModels: Selector = (props) => {
   })
 
   return (
-    <div class="flex w-full items-end gap-1">
+    <div class="flex w-full items-center gap-1">
       <CustomSelect
         maxHeight
+        size="sm"
         modalTitle="Select a Model"
         options={openRouterModels()}
         search={(value, search) => {
@@ -388,9 +366,10 @@ const OpenRouterModels: Selector = (props) => {
           }
         }}
         buttonLabel={label()}
+        footer={SelectorFooter}
       />
 
-      <div class="flex items-end pb-2.5">
+      <div class="flex">
         <Copy
           text={
             props.state.providerModels?.[props.state.providerId || 'na'] ||
@@ -476,9 +455,10 @@ const ArliModels: Selector = (props) => {
   })
 
   return (
-    <div class="flex gap-1">
+    <div class="flex items-center gap-1">
       <CustomSelect
         maxHeight
+        size="sm"
         modalTitle="Select a Model"
         options={options()}
         search={search}
@@ -498,9 +478,10 @@ const ArliModels: Selector = (props) => {
         selected={
           props.state.providerModels?.[props.state.providerId || 'na'] || props.state.arliModel
         }
+        footer={SelectorFooter}
       />
 
-      <div class="flex items-end pb-2.5">
+      <div class="flex">
         <Copy
           text={
             props.state.providerModels?.[props.state.providerId || 'na'] ||
@@ -671,9 +652,10 @@ const FeatherlessModels: Selector = (props) => {
   })
 
   return (
-    <div class="flex items-end gap-1">
+    <div class="flex items-center gap-1">
       <CustomSelect
         maxHeight
+        size="sm"
         modalTitle="Select a Model"
         categories={options()}
         search={search}
@@ -695,9 +677,10 @@ const FeatherlessModels: Selector = (props) => {
           props.state.providerModels?.[props.state.providerId || 'na'] ||
           props.state.featherlessModel
         }
+        footer={SelectorFooter}
       />
 
-      <div class="pb-2">
+      <div class="">
         <Copy text={props.state.featherlessModel || ''} />
       </div>
     </div>
@@ -732,6 +715,7 @@ const ClaudeModel: Selector = (props) => {
 
   return (
     <CustomSelect
+      size="sm"
       modalTitle={
         <div class="flex flex-col gap-2">
           <div>Select a Model</div>
@@ -771,7 +755,8 @@ const ClaudeModel: Selector = (props) => {
       }}
       search={(value, search) => value.toLowerCase().includes(search.toLowerCase())}
       buttonLabel={label()}
-      emitter={emitter.on}
+      closeSub={emitter.on}
+      footer={SelectorFooter}
     />
   )
 }
@@ -795,6 +780,7 @@ const GoogleModels: Selector = (props) => {
 
   return (
     <CustomSelect
+      size="sm"
       modalTitle={
         <div class="flex flex-col gap-2">
           <div>Select a Model</div>
@@ -828,12 +814,13 @@ const GoogleModels: Selector = (props) => {
         setProviderModel(props, opt.value, { googleModel: opt.value })
       }}
       buttonLabel={label()}
-      emitter={emitter.on}
+      closeSub={emitter.on}
       selected={
         props.state.providerModels?.[props.state.providerId || 'na'] ||
         props.state.googleModel ||
         props.state.thirdPartyModel
       }
+      footer={SelectorFooter}
     />
   )
 }
@@ -876,7 +863,7 @@ const HordeModels: Selector = (props) => {
   return (
     <>
       <div class="flex items-center gap-2">
-        <Button class="w-fit" onClick={open}>
+        <Button class="w-fit" size="sm" onClick={open}>
           Select Model(s)
         </Button>
         <Show when={currentModels().length}>
@@ -982,4 +969,20 @@ function setProviderModel(
       onSuccess: () => toastStore.success('Model changed'),
     })
   }
+}
+
+const SelectorFooter: Component<{ children?: any }> = () => {
+  const [ctx] = useAppContext()
+  return (
+    <>
+      <Show when={ctx.preset}>
+        <Button
+          onClick={() => presetStore.getPresetModelList(ctx.preset!, ctx.providers || [], false)}
+        >
+          <RefreshCcw size={20} />
+          Refresh
+        </Button>
+      </Show>
+    </>
+  )
 }

@@ -36,11 +36,11 @@ export async function random<T extends keyof Chance.Chance>(kind: T, opts: Chanc
 }
 
 export type ComponentEmitter<T extends string> = {
-  emit: { [key in T]: () => void }
+  emit: { [key in T]: (...args: any[]) => void }
   on: ComponentSubscriber<T>
 }
 
-export type ComponentSubscriber<T> = (event: T, callback: () => any) => void
+export type ComponentSubscriber<T> = (event: T, callback: (...args: any[]) => any) => void
 
 export function getAbsolutePosition(ele: HTMLElement) {
   let curr = ele
@@ -58,16 +58,16 @@ export function getAbsolutePosition(ele: HTMLElement) {
 
 export function createEmitter<T extends string>(...events: T[]) {
   let emit: any = {}
-  const listeners: Array<{ event: T; callback: () => void }> = []
+  const listeners: Array<{ event: T; callback: (...args: any[]) => void }> = []
 
-  const on = (event: T, callback: () => void) => {
+  const on = (event: T, callback: (...args: any[]) => void) => {
     listeners.push({ event, callback })
   }
 
   for (const event of events) {
-    emit[event] = () => {
+    emit[event] = (...args: any[]) => {
       for (const cb of listeners) {
-        if (cb.event === event) cb.callback()
+        if (cb.event === event) cb.callback.apply(null, args)
       }
     }
   }
@@ -588,12 +588,20 @@ export function isValidServiceSetting(
   prop?: keyof PresetAISettings
 ) {
   const services = getAISettingServices(prop)
-
   // Setting does not declare itself as a service setting
-  if (!services?.length || (!state.service && !state.thirdPartyFormat)) return true
+  if (!services || !state.service) return true
+
+  if (services.includes(state.service)) return true
+  if (!state.thirdPartyFormat) {
+    return false
+  }
+
+  if (state.service !== 'kobold') {
+    return false
+  }
 
   for (const srv of services) {
-    if (srv === state.thirdPartyFormat || srv === state.service) return true
+    if (srv === state.thirdPartyFormat) return true
   }
 
   return false

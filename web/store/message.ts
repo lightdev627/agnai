@@ -849,10 +849,9 @@ export const msgStore = createStore<MsgState>(
 
       console.log('[wait] gen-img-prompt')
       yield { waiting: undefined }
-      if (res.result) {
+      if (res.result?.response) {
         console.log(`Image Prompt:\n${res.result.response}`)
-        // msgStore.editMessageProp(messageId, { imagePrompt: res.result.response })
-        callbacks.onSummary?.(res.result.response)
+        callbacks.onSummary?.(res.result?.response)
         return
       }
 
