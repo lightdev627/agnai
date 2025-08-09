@@ -368,6 +368,36 @@ const UISettings: Component<{}> = () => {
         value={state.current.chatQuoteColor || '--text-800'}
       />
 
+      <ColorPicker
+        label="Chat Quote Emphasis Color"
+        fieldName="chatQuoteEmphasisColor"
+        helperText={
+          <span
+            class="link"
+            onClick={() => userStore.saveCustomUI({ chatQuoteEmphasisColor: 'text-800' })}
+          >
+            Reset to Default
+          </span>
+        }
+        onInput={(color) => tryCustomUI({ chatQuoteEmphasisColor: color })}
+        onChange={(color) => userStore.saveCustomUI({ chatQuoteEmphasisColor: color })}
+        value={state.current.chatQuoteEmphasisColor || '--text-800'}
+      />
+
+      <Select
+        fieldName="chatQuoteEmphasisWeight"
+        label="Chat Quote Emphasis Weight"
+        inline
+        items={[
+          { label: 'None', value: 'unset' },
+          { label: 'Bold', value: 'bold' },
+        ]}
+        onChange={(item) =>
+          userStore.saveCustomUI({ chatQuoteEmphasisWeight: item.value as string })
+        }
+        value={state.current.chatQuoteEmphasisWeight || 'unset'}
+      />
+
       <Select
         fieldName="chatWidth"
         label="Content Width"
@@ -419,7 +449,7 @@ const UISettings: Component<{}> = () => {
               editing={false}
               msg={toUserMsg(
                 state.profile!,
-                '*I wave back* Hi {{char}}!\nFancy meeting you here! I heard someone say "The weather is great today!"',
+                '*I wave back* Hi {{char}}!\nFancy meeting you here! I heard someone say "The weather is great today!"\n"How about we have some *fun* today?"',
                 { _id: '2' }
               )}
               onRemove={noop}

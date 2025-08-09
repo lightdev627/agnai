@@ -873,38 +873,66 @@ function renderMessage(ctx: ContextState, text: string, isUser: boolean, adapter
   // it also encodes the ampersand, which results in them actually being rendered as `&amp;nbsp;`
   // https://github.com/showdownjs/showdown/issues/669
 
+  // we sanizize user input to prevent XSS attacks
+  // DomPurify has an implicit list of allowed Tags, when we add our own we have to use ADD_TAGS
   const html = Purify.sanitize(
     wrapWithQuoteElement(
       markdown.makeHtml(parseMessage(text, ctx, isUser, adapter)).replace(/&amp;nbsp;/g, '&nbsp;')
-    )
+    ),
+    {
+      ADD_TAGS: ['qem'],
+    }
   )
 
   return html
 }
 
+/**
+ * Markup beautification. Lets us control color of diffrent HTML tags, expands on the markdown functionality
+ * Especially useful for quotes, which are wrapped in <q> tags
+ * and emphasis, which is wrapped in <qem> tags.
+ */
 function wrapWithQuoteElement(str: string) {
+  // Replace all non-regular double quotes with double regular quotes
+  // Unicode double quote characters: https://en.wikipedia.org/wiki/Quotation_mark#Unicode_code_point_table
+  str = str.replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+
   return str.replace(
-    // we first match code blocks AND html tags
-    // to ensure we do NOTHING to what's inside them
-    // then we match "regular quotes" and“'pretty quotes” as capture group
-    /<[\s\S]*?>|```[\s\S]*?```|``[\s\S]*?``|`[\s\S]*?`|(\".+?\")|(\u201C.+?\u201D)/gm,
-    wrapCaptureGroups
+    /*
+    Regex magic explained:
+    <[\s\S]*?>      - skip all HTML tags   eg. <sumting>
+    ```[\s\S]*?```  - skip all code blocks eg. <pre>/``` markdown transform <pre><code> to ```
+    ``[\s\S]*?``    - skip all inline code eg. <code>/`` markdown transform <code> to `` | this is a non standard markup 
+    `[\s\S]*?`      - skip all inline code eg. <code>/` markdown transform <code> to `
+
+    (\".+?\")       - capture all regular double quotes, which are not part of HTML tags or code blocks
+    All captured groups are passed to the wrapCaptureGroupQuotes function
+    */
+    /<[\s\S]*?>|```[\s\S]*?```|``[\s\S]*?``|`[\s\S]*?`|(\".+?\")/gm,
+    wrapCaptureGroupQuotes
   )
 }
 
-/** For use as a String#replace(str, cb) callback */
-function wrapCaptureGroups(
-  match: string,
-  regularQuoted?: string /** regex capture group 1 */,
-  curlyQuoted?: string /** regex capture group 2 */
-) {
+/** Processes capture group from above */
+function wrapCaptureGroupQuotes(match: string, regularQuoted?: string) {
   if (regularQuoted) {
+    /*If we have a valid string then we are within a quote
+    ([\s\S]*?) - we ignore all characters between <em> and </em>
+    a valid capure will look like this: "lets have some <em>fun</em>"
+    we then pass the capture group to wrapCaptureGroupEmphasis function, which will replace <em> with <qem>
+    */
+    regularQuoted = regularQuoted.replace(/<em>([\s\S]*?)<\/em>/gm, wrapCaptureGroupEmphasis)
     return '<q>"' + regularQuoted.replace(/\"/g, '') + '"</q>'
-  } else if (curlyQuoted) {
-    return '<q>“' + curlyQuoted.replace(/\u201C|\u201D/g, '') + '”</q>'
-  } else {
-    return match
   }
+  return match
+}
+
+/** Replaces all <em> tags within a <q> tag with <qem> tags */
+function wrapCaptureGroupEmphasis(match: string, emphasisQuote?: string) {
+  if (emphasisQuote) {
+    return '<qem>' + emphasisQuote.replace(/\"/g, '') + '</qem>'
+  }
+  return match
 }
 
 function sendAction(_send: MessageProps['sendMessage'], action: AppSchema.ChatAction) {
