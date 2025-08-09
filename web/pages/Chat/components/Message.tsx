@@ -1047,33 +1047,49 @@ function extractReasoning(content: string, tags: AppSchema.UserGenPreset['reason
 
   if (!content) return { thoughts, content }
 
+  const init = {
+    start: content.indexOf(open),
+    end: content.indexOf(close),
+  }
+
+  // No thoughts, skip everything
+  if (init.start === -1 && init.end === -1) {
+    return { thoughts: [], content }
+  }
+
   while (true) {
     const start = content.indexOf(open)
     const end = content.indexOf(close)
 
-    // No starting tag
-    if (start < 0) {
-      // No end tag either, do nothing
-      if (end < 0) break
-
-      // We have an end tag, so capture everything from the start as a thought
-      const thought = content.slice(0, end)
+    // Both tags present
+    if (start > -1 && end > -1) {
+      const pre = content.slice(0, start)
+      const post = content.slice(end + len.close)
+      const thought = content.slice(start + len.open, end)
       thoughts.push(thought)
-      content = content.slice(end + len.close)
-      break
-    }
-
-    if (end > start) {
-      const actualStart = Math.max(start, 0)
-      const thought = content.slice(actualStart + len.open, end)
-      thoughts.push(thought)
-      content = content.slice(end + len.close)
+      content = pre.trim() + '\n' + post.trim()
       continue
     }
 
-    const thought = content.slice(start + len.open)
-    thoughts.push(thought)
-    content = ''
+    // Only opening tag
+    if (start > -1) {
+      const pre = content.slice(0, start)
+      const thought = content.slice(start + len.open)
+      content = pre
+      thoughts.push(thought)
+      break
+    }
+
+    // Only closing tag
+    if (end > -1) {
+      const post = content.slice(end + len.close)
+      const thought = content.slice(0, end)
+      thoughts.push(thought)
+      content = post
+      break
+    }
+
+    // Should never get here
     break
   }
 
@@ -1081,15 +1097,13 @@ function extractReasoning(content: string, tags: AppSchema.UserGenPreset['reason
 }
 
 const Reasoning: Component<{ thoughts: string[]; expanded?: boolean }> = (props) => {
-  return (
-    <For each={props.thoughts}>
-      {(thought) => <Thought expanded={props.expanded}>{thought}</Thought>}
-    </For>
-  )
+  return <Thought expanded={props.expanded}>{props.thoughts.join('\n\n')}</Thought>
 }
 
 const Thought: Component<{ expanded?: boolean; children: any }> = (props) => {
   const [open, setOpen] = createSignal(props.expanded ?? false)
+
+  const html = createMemo(() => markdown.makeHtml(props.children))
 
   return (
     <div class="flex flex-col gap-1">
@@ -1100,7 +1114,7 @@ const Thought: Component<{ expanded?: boolean; children: any }> = (props) => {
         </Show>
       </div>
       <Show when={open()}>
-        <span class="text-600">{props.children}</span>
+        <div class="text-600" innerHTML={html()}></div>
       </Show>
     </div>
   )
