@@ -1061,13 +1061,33 @@ function extractReasoning(content: string, tags: AppSchema.UserGenPreset['reason
     const start = content.indexOf(open)
     const end = content.indexOf(close)
 
+    // Both present, but end comes before start
+    if (start > -1 && end > -1 && start > end) {
+      let pre = content.slice(0, end)
+      let thought = content.slice(start + len.open)
+      const nextEnd = thought.indexOf(close)
+
+      // There is another end tag
+      if (nextEnd > -1) {
+        const innerThought = thought.slice(0, nextEnd)
+        const post = thought.slice(nextEnd + len.close)
+        content = `${pre.trim()}\n${post.trim()}`
+        thought = innerThought
+        thoughts.push(thought)
+        continue
+      }
+
+      thoughts.push(thought)
+      return { content: pre, thoughts }
+    }
+
     // Both tags present
     if (start > -1 && end > -1) {
       const pre = content.slice(0, start)
       const post = content.slice(end + len.close)
       const thought = content.slice(start + len.open, end)
       thoughts.push(thought)
-      content = pre.trim() + '\n' + post.trim()
+      content = `${pre.trim()}\n${post.trim()}`
       continue
     }
 
@@ -1097,26 +1117,32 @@ function extractReasoning(content: string, tags: AppSchema.UserGenPreset['reason
 }
 
 const Reasoning: Component<{ thoughts: string[]; expanded?: boolean }> = (props) => {
-  return <Thought expanded={props.expanded}>{props.thoughts.join('\n\n')}</Thought>
+  return (
+    <Show when={props.thoughts.length}>
+      <Thought expanded={props.expanded} text={props.thoughts.join('\n\n')} />
+    </Show>
+  )
 }
 
-const Thought: Component<{ expanded?: boolean; children: any }> = (props) => {
+const Thought: Component<{ expanded?: boolean; text: string }> = (props) => {
   const [open, setOpen] = createSignal(props.expanded ?? false)
 
-  const html = createMemo(() => markdown.makeHtml(props.children))
+  const html = createMemo(() => markdown.makeHtml(props.text))
 
   return (
-    <div class="flex flex-col gap-1">
-      <div class="text-500 cursor-pointer text-sm" onClick={() => setOpen(!open())}>
-        Thought{' '}
-        <Show when={open()} fallback={'+'}>
-          -
+    <Show when={!!props.text.trim()}>
+      <div class="flex flex-col gap-1">
+        <div class="text-500 cursor-pointer text-sm" onClick={() => setOpen(!open())}>
+          Thought{' '}
+          <Show when={open()} fallback={'+'}>
+            -
+          </Show>
+        </div>
+        <Show when={open()}>
+          <div class="text-600" innerHTML={html()}></div>
         </Show>
       </div>
-      <Show when={open()}>
-        <div class="text-600" innerHTML={html()}></div>
-      </Show>
-    </div>
+    </Show>
   )
 }
 
