@@ -10,22 +10,23 @@ import { isDefaultPreset } from '/common/default-preset'
 import { ADAPTER_SETTINGS } from '../shared/PresetSettings/settings'
 import { isValidServiceSetting } from '../shared/util'
 import { getClientPreset } from '../shared/adapter'
+import { toastStore } from './toasts'
 
 export type PresetProps = {
-  disabled?: boolean
-  service?: AIAdapter
-  disableService?: boolean
-  hideTabs?: PresetTab[]
+  state: PresetState
+  setters: PresetFuncs
   page?: string
+
+  disabled?: boolean
+  //   service?: AIAdapter
+  hideTabs?: PresetTab[]
 }
 
 export type PresetTab = 'General' | 'Prompt' | 'Memory' | 'Samplers' | 'Toggles'
 
 export type PresetTabProps = {
   state: PresetState
-  context: PresetContext
-  setter: SetPresetState
-  hides: HideState
+  setters: PresetFuncs
   sub: SubscriptionModelOption | undefined
   tab: string
   page: string | undefined
@@ -88,7 +89,11 @@ export const initPreset = (): Omit<AppSchema.SubscriptionModel, 'kind'> & {
   drySequenceBreakers: [],
   modelFormat: 'None',
   providerId: '',
+  subVisionModel: false,
+  isDefaultSub: false,
+  subServiceUrl: 'https://',
   providerModels: {},
+  tokenizer: '',
   registered: {},
 })
 
@@ -102,8 +107,11 @@ export function PresetProvider(props: { children: any }) {
   return <PresetContext.Provider value={[store, setStore]}>{props.children}</PresetContext.Provider>
 }
 
-export function usePresetContext() {
-  const [state, setState] = useContext(PresetContext)
+export type PresetFuncs = ReturnType<typeof usePresetContext>[1]
+
+export function usePresetContext(opts?: { anonymous: boolean }) {
+  const [state, setState] = opts?.anonymous ? createStore(initPreset()) : useContext(PresetContext)
+
   const [context, setContext] = createStore<PresetContext>({})
   const [hides, setHides] = createStore<{ [key in keyof AppSchema.GenSettings]?: boolean }>(
     createHides(state, context)
@@ -111,8 +119,16 @@ export function usePresetContext() {
 
   const loadChat = (chat: AppSchema.Chat) => {
     console.log('[p_ctx] load-by-chat called')
-    const preset = getClientPreset(chat)
-    load(preset?.preset)
+    const preset = getClientPreset(chat)?.preset
+
+    // If the chat has no preset configured, we need to assign one
+    if (chat?._id && !chat.genPreset && preset?._id) {
+      getStore('chat').assignChatPreset(chat._id, preset._id, () =>
+        toastStore.info('Assigned to chat')
+      )
+    }
+
+    load(preset)
   }
 
   const loadPresetId = (presetId: string) => {
@@ -123,7 +139,6 @@ export function usePresetContext() {
   }
 
   const load = (preset: Partial<AppSchema.GenSettings> | undefined) => {
-    console.log('[p_ctx] load called')
     if (!preset) return
 
     const user = getStore('user').getState().user

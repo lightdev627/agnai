@@ -46,6 +46,7 @@ import { ImageSettingsModal } from './pages/Settings/Image/ImageSettings'
 import { ResetPasswordPage } from './pages/Login/ResetPassword'
 import { api } from './store/api'
 import { GlobalFileInput } from './shared/GlobalFileInput'
+import { GenerateImageModal } from './pages/Settings/Image/ImageGeneration'
 
 const App: Component = () => {
   const state = userStore()
@@ -237,9 +238,8 @@ const Layout: Component<{ children?: any }> = (props) => {
       <GlobalFileInput />
       <For each={rootModals.modals}>{(modal) => modal.element}</For>
       <ImageModal />
-      <Show when={cfg.showImgSettings}>
-        <ImageSettingsModal />
-      </Show>
+      <GenerateImageModal />
+      <ImageSettingsModal />
       <SettingsModal />
       <div
         class="absolute bottom-0 left-0 right-0 top-0 z-10 h-[100vh] w-full bg-black bg-opacity-20 sm:hidden"

@@ -299,11 +299,13 @@ async function getChatSummary(
   if (!template) throw new Error(`No chat summary template available for "${settings.service!}"`)
 
   const parsed = await parseTemplate(template, opts)
+
   const prompt = parsed.parsed
   const response = await genApi.inferenceStream(
     {
       prompt,
       settings,
+      messages: parsed.blocks,
     },
     onTick
   )
@@ -325,45 +327,26 @@ function getSummaryTemplate(service: AIAdapter, summaryPrompt?: string) {
       { ${prompt} }`
     }
 
-    case 'openai':
-    case 'openrouter':
-    case 'claude':
-    case 'scale': {
-      const prompt =
-        summaryPrompt ||
-        `Write an image caption of the current scene including the character's appearance`
-      return neat`
-      {{personality}}
-      
-      (System note: Start of conversation)
-      {{history}}
-      
-      {{ujb}}
-      (System: ${prompt})
-      Image caption:`
-    }
-
-    case 'ooba':
-    case 'kobold':
-    case 'agnaistic': {
+    default: {
       const prompt =
         summaryPrompt ||
         `Write an image caption of the current scene using physical descriptions without names.`
       return neat`
       <system>Below is an instruction that describes a task. Write a response that completes the request.</system>
 
+      <instruct>
       {{char}}'s Persona: {{personality}}
 
       The scenario of the conversation: {{scenario}}
 
-      Then the roleplay chat begins.
+      Then the roleplay chat begins.</instruct>
   
       {{#each msg}}{{#if .isbot}}<bot>{{.name}}: {{.msg}}</bot>{{/if}}{{#if .isuser}}<user>{{.name}}: {{.msg}}</user>{{/if}}
       {{/each}}
 
-      <user>${prompt}</user>
+      <instruct>${prompt}</instruct>
 
-      <bot>Image caption:`
+      <assistant>Image caption:</assistant>`
     }
   }
 }

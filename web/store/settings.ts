@@ -59,6 +59,15 @@ export type SettingState = {
   showSettings: boolean
   showImgSettings: boolean
 
+  imggen: {
+    show: boolean
+    prompt?: string
+    action?: {
+      text: string
+      handler: (image: string) => void
+    }
+  }
+
   slotsLoaded: boolean
   slots: { publisherId: string; provider?: 'google' | 'ez' | 'fuse' } & Record<string, any>
   overlay: boolean
@@ -115,6 +124,7 @@ const initState: SettingState = {
   flags: getFlags(),
   showSettings: false,
   showImgSettings: false,
+  imggen: { show: false },
   slotsLoaded: false,
   slots: { publisherId: '' },
   overlay: false,
@@ -184,6 +194,21 @@ export const settingStore = createStore<SettingState>(
     modal({ showSettings }, show?: boolean) {
       const next = show ?? !showSettings
       return { showSettings: next }
+    },
+    openImageGen: (
+      _,
+      opts?: { prompt?: string; handler?: { text: string; handler: (image: string) => void } }
+    ) => {
+      return {
+        imggen: {
+          show: true,
+          prompt: opts?.prompt || '',
+          action: opts?.handler,
+        },
+      }
+    },
+    closeImageGen: () => {
+      return { imggen: { show: false } }
     },
     imageSettings({ showImgSettings }, next?: boolean) {
       if (next === undefined) {

@@ -41,6 +41,7 @@ import { AlternateGreetingsInput } from './form/AltGreetings'
 import { SpriteModal } from './form/SpriteModal'
 import { AdvancedOptions } from './form/AdvancedOptions'
 import { AvatarField } from './form/AvatarField'
+import { usePresetContext } from '/web/store/preset-context'
 
 const formatOptions = [
   { value: 'attributes', label: 'Attributes (Key: value)' },
@@ -70,6 +71,7 @@ export const CreateCharacterForm: Component<{
   const [search, setSearch] = useSearchParams()
   const nav = useNavigate()
   const user = userStore()
+  const [preset, presetSetters] = usePresetContext({ anonymous: true })
 
   const isPage = props.close === undefined
 
@@ -338,19 +340,29 @@ export const CreateCharacterForm: Component<{
             </Show>
 
             <div class="flex justify-end gap-2 text-[1em]">
-              <Button onClick={() => setOpenPreset(true)} class="tour-preset">
+              <Button
+                size="sm"
+                onClick={() => {
+                  const presetId = user.user?.chargenPreset || user.user?.defaultPreset
+                  if (presetId) presetSetters.load(presetId)
+                  else presetSetters.clear()
+                  setOpenPreset(true)
+                }}
+                class="tour-preset"
+              >
                 <SlidersVertical size={24} /> Preset
               </Button>
-              <Button onClick={() => setImport(true)}>
+              <Button size="sm" onClick={() => setImport(true)}>
                 <Import /> Import
               </Button>
 
-              <Button onClick={() => setConverted(editor.convert())}>
+              <Button size="sm" onClick={() => setConverted(editor.convert())}>
                 <Download /> Export
               </Button>
 
               <Show when={state.edit}>
                 <Button
+                  size="sm"
                   onClick={() => {
                     setForceNew(true)
                     editor.clear()
@@ -363,6 +375,7 @@ export const CreateCharacterForm: Component<{
 
               <Show when={!state.edit}>
                 <Button
+                  size="sm"
                   schema="warning"
                   onClick={() => {
                     settingStore.openConfirm({
@@ -382,7 +395,7 @@ export const CreateCharacterForm: Component<{
                 setSearch({ char_tab: id })
               }}
               selected={tabs.selected}
-              tabs={tabs.tabs}
+              tabs={tabs.tabs()}
             />
 
             <div class="flex flex-col gap-2" classList={{ hidden: tabs.current() !== 'Persona' }}>
@@ -667,6 +680,8 @@ export const CreateCharacterForm: Component<{
           <sub>This preset used for character generation</sub>
           <ModeGenSettings
             presetId={user.user?.chargenPreset || user.user?.defaultPreset}
+            preset={preset}
+            setters={presetSetters}
             onPresetChanged={(id) => userStore.updatePartialConfig({ chargenPreset: id })}
             close={() => setOpenPreset(false)}
             hideTabs={['Memory', 'Prompt']}
