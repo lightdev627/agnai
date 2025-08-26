@@ -1,67 +1,116 @@
-import { Component, createEffect, createSignal, For, on, onMount, Setter, Show } from 'solid-js'
+import {
+  Component,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  on,
+  onMount,
+  Setter,
+  Show,
+} from 'solid-js'
 import { AppSchema } from '/common/types'
 import { getAssetUrl, storage } from '/web/shared/util'
-import { settingStore } from '/web/store/settings'
-import { deleteCachedMessageImage, getMessageImages, msgStore } from '/web/store/message'
-import { Pencil, PlusCircle } from 'lucide-solid'
-import { ButtonSchema } from '/web/shared/Button'
+import { ImageButton, settingStore } from '/web/store/settings'
+import { getMessageImages, msgStore } from '/web/store/message'
+import { Pencil, PlusCircle, X } from 'lucide-solid'
+import { MessageImagePrompt } from './MessageMeta'
+import Button from '/web/shared/Button'
+import { ICON_SIZES } from '/web/icons/AppIcon'
 
 type MessageImage = {
   src: string
   btn?: ImageButton
 }
 
-type ImageButton = {
-  schema: ButtonSchema
-  text: string
-  onClick: () => void
-}
-
 export const MessageImages: Component<{ msg: AppSchema.ChatMessage; onEditClick: () => void }> = (
   props
 ) => {
   const [images, setImages] = createSignal<MessageImage[]>([])
+  const [showPrompt, setShowPrompt] = createSignal(false)
 
-  createEffect(
-    on(
-      () => props.msg.extras,
-      () => loadImages(props.msg, setImages)
-    )
-  )
-  onMount(() => loadImages(props.msg, setImages))
+  const reloadImages = () => {
+    loadImages(props.msg, setImages)
+  }
+
+  createEffect(on(() => props.msg.extras, reloadImages))
+
+  onMount(reloadImages)
+
+  const imageButtons = createMemo(() => {
+    const btns: ImageButton[] = [
+      {
+        text: 'Save Prompt',
+        schema: 'primary',
+        onClick: (ents) => {
+          if (!ents) return
+          msgStore.editMessageProp(props.msg._id, { imagePrompt: ents.prompt })
+        },
+      },
+    ]
+
+    return btns
+  })
 
   return (
-    <div class="flex flex-wrap gap-2" classList={{ hidden: images().length === 0 }}>
-      <For each={images()}>
-        {(img) => (
-          <img
-            class="mt-2 max-h-12 max-w-[unset] cursor-pointer rounded-md sm:max-h-16"
-            src={getAssetUrl(img.src)}
-            onClick={() => settingStore.showImage(img.src, img.btn ? [img.btn] : [])}
-          />
-        )}
-      </For>
-
-      <Show when={images().length || !!props.msg.imagePrompt}>
-        <div class="ml-2 flex items-center gap-3">
-          <div
-            class="icon-button"
-            onClick={() =>
-              msgStore.createImage({
-                sourceMsgId: props.msg._id,
-                append: true,
-              })
-            }
-          >
-            <PlusCircle size={16} />
-          </div>
-
-          <div class="icon-button m" onClick={props.onEditClick}>
-            <Pencil size={16} />
-          </div>
-        </div>
+    <>
+      <Show when={showPrompt()}>
+        <MessageImagePrompt msg={props.msg}>
+          <Button size="sm" onClick={() => setShowPrompt(false)}>
+            <X size={ICON_SIZES.PILL} />
+          </Button>
+        </MessageImagePrompt>
       </Show>
-    </div>
+
+      <div class="flex flex-wrap gap-2" classList={{ hidden: images().length === 0 }}>
+        <For each={images()}>
+          {(img, pos) => (
+            <img
+              class="mt-2 max-h-12 max-w-[unset] cursor-pointer rounded-md sm:max-h-16"
+              src={getAssetUrl(img.src)}
+              onClick={() =>
+                settingStore.showImage({
+                  src: {
+                    type: 'collection',
+                    id: `message-images-${props.msg._id}`,
+                    initial: pos(),
+                    prompt: props.msg.imagePrompt,
+                  },
+                  actions: imageButtons(),
+                  onClose: reloadImages,
+                })
+              }
+            />
+          )}
+        </For>
+
+        <Show when={images().length || !!props.msg.imagePrompt}>
+          <div class="ml-2 flex items-center gap-3">
+            <div
+              class="icon-button"
+              onClick={() =>
+                msgStore.createImage({
+                  sourceMsgId: props.msg._id,
+                  append: true,
+                })
+              }
+            >
+              <PlusCircle size={16} />
+            </div>
+
+            <div
+              class="icon-button m"
+              onClick={() => {
+                setShowPrompt(true)
+                // props.onEditClick()
+              }}
+            >
+              <Pencil size={16} />
+            </div>
+          </div>
+        </Show>
+      </div>
+    </>
   )
 }
 
@@ -85,18 +134,8 @@ async function loadImages(msg: AppSchema.ChatMessage, setter: Setter<MessageImag
       if (seen.has(extra)) continue
       seen.add(extra)
 
-      const btn: ImageButton = {
-        schema: 'red',
-        text: 'Delete Image',
-        onClick: async () => {
-          await deleteCachedMessageImage(msg._id, extra)
-          settingStore.clearImage()
-          loadImages(msg, setter)
-        },
-      }
-
       const img = await storage.getItem(extra)
-      if (img) next.push({ src: img, btn })
+      if (img) next.push({ src: img })
       continue
     }
 
