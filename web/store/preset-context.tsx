@@ -11,6 +11,7 @@ import { ADAPTER_SETTINGS } from '../shared/PresetSettings/settings'
 import { isValidServiceSetting } from '../shared/util'
 import { getClientPreset } from '../shared/adapter'
 import { toastStore } from './toasts'
+import { presetApi } from './data/presets'
 
 export type PresetProps = {
   state: PresetState
@@ -97,20 +98,32 @@ export const initPreset = (): Omit<AppSchema.SubscriptionModel, 'kind'> & {
   registered: {},
 })
 
-const noop: SetStoreFunction<PresetState> = (...args: any[]) => {}
+const initModels = (): ModelState => ({ url: '', loading: false, list: [], data: [] })
 
-const PresetContext = createContext([initPreset(), noop] as const)
+const noopPreset: SetStoreFunction<PresetState> = (...args: any[]) => {}
+const noopModels: SetStoreFunction<ModelState> = (...args: any[]) => {}
+
+const PresetContext = createContext([initPreset(), noopPreset, initModels(), noopModels] as const)
+
+type ModelState = { list: string[]; url: string; loading: boolean; data: any[] }
 
 export function PresetProvider(props: { children: any }) {
   const [store, setStore] = createStore(initPreset())
+  const [models, setModels] = createStore(initModels())
 
-  return <PresetContext.Provider value={[store, setStore]}>{props.children}</PresetContext.Provider>
+  return (
+    <PresetContext.Provider value={[store, setStore, models, setModels]}>
+      {props.children}
+    </PresetContext.Provider>
+  )
 }
 
 export type PresetFuncs = ReturnType<typeof usePresetContext>[1]
 
 export function usePresetContext(opts?: { anonymous: boolean }) {
-  const [state, setState] = opts?.anonymous ? createStore(initPreset()) : useContext(PresetContext)
+  const [state, setState, models, setModels] = opts?.anonymous
+    ? [...createStore(initPreset()), ...createStore(initModels())]
+    : useContext(PresetContext)
 
   const [context, setContext] = createStore<PresetContext>({})
   const [hides, setHides] = createStore<{ [key in keyof AppSchema.GenSettings]?: boolean }>(
@@ -138,12 +151,27 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
     load(preset)
   }
 
-  const load = (preset: Partial<AppSchema.GenSettings> | undefined) => {
+  const load = async (preset: Partial<AppSchema.GenSettings> | undefined) => {
     if (!preset) return
 
-    const user = getStore('user').getState().user
     setState({ providerId: '', thirdPartyKeySet: false, providerModels: {}, ...preset })
-    getStore('presets').getPresetModelList(preset, user?.providers || [], true)
+    await loadModels({ preset })
+  }
+
+  const loadModels = async (opts?: {
+    preset?: Partial<AppSchema.GenSettings>
+    refresh?: boolean
+  }) => {
+    setModels('loading', true)
+
+    try {
+      const models = await presetApi.getModelListByPreset(opts?.preset || state, opts?.refresh)
+      if (models) {
+        setModels({ list: models?.list || [], data: models?.data || [], url: models.url })
+      }
+    } finally {
+      setModels('loading', false)
+    }
   }
 
   const clear = () => {
@@ -182,7 +210,10 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
 
     getStore('presets').updatePreset(state._id, update, {
       quiet: opts?.quiet,
-      onSuccess: opts?.onSuccess,
+      onSuccess: (next) => {
+        opts?.onSuccess?.(next)
+        loadModels({ preset: next })
+      },
     })
   }
 
@@ -214,6 +245,7 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
   return [
     state,
     {
+      models,
       setState,
       hides,
       load: loadPresetId,
@@ -221,6 +253,7 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
       clear,
       upsert,
       update: updateAndSave,
+      refreshModels: () => loadModels(),
       context,
     },
   ] as const

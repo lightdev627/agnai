@@ -4,7 +4,6 @@ import Select from '../Select'
 import { Toggle } from '../Toggle'
 import { chatStore } from '../../store'
 import PromptEditor, { BasicPromptTemplate } from '../PromptEditor'
-import { Card } from '../Card'
 import { defaultTemplate } from '/common/mode-templates'
 import { CharacterSchema } from '/web/pages/Character/CharacterSchema'
 import { ToggleButton } from '../Button'
@@ -13,6 +12,7 @@ import { Jailbreak, ReasoningTags, JinjaTemplate, SystemPrompt } from './Fields'
 import { InlineRangeInput } from '../RangeInput'
 import { FormLabel } from '../FormLabel'
 import { PresetTabProps } from '/web/store/preset-context'
+import Accordian from '../Accordian'
 
 export const PromptSettings: Component<PresetTabProps> = (props) => {
   const character = chatStore((s) => s.active?.char)
@@ -87,9 +87,9 @@ export const PromptSettings: Component<PresetTabProps> = (props) => {
             hide={props.state.presetMode === 'simple'}
           />
 
-          <Card border class="flex flex-col gap-1">
+          <Accordian title="Reasoning" titleClickOpen class="flex flex-col gap-1" open={false}>
             <div class="flex w-full justify-between font-bold">
-              <div>Reasoning</div>
+              <div>Enabled</div>
               <Toggle
                 value={props.state.reasoning?.enabled ?? false}
                 onChange={(ev) =>
@@ -144,19 +144,6 @@ export const PromptSettings: Component<PresetTabProps> = (props) => {
 
               {reasonWarning()}
 
-              {/* <div class="flex w-full justify-start gap-1">
-                <TextInput
-                  type="number"
-                  prelabel="Max Tokens"
-                  value={props.state.reasoning?.maxTokens ?? 0}
-                  onChange={(ev) =>
-                    props.setter('reasoning', {
-                      ...props.state.reasoning,
-                      maxTokens: +ev.currentTarget.value,
-                    })
-                  }
-                />
-              </div> */}
               <Toggle
                 label="Exclude Reasoning Tokens"
                 value={props.state.reasoning?.exclude ?? true}
@@ -172,7 +159,7 @@ export const PromptSettings: Component<PresetTabProps> = (props) => {
                 page={props.page}
               />
             </div>
-          </Card>
+          </Accordian>
 
           <BasicPromptTemplate
             state={props.state}

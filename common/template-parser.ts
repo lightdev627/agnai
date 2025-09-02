@@ -18,6 +18,7 @@ type InternalState = {
   pre_render?: boolean
   is_final?: boolean
   messages: Array<{ role: ChatRole; content: string }>
+  hint_seen?: boolean
 }
 
 export type TemplateOpts = {
@@ -171,6 +172,7 @@ type Holder =
   | 'system_prompt'
   | 'random'
   | 'json'
+  | 'user-var'
   | 'value'
 
 type RepeatableHolder = Extract<
@@ -211,6 +213,7 @@ export async function parseTemplate(
   addedLines: string[]
   sections: NonNullable<TemplateOpts['sections']>
   blocks: Array<{ role: ChatRole; content: string }>
+  flags: InternalState
 }> {
   if (opts.limit) {
     opts.limit.output = {}
@@ -387,7 +390,7 @@ export async function parseTemplate(
       .concat(
         historyLines.map((h, i) => ({
           role: h.role === 'user' ? 'user' : 'assistant',
-          content: replaceTags(h.line, 'None'),
+          content: replaceTags(h.line.trim(), 'None'),
         }))
       )
       .concat(flags.messages.slice(historyMsgIndex + 1))
@@ -404,6 +407,7 @@ export async function parseTemplate(
     history: historyLines,
     addedLines,
     blocks: flags.messages,
+    flags,
   }
 }
 
@@ -470,7 +474,6 @@ function render(template: string, opts: TemplateOpts, flags: InternalState, exis
       const parent = ast[i]
 
       const result = renderNode(parent, opts, flags)
-
       const marker = getMarker(opts, parent, prevMarker)
 
       // Nested ifs to correctly narrow types
@@ -736,7 +739,15 @@ function renderCondition(
     return SAMPLE_CHAT_LP
   }
 
-  return output.join('')
+  const finalized = output.join('')
+
+  // If the condition result is a 'block', we need to process it to populate the blocks
+  const ast = finalized ? parser.parse(finalized) : []
+  for (const child of ast) {
+    renderNode(child, opts, flags)
+  }
+
+  return finalized
 }
 
 function getEntities(holder: IterableHolder, opts: TemplateOpts) {
@@ -881,8 +892,13 @@ function getPlaceholder(
   if (opts.repeatable && !repeatableHolders.has(node.value as any)) return ''
 
   if (node.value.startsWith('json.')) {
-    const name = node.value.slice(5)
+    const name = node.value.replace('json.', '')
     return opts.jsonValues?.[name] || ''
+  }
+
+  if (node.value.startsWith('var.') || node.value.startsWith('vars.')) {
+    const name = node.value.replace('var.', '').replace('vars.', '')
+    return opts.parts?.props?.[name] || ''
   }
 
   if (opts.isPart && !SAFE_PART_HOLDERS[node.value]) {
@@ -909,7 +925,7 @@ function getPlaceholder(
       if (!flags.sample_chat) {
         flags.sample_chat = true
         opts.lowpriority ??= []
-        opts.lowpriority.push({ id: '??' + SAMPLE_CHAT_LP, content: text })
+        opts.lowpriority.push({ id: SAMPLE_CHAT_LP, content: text })
         return SAMPLE_CHAT_LP
       }
 
@@ -930,6 +946,11 @@ function getPlaceholder(
 
     case 'ujb':
       return opts.parts?.ujb || ''
+
+    case 'user-var': {
+      if (node.values === 'hint') flags.hint_seen = true
+      return opts.parts?.props?.[node.values] || ''
+    }
 
     case 'json':
       return opts.jsonValues?.[node.values] || ''

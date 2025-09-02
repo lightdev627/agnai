@@ -133,7 +133,9 @@ export function ContextProvider(props: { children: any }) {
     const temps = Object.values(chats.active?.chat.tempCharacters || {})
 
     const all = chars.characters.list.concat(curr).concat(temps)
-    return toMap(all)
+    const map = toMap(all)
+
+    return map
   })
 
   const activeBots = createMemo<AppSchema.Character[]>(() => {
@@ -256,6 +258,10 @@ function canAttachImage(
     aphrodite: true,
     tabby: true,
     featherless: true,
+    arli: true,
+    claude: true,
+    mistral: true,
+    koboldcpp: true,
   }
 
   return !!conn.format && !!supportedFormats[conn.format]

@@ -1,14 +1,4 @@
-import {
-  Component,
-  createEffect,
-  createMemo,
-  createSignal,
-  For,
-  on,
-  onMount,
-  Setter,
-  Show,
-} from 'solid-js'
+import { Component, createEffect, createSignal, For, on, onMount, Setter, Show } from 'solid-js'
 import { AppSchema } from '/common/types'
 import { getAssetUrl, storage } from '/web/shared/util'
 import { ImageButton, settingStore } from '/web/store/settings'
@@ -30,27 +20,14 @@ export const MessageImages: Component<{ msg: AppSchema.ChatMessage; onEditClick:
   const [showPrompt, setShowPrompt] = createSignal(false)
 
   const reloadImages = () => {
-    loadImages(props.msg, setImages)
+    loadImages(props.msg, (imgs) => {
+      setImages(imgs)
+    })
   }
 
   createEffect(on(() => props.msg.extras, reloadImages))
 
   onMount(reloadImages)
-
-  const imageButtons = createMemo(() => {
-    const btns: ImageButton[] = [
-      {
-        text: 'Save Prompt',
-        schema: 'primary',
-        onClick: (ents) => {
-          if (!ents) return
-          msgStore.editMessageProp(props.msg._id, { imagePrompt: ents.prompt })
-        },
-      },
-    ]
-
-    return btns
-  })
 
   return (
     <>
@@ -69,15 +46,9 @@ export const MessageImages: Component<{ msg: AppSchema.ChatMessage; onEditClick:
               class="mt-2 max-h-12 max-w-[unset] cursor-pointer rounded-md sm:max-h-16"
               src={getAssetUrl(img.src)}
               onClick={() =>
-                settingStore.showImage({
-                  src: {
-                    type: 'collection',
-                    id: `message-images-${props.msg._id}`,
-                    initial: pos(),
-                    prompt: props.msg.imagePrompt,
-                  },
-                  actions: imageButtons(),
-                  onClose: reloadImages,
+                settingStore.showMessageImages({
+                  id: props.msg._id,
+                  position: pos(),
                 })
               }
             />

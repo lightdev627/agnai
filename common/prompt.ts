@@ -45,6 +45,9 @@ export type PromptPlaceholders = {
 
   chatEmbeds: string[]
   userEmbeds: string[]
+
+  /** User-specified extras */
+  props?: Record<string, string>
 }
 
 export type Prompt = {
@@ -88,6 +91,7 @@ export type PromptOpts = {
   modelFormat?: ModelFormat
   jsonValues: Record<string, any> | undefined
   contextBuffer?: number
+  props?: Record<string, string>
 }
 
 export type BuildPromptOpts = {
@@ -252,6 +256,8 @@ export async function createPromptParts(opts: PromptOpts, encoder: TokenCounter)
     encoder
   )
 
+  parts.props = opts.props
+
   const prompt = await injectPlaceholders(template, {
     opts,
     parts,
@@ -283,7 +289,7 @@ export async function assemblePrompt(opts: GenerateRequestV2, encoder: TokenCoun
   const post = createPostPrompt(opts)
   const template = getTemplate(opts)
 
-  let { parsed, inserts, length, sections, linesAddedCount, history, addedLines } =
+  let { parsed, inserts, length, sections, linesAddedCount, history, addedLines, blocks } =
     await injectPlaceholders(template, {
       opts,
       parts: opts.parts,
@@ -312,6 +318,8 @@ export async function assemblePrompt(opts: GenerateRequestV2, encoder: TokenCoun
     length,
     sections,
     linesAddedCount,
+
+    blocks,
   }
 }
 
@@ -378,40 +386,6 @@ type InjectOpts = {
 
 export async function injectPlaceholders(template: string, inject: InjectOpts) {
   const { opts, parts, history: hist, encoder, ...rest } = inject
-
-  /**
-   * This is currently disabled:
-   * Models behave far too differently to insert sample chat using this method.
-   * The formatting used here is far too opinionated.
-   * Simple and Basic prompting w/ Prompt Formatting should have already solved this issue.
-   * Advanced users authoring their own templates do so at their own peril.
-   */
-  // Basic templates can exclude example dialogue
-  // const validate =
-  //   opts.settings?.useAdvancedPrompt !== 'no-validation' &&
-  //   opts.settings?.useAdvancedPrompt !== 'basic'
-
-  // Automatically inject example conversation if not included in the prompt
-  /** @todo assess whether or not this should be here -- it ignores 'unvalidated' prompt rules */
-  // const sender = opts.impersonate?.name || inject.opts.sender?.handle || 'You'
-  // const sampleChat = parts.sampleChat?.join('\n')
-  // if (!template.match(HOLDERS.sampleChat) && sampleChat && hist && validate) {
-  //   const next = hist.lines.filter((line) => !line.includes(SAMPLE_CHAT_MARKER))
-
-  //   const svc = opts.settings?.service
-  //   const postSample =
-  //     svc === 'openai' || svc === 'openrouter' || svc === 'scale' || svc === 'openrouter-completion'
-  //       ? SAMPLE_CHAT_MARKER
-  //       : '<START>'
-
-  //   const msg = `${SAMPLE_CHAT_PREAMBLE}\n${sampleChat}\n${postSample}`
-  //     .replace(BOT_REPLACE, opts.replyAs.name)
-  //     .replace(SELF_REPLACE, sender)
-  //   if (hist.order === 'asc') next.unshift(msg)
-  //   else next.push(msg)
-
-  //   hist.lines = next
-  // }
 
   const templateOpts = {
     ...opts,
@@ -491,6 +465,7 @@ type PromptPartsOptions = Pick<
   | 'chatEmbeds'
   | 'userEmbeds'
   | 'resolvedScenario'
+  | 'props'
 >
 
 export async function buildPromptPlaceholders(
@@ -517,6 +492,7 @@ export async function buildPromptPlaceholders(
     allPersonas: [],
     chatEmbeds: [],
     userEmbeds: [],
+    props: opts.props,
   }
 
   const personalities = new Set([replyAs._id])
