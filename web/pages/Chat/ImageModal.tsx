@@ -1,6 +1,13 @@
 import { Component, For, Match, Show, Switch, createEffect, createMemo, on } from 'solid-js'
 import Modal from '../../shared/Modal'
-import { ImageButton, ImageSource, msgStore, settingStore } from '../../store'
+import {
+  ConfirmAction,
+  ImageButton,
+  ImageSource,
+  msgStore,
+  promptStore,
+  settingStore,
+} from '../../store'
 import { getAssetUrl } from '../../shared/util'
 import Button from '/web/shared/Button'
 import { useImageCache } from '/web/shared/hooks'
@@ -18,6 +25,9 @@ import { RelativeSpinner } from '/web/shared/Loading'
 import { imageApi } from '/web/store/data/image'
 import { getStore } from '/web/store/create'
 import { createStore } from 'solid-js/store'
+import { useCurrentChatImageSettings } from '../Settings/Image/ImageSettings'
+import { Copy } from '/web/shared/Copy'
+import { downloadImage } from '../Character/util'
 
 export const ImageModal: Component = () => {
   const state = settingStore()
@@ -108,7 +118,14 @@ const ImageCollectionModal: Component<{
   onClose?: () => void
 }> = (props) => {
   const reel = useImageCache(props.collection, { initial: props.initial })
-  const [state, update] = createStore({ loading: false, prompt: '', promptLoading: false })
+  const imageSettings = useCurrentChatImageSettings()
+
+  const persist = promptStore()
+  const [state, update] = createStore({
+    loading: false,
+    prompt: '',
+    promptLoading: false,
+  })
 
   const saveMessagePrompt = () => {
     if (!props.messageId) return
@@ -122,6 +139,39 @@ const ImageCollectionModal: Component<{
 
     return 'Image: 0/0'
   })
+
+  const fullImagePrompt = createMemo(() => {
+    const cfg = imageSettings()
+    const parts = [cfg?.prefix, state.prompt, cfg?.suffix].filter((c) => !!c?.trim()).join(', ')
+    const cleaned = cleanPrompt(parts)
+
+    return cleaned
+  })
+
+  const attachImage = () => {
+    const chatId = imageSettings().chatId
+
+    const btns: ConfirmAction[] = []
+
+    if (chatId) {
+      btns.push({
+        text: 'To Unsent',
+        schema: 'primary',
+        onClick: () => msgStore.addAttachment(chatId, [{ type: 'image', image: reel.state.image }]),
+      })
+    }
+
+    if (props.messageId) {
+      btns.push({
+        text: 'To Current',
+        schema: 'primary',
+        onClick: () =>
+          msgStore.addAttachment(props.messageId!, [{ type: 'image', image: reel.state.image }]),
+      })
+    }
+
+    settingStore.openConfirm({ message: 'Add Message Attachment', actions: btns })
+  }
 
   createEffect(
     on(
@@ -191,6 +241,7 @@ const ImageCollectionModal: Component<{
   const generatePrompt = () => {
     update('promptLoading', true)
     getStore('messages').generateImagePrompt({
+      question: persist.imageHint,
       onSummary: (summary) => {
         update({ prompt: summary, promptLoading: false })
       },
@@ -225,8 +276,31 @@ const ImageCollectionModal: Component<{
             Generate
           </Button>
 
-          <Button size="sm" schema="error" onClick={removeImage}>
-            Delete Image
+          <Button
+            size="sm"
+            schema="error"
+            onClick={removeImage}
+            disabled={!reel.state.images.length}
+          >
+            Delete
+          </Button>
+
+          <Button
+            size="sm"
+            schema="primary"
+            disabled={!reel.state.image}
+            onClick={() => downloadImage({ name: reel.state.imageId, image: reel.state.image })}
+          >
+            Download
+          </Button>
+
+          <Button
+            size="sm"
+            schema="primary"
+            disabled={!reel.state.image || !props.messageId}
+            onClick={attachImage}
+          >
+            Attach
           </Button>
 
           <For each={props.actions}>
@@ -249,7 +323,12 @@ const ImageCollectionModal: Component<{
     >
       <div class="flex h-full w-full flex-col gap-1">
         <section class="w-full">
-          <div class="flex w-full flex-col gap-1">
+          <div class="flex w-full flex-col justify-center gap-1">
+            <TextInput
+              placeholder={'(Optional) What to focus on?'}
+              value={persist.imageHint}
+              onChange={(ev) => promptStore.imageHint(ev.currentTarget.value)}
+            />
             <TextInput
               parentClass="w-full !h-[64px]"
               class="!h-[64px] !max-h-[64px] !py-1 !text-sm"
@@ -260,7 +339,9 @@ const ImageCollectionModal: Component<{
               textarea={{ rows: 2 }}
             />
 
-            <div class="flex w-full justify-end gap-2">
+            <div class="flex w-full items-center justify-end gap-2">
+              <Copy text={fullImagePrompt()} />
+
               <Button onClick={generatePrompt} disabled={state.promptLoading}>
                 <Show when={!state.promptLoading} fallback={<RelativeSpinner size={20} />}>
                   <WandSparkles size={20} />

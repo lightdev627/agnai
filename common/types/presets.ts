@@ -14,6 +14,9 @@ export interface Provider {
   /** User-provided name */
   name: string
   url: string
+
+  disableAutoUrl: boolean
+
   key: string
   keySet?: boolean
   userKey?: string

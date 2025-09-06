@@ -102,8 +102,15 @@ export const characterStore = createStore<CharacterState>(
     ) {
       if (opts?.chat?.tempCharacters && characterId.startsWith('temp-')) {
         const char = opts.chat.tempCharacters[characterId]
-        if (!char) return toastStore.error(`Temp character not found`)
-        return { editing: char }
+        if (!char) {
+          opts.onDone?.(false)
+          return toastStore.error(`Temp character not found`)
+        }
+
+        opts.cb?.(char)
+        opts.onDone?.(true, char)
+        yield { editing: char }
+        return
       }
 
       const previous = characters.list.find((c) => c._id === characterId)
@@ -167,11 +174,15 @@ export const characterStore = createStore<CharacterState>(
       chatId?: string
     ) {
       const fallback = storage.localGetItem(IMPERSONATE_KEY) || ''
-      let id = activeChatId
-        ? getStoredValue(`${chatId || activeChatId}-impersonate`, fallback)
-        : fallback
 
-      if (!id) return
+      const idUsed = chatId ? 'chat-id' : activeChatId ? 'active-id' : 'none'
+
+      let id =
+        idUsed === 'none'
+          ? fallback
+          : getStoredValue(`${chatId || activeChatId}-impersonate`, fallback)
+
+      if (!id) return { impersonating: undefined }
 
       const impersonating = id ? allList.concat(list).find((ch) => ch._id === id) : current
       return { impersonating }

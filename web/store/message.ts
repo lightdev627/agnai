@@ -3,7 +3,7 @@ import { EVENTS, events } from '../emitter'
 import { createDebounce, getAssetUrl, storage } from '../shared/util'
 import { isLoggedIn } from './api'
 import { createStore, getStore } from './create'
-import { publish, subscribe } from './socket'
+import { subscribe } from './socket'
 import { toastStore } from './toasts'
 import { msgsApi } from './data/messages'
 import { imageApi } from './data/image'
@@ -212,6 +212,23 @@ export const msgStore = createStore<MsgState>(
     //   return { attachments: { ...attachments, [chatId]: { image: base64 } } }
     // },
     addAttachment({ attachments }, msgId: string, attachment: MsgAttachment[]) {
+      const existing = attachments[msgId]
+      const newAttachments: MsgAttachment[] = []
+
+      for (const attach of attachment) {
+        if (!existing) {
+          newAttachments.push(attach)
+          continue
+        }
+
+        for (const exist of existing) {
+          if (exist.image === attach.image) continue
+          newAttachments.push(attach)
+        }
+      }
+
+      if (!newAttachments.length) return
+
       const next = { ...attachments }
       if (!next[msgId]) {
         next[msgId] = []
@@ -219,7 +236,7 @@ export const msgStore = createStore<MsgState>(
         next[msgId] = next[msgId].slice()
       }
 
-      next[msgId].push(...attachment)
+      next[msgId].push(...newAttachments)
       // events.emit('msg-attachment', next[msgId])
       return { attachments: next }
     },
@@ -844,7 +861,7 @@ export const msgStore = createStore<MsgState>(
 
     async *generateImagePrompt(
       { activeChatId, activeCharId, msgs },
-      callbacks: { onSummary?: (summary: string) => void; onTick?: TickHandler }
+      opts: { onSummary?: (summary: string) => void; onTick?: TickHandler; question?: string }
     ) {
       const messageId = msgs.slice(-1)[0]._id
 
@@ -864,13 +881,15 @@ export const msgStore = createStore<MsgState>(
         },
       }
 
-      const res = await imageApi.generateImagePrompt(callbacks.onTick)
+      const res = await imageApi.generateImagePrompt({
+        onTick: opts.onTick,
+        question: opts.question,
+      })
 
-      console.log('[wait] gen-img-prompt')
       yield { waiting: undefined }
       if (res.result?.response) {
         console.log(`Image Prompt:\n${res.result.response}`)
-        callbacks.onSummary?.(res.result?.response)
+        opts.onSummary?.(res.result?.response)
         return
       }
 
@@ -922,14 +941,14 @@ export const msgStore = createStore<MsgState>(
   }
 })
 
-setInterval(() => {
-  const { waiting, retrying, graph } = msgStore.getState()
-  const id = waiting?.messageId || retrying?._id
-  if (!id) return
-  if (!retrying && graph.tree[id]) return
+// setInterval(() => {
+//   const { waiting, retrying, graph } = msgStore.getState()
+//   const id = waiting?.messageId || retrying?._id
+//   if (!id) return
+//   if (!retrying && graph.tree[id]) return
 
-  publish({ type: 'message-ready', messageId: id, updatedAt: retrying?.updatedAt })
-}, 4000)
+//   publish({ type: 'message-ready', messageId: id, updatedAt: retrying?.updatedAt })
+// }, 4000)
 
 const [debouncedEmbed] = createDebounce((chatId: string, history: AppSchema.ChatMessage[]) => {
   embedApi.embedChat(chatId, history)

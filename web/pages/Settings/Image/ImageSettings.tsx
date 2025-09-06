@@ -535,6 +535,7 @@ async function save(tab: string, store: ImageSettings, entity: any) {
   switch (tab) {
     case 'Shared': {
       await userStore.updatePartialConfig({ images: store })
+      settingStore.imageSettings(false)
       return
     }
 
@@ -551,4 +552,30 @@ async function save(tab: string, store: ImageSettings, entity: any) {
     default:
       return
   }
+}
+
+export function useCurrentChatImageSettings() {
+  const isChat = isChatPage()
+
+  const user = userStore((s) => ({ cfg: s.user?.images }))
+  const entity = chatStore((s) => ({
+    chat: s.active?.chat,
+    char: s.active?.char,
+  }))
+
+  const cfg = createMemo(() => {
+    if (!isChat() || !entity.chat) return { chatId: undefined, ...user.cfg }
+
+    if (
+      !entity.chat.imageSource ||
+      entity.chat.imageSource === 'chat' ||
+      !entity.char?.imageSettings
+    ) {
+      return { chatId: entity.chat._id, ...entity.chat.imageSettings }
+    }
+
+    return { chatId: entity.chat._id, ...entity.char.imageSettings }
+  })
+
+  return cfg
 }
