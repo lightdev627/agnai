@@ -7,7 +7,6 @@ import {
   ChevronRight,
   HeartHandshake,
   HelpCircle,
-  Image,
   ImagePlus,
   LogIn,
   MailQuestion,
@@ -463,14 +462,6 @@ const NavIcons: Component<{
           tooltip="Image Generation"
         >
           <ImagePlus aria-hidden="true" />
-        </Item>
-
-        <Item
-          onClick={() => settingStore.imageSettings(true)}
-          ariaLabel="Image Settings"
-          tooltip="Image Settings"
-        >
-          <Image aria-hidden="true" />
         </Item>
 
         <Item
