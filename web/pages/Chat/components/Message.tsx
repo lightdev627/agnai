@@ -816,7 +816,7 @@ const MessageOptions: Component<{
   const showInner = createMemo(() => {
     const logics = logic()
     for (const opt of Object.values(logics)) {
-      if (!opt.outer.outer && opt.show) return true
+      if (!opt.outer?.outer && opt.show) return true
     }
 
     return false
@@ -842,7 +842,7 @@ const MessageOptions: Component<{
           return (
             <MessageOption
               id={props.msg._id}
-              outer={def.outer.outer}
+              outer={def.outer?.outer ?? false}
               show={def.show}
               label={def.label}
               open={open()}
@@ -978,6 +978,20 @@ export const Typewriter: Component<{
     )
   )
 
+  createEffect(
+    on(
+      () => ({ gen: props.generating, text: props.text }),
+      (gen) => {
+        if (!gen) return
+
+        if (!props.text) {
+          setLength(0)
+          startTimer()
+        }
+      }
+    )
+  )
+
   onCleanup(() => {
     const timer = getTimer()
     clearInterval(timer?.timer!)
@@ -991,6 +1005,7 @@ export const Typewriter: Component<{
         data-partial
         innerHTML={markup()}
       />
+      {/* <span class="text-500 text-sm font-bold">{props.generating ? '(true)' : '(false)'}</span> */}
     </>
   )
 }
