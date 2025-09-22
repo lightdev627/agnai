@@ -1,5 +1,5 @@
 import './images.scss'
-import { Component, For, Match, Show, Switch, createEffect, createMemo, on } from 'solid-js'
+import { Component, For, Show, createEffect, createMemo, on } from 'solid-js'
 import Modal from '../../shared/Modal'
 import {
   ConfirmAction,
@@ -29,33 +29,35 @@ type ImageState = { prompt: string; promptLoading: boolean; loading: boolean }
 
 export const ImageModal: Component = () => {
   const state = settingStore()
+  const [ctx] = useImageContext()
 
   return (
-    <Switch>
-      <Match when={!state.showImage?.src.type}>{null}</Match>
+    <>
+      <ImageCollectionModal
+        ctx={ctx}
+        type={state.showImage?.src.type!}
+        collection={
+          state.showImage?.src.type === 'collection' || state.showImage?.src.type === 'message'
+            ? state.showImage?.src.id!
+            : ''
+        }
+        close={() => settingStore.clearImage()}
+        actions={state.showImage?.options!}
+        initial={state.showImage?.src.initial}
+        onClose={state.showImage?.onClose}
+        prompt={state.showImage?.src.prompt}
+        messageId={state.showImage?.src.messageId}
+      />
 
-      <Match when={state.showImage?.src.type !== 'url'}>
-        <ImageCollectionModal
-          type={state.showImage?.src.type!}
-          collection={state.showImage?.src.id!}
-          close={() => settingStore.clearImage()}
-          actions={state.showImage?.options!}
-          initial={state.showImage?.src.initial}
-          onClose={state.showImage?.onClose}
-          prompt={state.showImage?.src.prompt}
-          messageId={state.showImage?.src.messageId}
-        />
-      </Match>
-
-      <Match when={state.showImage?.src.type === 'url'}>
+      <Show when={state.showImage?.src.type === 'url'}>
         <ImageUrlModal
-          url={state.showImage?.src.id!}
+          url={state.showImage?.src.type === 'url' ? state.showImage?.src.id! : ''}
           close={() => settingStore.clearImage()}
           actions={state.showImage?.options!}
           onClose={state.showImage?.onClose}
         />
-      </Match>
-    </Switch>
+      </Show>
+    </>
   )
 }
 
@@ -107,6 +109,7 @@ const ImageUrlModal: Component<{
 
 const ImageCollectionModal: Component<{
   type: ImageSource['type']
+  ctx: ImageContext
   collection: string
   messageId?: string
   initial?: number
@@ -115,7 +118,6 @@ const ImageCollectionModal: Component<{
   actions: ImageButton[]
   onClose?: () => void
 }> = (props) => {
-  const [ctx] = useImageContext()
   const reel = useImageCache(props.collection || 'ephemeral-collection', {
     initial: props.initial,
   })
@@ -167,7 +169,6 @@ const ImageCollectionModal: Component<{
         if (id) {
           reel.load(id, props.initial)
         }
-
         if (props.type === 'message') {
           const msg = getGraphMessage(props.messageId)
           update('prompt', msg?.imagePrompt || '')
@@ -270,7 +271,7 @@ const ImageCollectionModal: Component<{
 
   return (
     <Modal
-      show={props.collection !== undefined}
+      show={!!props.collection}
       alwaysRender
       close={close}
       maxWidth="full"
@@ -285,7 +286,7 @@ const ImageCollectionModal: Component<{
       }
     >
       <PromptSettings
-        ctx={ctx}
+        ctx={props.ctx}
         state={state}
         update={update}
         messageId={props.messageId}
