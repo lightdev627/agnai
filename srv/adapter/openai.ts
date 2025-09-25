@@ -11,7 +11,14 @@ import { streamGenerator } from '/common/requests/stream'
 import { getStoppingStrings, toImageJinjaTemplate } from '/common/requests/payloads'
 import { JsonField } from '/common/prompt'
 
-type CompletionContent<T> = Array<{ finish_reason: string; index: number } & ({ text: string } | T)>
+type CompletionContent<T = {}> = Array<
+  {
+    finish_reason: string
+    index: number
+    text?: string
+    message?: { content: string; role: ChatRole }
+  } & ({ text: string } | T)
+>
 
 export type Inference = { message: { content: string; role: ChatRole } }
 
@@ -57,6 +64,8 @@ export const handleOAI: ModelAdapter = async function* (opts) {
   const maxResponseLength = gen.maxTokens ?? defaultPresets.openai.maxTokens
 
   const stops = getStoppingStrings(opts, opts.gen)
+  const allStops = stops.slice()
+
   if (!base.changed) {
     stops.splice(4, stops.length - 4)
   }
@@ -250,6 +259,7 @@ export const handleOAI: ModelAdapter = async function* (opts) {
           char,
           members,
           gen: opts.gen,
+          stops: allStops,
         }),
       }
     }
@@ -282,12 +292,14 @@ export const handleOAI: ModelAdapter = async function* (opts) {
           char,
           members,
           gen: opts.gen,
+          stops: allStops,
         })
       : yield sanitiseAndTrim({
           text,
           char: opts.replyAs,
           members,
           gen: opts.gen,
+          stops: allStops,
         })
   } catch (ex: any) {
     log.error({ err: ex }, 'OpenAI failed to parse')
@@ -316,10 +328,11 @@ export function getCompletionContent(completion: Completion<Inference> | undefin
     return completion
   }
 
-  if ('text' in completion?.choices?.[0]) {
-    return completion.choices[0].text
+  const choice = completion?.choices?.[0]
+  if (choice && 'text' in choice) {
+    return choice.text
   } else {
-    return completion?.choices?.[0]?.message?.content || ''
+    return choice?.message?.content || ''
   }
 }
 

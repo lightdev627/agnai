@@ -146,7 +146,7 @@ async function getLocalModelList(opts: {
   }
 }
 
-async function getModelListByPreset(preset: Partial<AppSchema.UserGenPreset>, refresh = false) {
+async function getModelListByPreset(preset: Partial<AppSchema.UserGenPreset>, force = false) {
   if (preset.providerId === 'agnaistic') return
   if (!preset.providerId && preset.service === 'agnaistic') return
 
@@ -175,15 +175,16 @@ async function getModelListByPreset(preset: Partial<AppSchema.UserGenPreset>, re
       return { list: [], url: '', data: [] }
     }
 
-    const result =
-      detail.category === 'self'
-        ? await getLocalModelList({ url, key: provider.userKey || provider.key })
-        : await getPresetModelList({
-            id: preset._id || '',
-            providerId: preset.providerId,
-            url,
-            key: '',
-          })
+    const useLocal = detail.category === 'self' || provider.provider === 'known-openrouter'
+
+    const result = useLocal
+      ? await getLocalModelList({ url, key: provider.userKey || provider.key })
+      : await getPresetModelList({
+          id: preset._id || '',
+          providerId: preset.providerId,
+          url,
+          key: '',
+        })
 
     return { list: result.models, url, data: result.data }
   }
@@ -207,7 +208,7 @@ async function getModelListByPreset(preset: Partial<AppSchema.UserGenPreset>, re
         url,
         // We pass this for presets that are un-saved
         key,
-        useCache: !refresh,
+        useCache: !force,
       })
 
   return { list: result.models, data: result.data, url }
@@ -227,7 +228,7 @@ async function getPresetModelList(opts: {
 
   if (opts.useCache) {
     const cache = await getCachedModelList(opts.url, alreadySeen)
-    if (cache) return cache
+    if (cache?.models.length) return cache
   }
 
   const res = await api.post<{ data: any[] }>(`/user/preset-models`, {
