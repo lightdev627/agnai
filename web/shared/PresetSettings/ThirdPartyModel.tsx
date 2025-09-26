@@ -19,7 +19,6 @@ import { RootModal } from '../Modal'
 import MultiDropdown from '../MultiDropdown'
 import { round } from '/common/util'
 import { createEmitter } from '../util'
-import { useAppContext } from '/web/store/context'
 import { SubscriptionModelOption } from '/common/types/presets'
 import { PresetFuncs, PresetState } from '/web/store/preset-context'
 
@@ -216,7 +215,7 @@ const CompatModel: Selector = (props) => {
             'Model - None selected'
           }
           disabled={props.setters.models.loading}
-          footer={<SelectorFooter setters={props.setters} />}
+          footer={<SelectorFooter state={props.state} setters={props.setters} />}
         />
 
         <Button size="sm" onClick={() => props.setters.refreshModels()}>
@@ -286,7 +285,6 @@ const NovelAIModel: Selector = (props) => {
 }
 
 const OpenRouterModels: Selector = (props) => {
-  const cfg = getStore('settings')()
   const emitter = createEmitter('close')
 
   const [customId, setCustomId] = createSignal('')
@@ -325,7 +323,6 @@ const OpenRouterModels: Selector = (props) => {
 
     const match = openRouterModels().find((s) => s.value === id)
     if (!match) {
-      if (cfg.flags.debug) return `Model - None selected (${id})`
       if (!!id?.trim()) return `Model - ${id}`
       return 'Model - None selected'
     }
@@ -349,6 +346,30 @@ const OpenRouterModels: Selector = (props) => {
     })
   })
 
+  const ManualModel = (
+    <div class="flex gap-2">
+      <TextInput
+        prelabel="Manual Model ID"
+        parentClass="w-full !font-normal !text-sm !h-8"
+        class=""
+        value={customId()}
+        onChange={(ev) => {
+          setCustomId(ev.currentTarget.value)
+        }}
+      />
+      <Button
+        size="sm"
+        schema="primary"
+        onClick={() => {
+          setProviderModel(props, customId())
+          emitter.emit.close()
+        }}
+      >
+        Confirm
+      </Button>
+    </div>
+  )
+
   return (
     <div class="flex w-full items-center gap-1">
       <CustomSelect
@@ -357,36 +378,6 @@ const OpenRouterModels: Selector = (props) => {
         modalTitle={
           <div class="flex flex-col gap-2">
             <div>Select a Model</div>
-
-            <div class="flex gap-2">
-              <TextInput
-                prelabel="Manual Model ID"
-                parentClass="w-full !font-normal !text-sm !h-8"
-                class=""
-                value={customId()}
-                onChange={(ev) => {
-                  setCustomId(ev.currentTarget.value)
-                }}
-              />
-              <Button
-                size="sm"
-                schema="primary"
-                onClick={() => {
-                  setProviderModel(props, customId())
-                  emitter.emit.close()
-                }}
-              >
-                Confirm
-              </Button>
-
-              <Button
-                size="sm"
-                onClick={() => props.setters.refreshModels(true)}
-                disabled={props.setters.models.loading}
-              >
-                <RefreshCcw size={20} /> Models
-              </Button>
-            </div>
           </div>
         }
         listener={sub.emit}
@@ -404,7 +395,8 @@ const OpenRouterModels: Selector = (props) => {
           }
         }}
         buttonLabel={label()}
-        footer={<SelectorFooter setters={props.setters} />}
+        preoptions={ManualModel}
+        footer={<SelectorFooter state={props.state} setters={props.setters} />}
       />
 
       <div class="flex">
@@ -518,7 +510,7 @@ const ArliModels: Selector = (props) => {
         selected={
           props.state.providerModels?.[props.state.providerId || 'na'] || props.state.arliModel
         }
-        footer={<SelectorFooter setters={props.setters} />}
+        footer={<SelectorFooter state={props.state} setters={props.setters} />}
       />
 
       <div class="flex">
@@ -752,7 +744,7 @@ const FeatherlessModels: Selector = (props) => {
           props.state.providerModels?.[props.state.providerId || 'na'] ||
           props.state.featherlessModel
         }
-        footer={<SelectorFooter setters={props.setters} />}
+        footer={<SelectorFooter state={props.state} setters={props.setters} />}
       />
 
       <div class="">
@@ -831,7 +823,7 @@ const ClaudeModel: Selector = (props) => {
       search={tokenizedSearch}
       buttonLabel={label()}
       closeSub={emitter.on}
-      footer={<SelectorFooter setters={props.setters} />}
+      footer={<SelectorFooter state={props.state} setters={props.setters} />}
     />
   )
 }
@@ -895,7 +887,7 @@ const GoogleModels: Selector = (props) => {
         props.state.googleModel ||
         props.state.thirdPartyModel
       }
-      footer={<SelectorFooter setters={props.setters} />}
+      footer={<SelectorFooter state={props.state} setters={props.setters} />}
     />
   )
 }
@@ -1073,12 +1065,16 @@ function setProviderModel(
   }
 }
 
-const SelectorFooter: Component<{ children?: any; setters: PresetFuncs }> = (props) => {
-  const [ctx] = useAppContext()
+const SelectorFooter: Component<{ children?: any; state: PresetState; setters: PresetFuncs }> = (
+  props
+) => {
   return (
     <>
-      <Show when={ctx.preset}>
-        <Button onClick={() => props.setters.refreshModels()}>
+      <Show when={props.state}>
+        <Button
+          onClick={() => props.setters.refreshModels(true)}
+          disabled={props.setters.models.loading}
+        >
           <RefreshCcw size={20} />
           Refresh
         </Button>

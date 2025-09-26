@@ -55,6 +55,7 @@ import { resizeImage } from '/web/shared/image-resize'
 import { ALLOWED_TYPES } from '/web/store/data/image'
 import { MsgAttachment } from '/srv/adapter/type'
 import { extractReasoning } from '/common/reasoning'
+import { usePresetContext } from '/web/store/preset-context'
 
 export type SendFunc = (opts: { msg: string; ooc: boolean; onSuccess?: () => void }) => void
 
@@ -74,6 +75,7 @@ const InputBar: Component<{
   let ref: HTMLTextAreaElement | undefined
 
   const [ctx] = useAppContext()
+  const [preset, setters] = usePresetContext()
 
   const prompt = promptStore()
   const user = userStore()
@@ -208,7 +210,7 @@ const InputBar: Component<{
     if (!char?.voice) return
 
     const text = extractReasoning(lastTextMsg.msg, {
-      tags: ctx.preset?.reasoning,
+      tags: preset?.reasoning,
       display: ctx.ui.displayReasoning,
     })
 
@@ -478,13 +480,14 @@ const InputBar: Component<{
                 </Button>
               </Show>
             </Show>
-            <Show when={ctx.canUseAttachments}>
+            <Show when={setters.context.attachments}>
               <FileInput
                 fieldName="imageCaption"
                 parentClass="hidden"
                 onUpdate={onFile}
                 accept="image/jpg,image/png,image/jpeg"
                 multiple
+                disabled={!setters.context.attachments}
               />
               <LabelButton for="imageCaption" schema="secondary" class="w-full" alignLeft>
                 <ImageUp size={18} />

@@ -3,16 +3,18 @@ import { AIAdapter, MODE_SETTINGS, PresetAISettings, ThirdPartyFormat } from '/c
 import { AppSchema } from '/common/types'
 import { SubscriptionModelOption } from '/common/types/presets'
 import { agnaiPresets } from '/common/presets/agnaistic'
-import { createContext, createEffect, on, useContext } from 'solid-js'
+import { createContext, createEffect, createSignal, on, useContext } from 'solid-js'
 import { getStore } from '/web/store/create'
-import { getPresetConnection } from '/common/providers'
+import { getPresetConnection, ProviderDefinition } from '/common/providers'
 import { defaultPresets, isDefaultPreset } from '/common/default-preset'
 import { ADAPTER_SETTINGS } from '../shared/PresetSettings/settings'
 import { isValidServiceSetting } from '../shared/util'
 import { toastStore } from './toasts'
 import { presetApi } from './data/presets'
-import { deepClone } from '/common/util'
+import { deepClone, inline } from '/common/util'
 import { getFallbackPreset } from '/common/presets'
+import { settingStore } from './settings'
+import { userStore } from './user'
 
 export type PresetProps = {
   state: PresetState
@@ -99,16 +101,22 @@ export const initPreset = (): Omit<AppSchema.SubscriptionModel, 'kind'> & {
   registered: {},
 })
 
-const initModels = (): ModelState => ({ url: '', loading: false, list: [], data: [] })
+const initModels = (): ModelState => ({
+  url: '',
+  loading: false,
+  list: [],
+  data: [],
+  providerId: '',
+})
 
 const noopPreset: SetStoreFunction<PresetState> = (...args: any[]) => {}
 const noopModels: SetStoreFunction<ModelState> = (...args: any[]) => {}
 
 const PresetContext = createContext([initPreset(), noopPreset, initModels(), noopModels] as const)
 
-type ModelState = { list: string[]; url: string; loading: boolean; data: any[] }
+type ModelState = { list: string[]; url: string; loading: boolean; data: any[]; providerId: string }
 
-export function PresetProvider(props: { children: any }) {
+export function PresetStateProvider(props: { children: any }) {
   const [store, setStore] = createStore(initPreset())
   const [models, setModels] = createStore(initModels())
 
@@ -122,29 +130,58 @@ export function PresetProvider(props: { children: any }) {
 export type PresetFuncs = ReturnType<typeof usePresetContext>[1]
 
 export function usePresetContext(opts?: { anonymous: boolean }) {
+  const cfg = settingStore()
+  const user = userStore()
+
   const [state, setState, models, setModels] = opts?.anonymous
     ? [...createStore(initPreset()), ...createStore(initModels())]
     : useContext(PresetContext)
 
-  // const [local, setLocal] = createStore({
-  //   models: { url: '', loading: false },
-  //   preset: { id: '', loading: false },
-  // })
-
   const [context, setContext] = createStore<PresetContext>({})
-  const [hides, setHides] = createStore<{ [key in keyof AppSchema.GenSettings]?: boolean }>(
-    createHides(state, context)
+  const [hides, setHides] = createStore(createHides(state, context))
+  const [attemptedId, setAttemptedId] = createSignal('')
+
+  createEffect(
+    on(
+      () => ({ id: state._id, providerId: state.providerId, list: user.user?.providers }),
+      () => runStateUpdate('state')
+    )
   )
 
-  const loadChat = async (chat: AppSchema.Chat) => {
-    console.log('[p_ctx] load-by-chat called')
+  const runStateUpdate = (source: string) => {
+    const list = user.user?.providers
 
+    const subId = state?.providerModels?.agnaistic || state?.registered?.agnaistic?.subscriptionId
+
+    const conn = getPresetConnection(state, list)
+    const subModel = subId ? undefined : cfg.config.subs.find((s) => s._id === subId)
+    const attachments = canAttachImage(conn, subModel)
+
+    setContext({ ...conn, sub: subModel, attachments })
+
+    const hides = createHides(state, conn)
+    setHides(hides)
+  }
+
+  const loadChat = async (chat: AppSchema.Chat) => {
+    const stack = new Error()
     const expectingUserPreset = !!chat.genPreset && !isDefaultPreset(chat.genPreset)
+    console.log(
+      `[p_ctx] load-by-chat called\n${inline({
+        c: chat._id?.slice(0, 8),
+        p: chat.genPreset ? chat.genPreset?.slice(0, 8) : 'no-id',
+      })}`,
+      stack.stack
+    )
+
+    if (chat.genPreset && chat.genPreset === state._id) {
+      console.log(`[p_ctx] preset already loaded`)
+      return
+    }
+
     let preset = await loadPresetId(chat.genPreset || '')
 
     if (expectingUserPreset && preset._id !== chat.genPreset) {
-      toastStore.warn('Could not load your preset - Ensure your chat has a preset assigned')
-      load(preset)
       return
     }
 
@@ -154,8 +191,6 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
         toastStore.info('Assigned preset to chat')
       )
     }
-
-    load(preset)
   }
 
   const loadPresetId = async (presetId: string) => {
@@ -170,15 +205,25 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
     const presets = getStore('presets').getState().presets
     let preset = presets.find((p) => p._id === presetId)
 
-    if (!preset) {
+    if (!preset && presetId) {
       const remote = await presetApi.getPreset(presetId)
-      if (remote.result) {
+      if (remote?.result) {
         load(remote.result)
         return remote.result
       }
 
+      if (attemptedId() !== presetId) {
+        setAttemptedId(presetId)
+        toastStore.warn('Could not load your preset - Ensure your chat has a preset assigned')
+      }
+    }
+
+    if (!preset) {
+      if (presetId) {
+      }
+
       const fallback = getFallbackPreset('agnaistic') as Partial<AppSchema.UserGenPreset>
-      load(fallback)
+      load({ ...fallback, _id: '' })
       return fallback
     }
 
@@ -186,7 +231,7 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
     return preset
   }
 
-  const load = (preset: Partial<AppSchema.GenSettings> | undefined) => {
+  const load = (preset: Partial<AppSchema.UserGenPreset> | undefined) => {
     setState({ providerId: '', thirdPartyKeySet: false, providerModels: {}, ...preset })
     loadModels({ preset })
   }
@@ -196,12 +241,25 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
     force?: boolean
   }) => {
     if (models.loading) return
+    if (models.providerId === state.providerId && !opts?.force) return
+    if (opts?.preset?.providerId) {
+      setModels({ providerId: opts.preset.providerId })
+    }
+
     setModels('loading', true)
 
     try {
-      const models = await presetApi.getModelListByPreset(opts?.preset || state, opts?.force)
-      if (models) {
-        setModels({ list: models?.list || [], data: models?.data || [], url: models.url })
+      const list = await presetApi.getModelListByPreset(opts?.preset || state, opts?.force)
+      if (list) {
+        setModels({
+          list: list?.list || [],
+          data: list?.data || [],
+          url: list.url,
+        })
+
+        if (opts?.preset) {
+          setModels('providerId', opts.preset.providerId || '')
+        }
       }
     } finally {
       setModels('loading', false)
@@ -250,24 +308,6 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
     })
   }
 
-  createEffect(
-    on(
-      () =>
-        (state._id || '') +
-        state.service! +
-        state.thirdPartyFormat! +
-        state.presetMode! +
-        state.providerId!,
-      (id) => {
-        const ctx = getPresetContext(state)
-        setContext(ctx)
-
-        const next = createHides(state, context)
-        setHides(next)
-      }
-    )
-  )
-
   createEffect(() => {
     const id = state._id.slice(0, 5)
     const modelId = state.providerModels?.agnaistic || 'none'
@@ -280,24 +320,17 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
     {
       models,
       setState,
-      hides,
       load: loadPresetId,
       loadChat,
       clear,
       upsert,
       update: updateAndSave,
+
       refreshModels: (force?: boolean) => loadModels({ force }),
-      context,
+      hides: hides,
+      context: context,
     },
   ] as const
-}
-
-export function getClientPresetConnection(
-  preset: Pick<AppSchema.GenSettings, 'service' | 'thirdPartyFormat' | 'providerId'>
-) {
-  const list = preset.providerId ? getStore('user').getState().user?.providers : undefined
-  const conn = getPresetConnection(preset, list)
-  return conn
 }
 
 export function getProvider(id: string | undefined) {
@@ -312,18 +345,9 @@ export type PresetContext = {
   provider?: AppSchema.Provider
   service?: AIAdapter
   format?: ThirdPartyFormat
-}
-
-function getPresetContext(
-  preset: Pick<AppSchema.GenSettings, 'service' | 'thirdPartyFormat' | 'providerId'>
-): PresetContext {
-  const conn = getClientPresetConnection(preset)
-
-  return {
-    service: conn.service,
-    format: conn.format,
-    provider: conn.provider,
-  }
+  detail?: ProviderDefinition
+  attachments?: boolean
+  sub?: SubscriptionModelOption
 }
 
 function createHides(store: PresetState, ctx: PresetContext) {
@@ -365,4 +389,35 @@ function hidePresetSetting(
   }
 
   return hide
+}
+
+function canAttachImage(
+  conn: PresetContext | undefined,
+  subModel: AppSchema.SubscriptionModelOption | undefined
+) {
+  if (!conn) return false
+  if (conn.service === 'openrouter') return true
+  if (conn.service === 'claude-v2') return true
+  if (conn.service === 'agnaistic') {
+    if (!subModel) return false
+    return !!subModel.preset.subVisionModel
+  }
+
+  const supportedFormats: { [key in ThirdPartyFormat]?: boolean } = {
+    'openai-chat': true,
+    'openai-chatv2': true,
+    llamacpp: true,
+    ollama: true,
+    gemini: true,
+    vllm: true,
+    aphrodite: true,
+    tabby: true,
+    featherless: true,
+    arli: true,
+    claude: true,
+    mistral: true,
+    koboldcpp: true,
+  }
+
+  return !!conn.format && !!supportedFormats[conn.format]
 }
