@@ -146,7 +146,6 @@ async function userCacheSet(key: string, data: any) {
   const prop = getUserCacheKey(key)
   if (!prop) return
 
-  console.log(`[user-cache] updated: ${prop}`)
   await setItem(prop, JSON.stringify(data))
 }
 
@@ -1014,7 +1013,7 @@ function getProperty(obj: any, path: string) {
 }
 
 export const sticky = {
-  interval: null as any as NodeJS.Timer,
+  interval: null as any as NodeJS.Timeout,
   monitor: (ref: HTMLElement) => {
     let bottom = true
 
@@ -1026,6 +1025,10 @@ export const sticky = {
       } else {
         bottom = false
       }
+    }
+
+    if (sticky.interval) {
+      clearInterval(sticky.interval)
     }
 
     sticky.interval = setInterval(() => {

@@ -193,6 +193,7 @@ const Message: Component<MessageProps> = (props) => {
     if (message.json) {
       const json = jsonValues()
       const update = getJsonUpdate(
+        ctx,
         props.preset?.jsonSource === 'character'
           ? ctx.activeMap[message.characterId!]?.json
           : props.preset?.json,
@@ -1169,15 +1170,10 @@ function getMessageContent(
   const isPartial = msg._id === 'partial-response'
 
   if (isRetry || isPartial) {
-    let { thoughts, content } = extractReasoning(props.partial ? props.partial : msg.msg, {
+    const { thoughts, content } = extractReasoning(props.partial ? props.partial : msg.msg, {
       tags: preset?.reasoning,
       display: ctx.ui.displayReasoning,
     })
-
-    if (ctx.trimSentences) {
-      content = trimSentence(content)
-    }
-
     if (props.partial) {
       return {
         type: 'partial' as const,
@@ -1211,6 +1207,7 @@ function getMessageContent(
     tags: preset?.reasoning,
     display: ctx.ui.displayReasoning,
   })
+
   let message = content
 
   if (props.last && props.swipe) message = props.swipe
@@ -1234,9 +1231,14 @@ function getMessageContent(
   }
 }
 
-function getJsonUpdate(def: AppSchema.Character['json'], json: any) {
+function getJsonUpdate(ctx: ContextState, def: AppSchema.Character['json'], json: any) {
   if (!def) return
-  const hydration = hydrateTemplate(def, json)
+  const hydration = hydrateTemplate(def, json, {
+    char: ctx.char!,
+    replyAs: ctx.char,
+    sender: ctx.profile,
+    impersonate: ctx.impersonate,
+  })
 
   return {
     json: hydration,
