@@ -8,7 +8,7 @@ import {
   setComponentPageTitle,
   uniqueBy,
 } from '../../shared/util'
-import { announceStore, chatStore, settingStore, userStore } from '../../store'
+import { announceStore, chatStore, pageStore, settingStore, userStore } from '../../store'
 import { A, useNavigate } from '@solidjs/router'
 import { AlertTriangle, MoveRight, Plus, Settings } from 'lucide-solid'
 import { Card, Pill, SolidCard, TitleCard } from '/web/shared/Card'
@@ -37,8 +37,8 @@ const HomePage: Component = () => {
 
   const closeSub = () => setSub(Sub.None)
 
-  const user = userStore()
-  const announce = announceStore()
+  const user = userStore((s) => ({ userLevel: s.userLevel }))
+  const announce = announceStore((s) => ({ list: s.list }))
   const cfg = settingStore((cfg) => ({
     initLoading: cfg.initLoading,
     adapters: adaptersToOptions(cfg.config.adapters),
@@ -61,7 +61,7 @@ const HomePage: Component = () => {
 
     emitter.on('loaded', () => {
       if (!canStartTour('home')) return
-      settingStore.menu(true)
+      pageStore.menu(true)
       startTour('home')
     })
   })

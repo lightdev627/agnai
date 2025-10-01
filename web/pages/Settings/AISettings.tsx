@@ -19,12 +19,11 @@ const AISettings: Component<{
   state: UserSettings
   setter: SetStoreFunction<UserSettings>
 }> = (props) => {
-  const state = userStore()
+  const state = userStore((s) => ({ user: s.user, sub: s.sub, ui: s.ui }))
   const cfg = settingStore((s) => ({
-    config: s.config,
     server: s.config.serverConfig,
-    flags: s.flags,
   }))
+
   const presets = presetStore((s) => s.presets.filter((pre) => !!pre.service))
   const [apiKey, setApiKey] = createSignal(state.user?.apiKey || '')
 

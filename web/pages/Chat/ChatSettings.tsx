@@ -75,9 +75,13 @@ const ChatSettings: Component<{
   const [flags, setFlags] = createSignal<Record<string, boolean>>({})
   const [edit, setEdit] = createStore(getInitState(state.chat, state.char))
 
-  const user = userStore()
-  const presets = presetStore((s) => s.presets)
-  const scenarioState = scenarioStore()
+  const user = userStore((s) => ({ user: s.user }))
+  const presets = presetStore((s) => ({ list: s.presets }))
+  const scenarioState = scenarioStore((s) => ({
+    scenarios: s.scenarios,
+    loading: s.loading,
+    partial: s.partial,
+  }))
 
   const pane = usePane()
   const lists = useParticipantList()
@@ -107,7 +111,7 @@ const ChatSettings: Component<{
     if (!presetId) return
 
     if (isDefaultPreset(presetId)) return defaultPresets[presetId]
-    return presets.find((pre) => pre._id === presetId)
+    return presets.list.find((pre) => pre._id === presetId)
   })
 
   createEffect(
@@ -129,15 +133,23 @@ const ChatSettings: Component<{
     setEdit('scenarioId', state.chat?.scenarioIds?.[0] || '')
   })
 
-  createEffect(() => {
-    const currentText = edit.scenario
-    const scenario = scenarioState.scenarios.find((s) => s._id === edit.scenarioId)
-    if (scenario?.overwriteCharacterScenario && !state.chat?.scenarioIds?.includes(scenario._id)) {
-      setEdit('scenario', scenario.text)
-    } else {
-      setEdit('scenario', currentText)
-    }
-  })
+  createEffect(
+    on(
+      () => [edit.scenarioId],
+      () => {
+        const currentText = edit.scenario
+        const scenario = scenarioState.scenarios.find((s) => s._id === edit.scenarioId)
+        if (
+          scenario?.overwriteCharacterScenario &&
+          !state.chat?.scenarioIds?.includes(scenario._id)
+        ) {
+          setEdit('scenario', scenario.text)
+        } else {
+          setEdit('scenario', currentText)
+        }
+      }
+    )
+  )
 
   const scenarios = createMemo(() => {
     const noScenario = [{ value: '', label: "None (use character's scenario)" }]

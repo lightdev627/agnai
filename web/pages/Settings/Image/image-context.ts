@@ -1,14 +1,17 @@
 import { createStore } from 'solid-js/store'
 import { SD_SAMPLER } from '/common/image'
-import { characterStore, chatStore, settingStore, userStore } from '/web/store'
-import { createEffect, createMemo } from 'solid-js'
-import { ImageSettings } from '/common/types/image-schema'
+import { characterStore, chatStore, imageStore, settingStore, userStore } from '/web/store'
+import { createEffect, on } from 'solid-js'
+import { ImageDefaults, ImageSettings } from '/common/types/image-schema'
 import { isChatPage } from '/web/shared/hooks'
 import { useTabs } from '/web/shared/Tabs'
+import { ImageModel } from '/common/types/admin'
+import { AppSchema } from '/common/types'
 
 type SettingSource = 'Shared' | 'Character' | 'Chat'
 
 const init = (): ImageSettings => ({
+  summaryPresetId: '',
   cfg: 7,
   height: 1216,
   width: 768,
@@ -46,14 +49,22 @@ export type ImageContext = ReturnType<typeof useImageContext>[0]
 export function useImageContext() {
   const isChat = isChatPage(true)
 
-  const user = userStore()
-  const settings = settingStore()
+  const page = imageStore((s) => ({ open: s.showImgSettings }))
+  const user = userStore((s) => ({ user: s.user, sub: s.sub }))
+  const settings = settingStore((s) => ({ config: s.config }))
   const entity = chatStore((s) => ({
     chat: s.active?.chat,
     char: s.active?.char,
   }))
 
-  const [store, setStore] = createStore(init())
+  const [cfg, setCfg] = createStore(init())
+  const [state, setState] = createStore({
+    agnaiModel: undefined as ImageModel | undefined,
+    canUseImages: false,
+    hosts: [] as Array<{ label: string; value: string }>,
+    source: 'settings' as AppSchema.ImageSettingsSource,
+    editing: 'settings' as 'main-character' | 'settings' | 'chat',
+  })
 
   const [defaults, setDefaults] = createStore(
     user.user?.imageDefaults || {
@@ -75,14 +86,29 @@ export function useImageContext() {
       : 0
   )
 
-  createEffect(() => {
-    const tabs: SettingSource[] = ['Shared']
+  createEffect(
+    on(
+      () => [entity.chat, entity.char],
+      () => {
+        const tabs: SettingSource[] = ['Shared']
 
-    if (entity.chat && isChat()) tabs.push('Chat')
-    if (entity.char && isChat()) tabs.push('Character')
+        if (entity.chat && isChat()) tabs.push('Chat')
+        if (entity.char && isChat()) tabs.push('Character')
 
-    return tab.update(tabs)
-  })
+        return tab.update(tabs)
+      }
+    )
+  )
+
+  createEffect(
+    on(
+      () => [isChat(), entity.chat?.imageSource],
+      () => {
+        const next = !isChat() ? 'settings' : entity.chat?.imageSource || 'settings'
+        setState('source', next)
+      }
+    )
+  )
 
   const toggleDefaults = (next: boolean) => {
     setDefaults({
@@ -95,110 +121,123 @@ export function useImageContext() {
     })
   }
 
-  const currentSource = createMemo(() => {
-    if (!isChat()) return 'settings'
-    return entity.chat?.imageSource || 'settings'
-  })
-
-  const currentEditing = createMemo(() => {
-    switch (tab.current()) {
-      case 'Shared':
-        return 'settings'
-
-      case 'Chat':
-        return 'chat'
-
-      case 'Character':
-      default:
-        return 'main-character'
-    }
-  })
-
-  const canUseImages = createMemo(() => {
-    const access = user.sub?.tier.imagesAccess || user.user?.admin
-    return (
-      settings.config.serverConfig?.imagesEnabled &&
-      access &&
-      settings.config.serverConfig?.imagesModels?.length > 0
+  createEffect(
+    on(
+      () => [
+        page.open,
+        user.sub,
+        user.user,
+        settings.config.serverConfig?.imagesModels,
+        settings.config.serverConfig?.imagesEnabled,
+      ],
+      () => recieveUpdate()
     )
-  })
+  )
 
-  const agnaiModel = createMemo(() => {
-    if (!canUseImages()) return
-    if (store.type !== 'agnai') return
+  createEffect(
+    on(
+      () => [tab.current(), page.open],
+      () => {
+        if (!page.open) return
+        const view = tab.current()
 
-    const id = user.user?.images?.agnai?.model
-    return settings.config.serverConfig?.imagesModels?.find((m) => m.name === id)
-  })
+        switch (view) {
+          case 'Character':
+            setCfg({ ...init(), ...entity.chat?.imageSettings })
+            setState('editing', 'main-character')
+            break
 
-  const hosts = createMemo(() => {
-    const list = [
+          case 'Chat':
+            setCfg({ ...init(), ...entity.char?.imageSettings })
+            setState('editing', 'chat')
+            break
+
+          default:
+            setCfg({ ...init(), ...user.user?.images })
+            setState('editing', 'settings')
+            break
+        }
+      }
+    )
+  )
+
+  createEffect(
+    on(
+      () => user.user?.imageDefaults,
+      (next) => {
+        if (!next) return
+        setDefaults({ ...next })
+      }
+    )
+  )
+
+  const recieveUpdate = () => {
+    if (!page.open) return
+    const access = user.sub?.tier.imagesAccess || user.user?.admin
+    const next =
+      !!settings.config.serverConfig?.imagesEnabled &&
+      !!access &&
+      settings.config.serverConfig?.imagesModels?.length > 0
+
+    const hosts = [
       { label: 'Horde', value: 'horde' },
       { label: 'NovelAI', value: 'novel' },
       { label: 'Stable Diffusion', value: 'sd' },
     ].map((item) => ({ label: `Service: ${item.label}`, value: item.value }))
 
-    if (canUseImages()) {
-      list.push({ label: 'Agnaistic', value: 'agnai' })
+    if (next) {
+      hosts.push({ label: 'Agnaistic', value: 'agnai' })
     }
 
-    return list
-  })
-
-  const cfg = createMemo(() => {
-    switch (tab.current()) {
-      case 'Shared':
-        return user.user?.images
-
-      case 'Chat':
-        return entity.chat?.imageSettings
-
-      case 'Character':
-        return entity.char?.imageSettings
-
-      default:
-        return user.user?.images
-    }
-  })
+    setState({ canUseImages: next, hosts })
+  }
 
   const save = () => {
-    saveImageSettings(tab.current(), store, entity)
+    saveImageSettings(tab.current(), cfg, entity, defaults)
   }
 
   return [
     {
-      hosts,
-
-      store,
-      update: setStore,
+      store: cfg,
+      update: setCfg,
+      state: state,
       defaults,
       toggleDefaults,
       updateDefaults: setDefaults,
-      agnaiModel,
       tab,
-      cfg,
-      currentSource,
-      currentEditing,
       save,
     },
   ]
 }
 
-async function saveImageSettings(tab: string, store: ImageSettings, entity: any) {
+async function saveImageSettings(
+  tab: string,
+  store: ImageSettings,
+  entity: any,
+  defaults: ImageDefaults
+) {
   switch (tab) {
     case 'Shared': {
-      await userStore.updatePartialConfig({ images: store })
-      settingStore.imageSettings(false)
+      await userStore.updatePartialConfig({ images: store, imageDefaults: defaults })
+      imageStore.imageSettings(false)
       return
     }
 
     case 'Chat': {
-      chatStore.editChat(entity.chat?._id!, { imageSettings: store })
+      await Promise.all([
+        chatStore.editChat(entity.chat?._id!, { imageSettings: store }),
+        userStore.updatePartialConfig({ imageDefaults: defaults }),
+      ])
+      imageStore.imageSettings(false)
       return
     }
 
     case 'Character': {
-      characterStore.editPartialCharacter(entity.char?._id!, { imageSettings: store })
+      await Promise.all([
+        characterStore.editPartialCharacter(entity.char?._id!, { imageSettings: store }),
+        userStore.updatePartialConfig({ imageDefaults: defaults }),
+      ])
+      imageStore.imageSettings(false)
       return
     }
 

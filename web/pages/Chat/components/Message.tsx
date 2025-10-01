@@ -38,7 +38,7 @@ import {
 import { BOT_REPLACE, SELF_REPLACE } from '../../../../common/prompt'
 import { AppSchema } from '../../../../common/types/schema'
 import AvatarIcon, { CharacterAvatar } from '../../../shared/AvatarIcon'
-import { chatStore, userStore, msgStore, ChatState, VoiceState, settingStore } from '../../../store'
+import { chatStore, userStore, msgStore, ChatState, VoiceState, pageStore } from '../../../store'
 import { markdown } from '../../../shared/markdown'
 import Button, { ButtonSchema } from '/web/shared/Button'
 import { ContextState, useAppContext } from '/web/store/context'
@@ -111,8 +111,8 @@ const Message: Component<MessageProps> = (props) => {
   let avatarRef: any
 
   const [ctx] = useAppContext()
-  const user = userStore()
-  const state = chatStore()
+  const user = userStore((s) => ({ ui: s.ui, user: s.user }))
+  const state = chatStore((s) => ({ memberIds: s.memberIds, chatProfiles: s.chatProfiles }))
   const [edit, setEdit] = createSignal(false)
   const [editSender, setEditSender] = createSignal<string>()
 
@@ -178,7 +178,7 @@ const Message: Component<MessageProps> = (props) => {
   const content = createMemo(() => {
     const message = msg()
 
-    const msgV2 = getMessageContent(ctx, props.preset, props, state, {
+    const msgV2 = getMessageContent(ctx, props.preset, props, state.chatProfiles, {
       ...message,
       msg: props.content,
     })
@@ -297,16 +297,6 @@ const Message: Component<MessageProps> = (props) => {
 
   const editMessageMeta = () => {
     msgStore.setMetadataMsg(msg())
-    // rootModalStore.info(
-    //   'Message Information',
-    //   <Meta
-    //     msg={props.msg}
-    //     history={ctx.promptHistory[props.msg._id]}
-    //     flags={ctx.flags}
-    //     tree={ctx.chatTree}
-    //     loading={!!ctx.waiting}
-    //   />
-    // )
   }
 
   return (
@@ -779,7 +769,7 @@ const MessageOptions: Component<{
           (props.msg.userId === props.ctx.user?._id ||
             props.ctx.impersonate?._id === props.msg.characterId),
         onClick: () =>
-          settingStore.openAttach(
+          pageStore.openAttach(
             { multiple: true, accept: 'image/jpg,image/png,image/jpeg' },
             (files) => attachImages(props.msg._id, files)
           ),
@@ -1163,7 +1153,7 @@ function getMessageContent(
   ctx: ContextState,
   preset: PresetState | undefined,
   props: MessageProps,
-  state: ChatState,
+  profiles: ChatState['chatProfiles'],
   msg: AppSchema.ChatMessage & { handle?: string }
 ) {
   const isRetry = props.retrying?._id === msg._id
@@ -1216,7 +1206,7 @@ function getMessageContent(
   }
 
   if (ctx.anonymize) {
-    message = state.chatProfiles.reduce(anonymizeText, message).replace(SELF_REPLACE, 'User #1')
+    message = profiles.reduce(anonymizeText, message).replace(SELF_REPLACE, 'User #1')
   }
 
   if (ctx.trimSentences && !msg.userId) {

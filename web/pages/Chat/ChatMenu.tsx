@@ -1,7 +1,6 @@
 import './chat-detail.css'
-import { Component, createMemo, Show } from 'solid-js'
-import { ADAPTER_LABELS } from '../../../common/adapters'
-import { ChatRightPane, chatStore, settingStore } from '../../store'
+import { Component, createMemo, JSX, Show } from 'solid-js'
+import { ChatRightPane, chatStore, imageStore, pageStore } from '../../store'
 import { ChatModal } from './ChatOptions'
 import { usePaneManager } from '/web/shared/hooks'
 import { ContextState } from '/web/store/context'
@@ -32,7 +31,7 @@ type NavProps = {
   ctx: ContextState
   togglePane: (paneType: ChatRightPane) => void
   setModal: (model: ChatModal) => void
-  adapterLabel: string
+  adapterLabel: string | JSX.Element
 }
 
 export const ChatMenu: Component<{
@@ -40,7 +39,7 @@ export const ChatMenu: Component<{
   isOwner: boolean
 }> = (props) => {
   const pane = usePaneManager()
-  const [preset, setters] = usePresetContext()
+  const [preset, _setters] = usePresetContext()
 
   const togglePane = (paneType: ChatRightPane) => {
     chatStore.option({ options: false })
@@ -54,22 +53,9 @@ export const ChatMenu: Component<{
   const adapterLabel = createMemo(() => {
     if (!preset._id) return `None`
 
-    const prefix =
-      setters.context.provider?.name ||
-      setters.context.detail?.name ||
-      ADAPTER_LABELS[preset.service!]
     const suffix = preset.name
 
-    // return `PN:${setters.context.provider?.name || 'na'} DN:${
-    //   setters.context.provider?._id || 'na'
-    // } ${preset.providerId || 'na'} FB:${ADAPTER_LABELS[preset.service!]}`
-
-    if (!prefix) return `None (${preset._id?.slice(0, 8) || '....'})`
-
-    if (prefix === suffix) return prefix
-
-    const label = [prefix, suffix].filter((part) => !!part?.trim()).join(' - ')
-    return label
+    return suffix || 'Unnamed Preset'
   })
 
   useSubNav({
@@ -104,11 +90,11 @@ const ChatNav: Component<NavProps> = (props) => {
     const last = getStore('messages').getState().msgs.slice(-1)[0]
 
     if (!last) {
-      settingStore.openImageGen()
+      imageStore.openImageGen()
       return
     }
 
-    settingStore.showMessageImages({ id: last._id, position: 0 })
+    imageStore.showMessageImages({ id: last._id, position: 0 })
   }
 
   return (
@@ -171,7 +157,7 @@ const ChatNav: Component<NavProps> = (props) => {
 
       <div class="flex flex-wrap justify-center gap-1 text-sm">
         <Nav.Item
-          onClick={() => settingStore.modal(true)}
+          onClick={() => pageStore.settings(true)}
           ariaLabel="Open settings page"
           tooltip="Site Settings"
         >
@@ -185,7 +171,7 @@ const ChatNav: Component<NavProps> = (props) => {
           <ImagePlus size={size} aria-hidden="true" />
         </Nav.Item>
         <Nav.Item
-          onClick={() => settingStore.imageSettings(true)}
+          onClick={() => imageStore.imageSettings(true)}
           ariaLabel="Image Settings"
           tooltip="Image Settings"
         >

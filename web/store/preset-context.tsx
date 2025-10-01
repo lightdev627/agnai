@@ -102,6 +102,7 @@ export const initPreset = (): Omit<AppSchema.SubscriptionModel, 'kind'> & {
   providerModels: {},
   tokenizer: '',
   registered: {},
+  postUserRole: false,
 })
 
 const initModels = (): ModelState => ({
@@ -133,8 +134,8 @@ export function PresetStateProvider(props: { children: any }) {
 export type PresetFuncs = ReturnType<typeof usePresetContext>[1]
 
 export function usePresetContext(opts?: { anonymous: boolean }) {
-  const cfg = settingStore()
-  const user = userStore()
+  const cfg = settingStore((s) => ({ config: s.config }))
+  const user = userStore((s) => ({ user: s.user }))
 
   const [state, setState, models, setModels] = opts?.anonymous
     ? [...createStore(initPreset()), ...createStore(initModels())]
@@ -152,11 +153,11 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
         subId: state.providerModels?.agnaistic,
         list: user.user?.providers,
       }),
-      () => runStateUpdate('state')
+      () => onStateUpdated()
     )
   )
 
-  const runStateUpdate = (source: string) => {
+  const onStateUpdated = () => {
     const list = user.user?.providers
 
     const conn = getPresetConnection(state, list)

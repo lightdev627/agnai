@@ -16,7 +16,7 @@ import FileInput, { FileInputResult } from '../../shared/FileInput'
 import Modal, { RootModal } from '../../shared/Modal'
 import TextInput from '../../shared/TextInput'
 import { setComponentPageTitle } from '../../shared/util'
-import { adminStore, settingStore, toastStore, userStore } from '../../store'
+import { adminStore, pageStore, settingStore, toastStore, userStore } from '../../store'
 import { Pill, TitleCard } from '/web/shared/Card'
 import { useNavigate, useSearchParams } from '@solidjs/router'
 import { SubscriptionPage } from './SubscriptionPage'
@@ -27,7 +27,7 @@ import { startTour } from '/web/tours'
 import { createStore } from 'solid-js/store'
 
 export const ProfileModal: Component = () => {
-  const state = userStore()
+  const state = userStore((s) => ({ showProfile: s.showProfile }))
   const config = userStore((s) => ({ tiers: s.tiers.filter((t) => t.enabled) }))
   const tabs = useTabs(['Profile', 'Subscription'], 0)
   const [search, setSearch] = useSearchParams()
@@ -94,9 +94,10 @@ const ProfilePage: Component<{ footer?: (children: any) => void }> = (props) => 
 
   setComponentPageTitle('My profile')
   const nav = useNavigate()
-  const state = userStore()
-  const admin = adminStore()
-  const settings = settingStore()
+  const state = userStore((s) => ({ profile: s.profile, user: s.user }))
+  const admin = adminStore((s) => ({ impersonating: s.impersonating }))
+  const settings = settingStore((s) => ({ config: s.config }))
+  const page = pageStore((s) => ({ flags: s.flags }))
 
   const [handle, setHandle] = createSignal(state.profile?.handle || '')
   const [pass, setPass] = createSignal(false)
@@ -107,7 +108,7 @@ const ProfilePage: Component<{ footer?: (children: any) => void }> = (props) => 
   const canuseGoogle = createMemo(
     () =>
       !!settings.config.serverConfig?.googleClientId &&
-      (settings.config.serverConfig?.googleEnabled || settings.flags.google)
+      (settings.config.serverConfig?.googleEnabled || page.flags.google)
   )
 
   const onAvatar = (files: FileInputResult[]) => {
@@ -143,7 +144,7 @@ const ProfilePage: Component<{ footer?: (children: any) => void }> = (props) => 
 
     if (!api) return
 
-    const enabled = settings.config.serverConfig?.googleEnabled || settings.flags.google
+    const enabled = settings.config.serverConfig?.googleEnabled || page.flags.google
 
     if (settings.config.serverConfig?.googleClientId && enabled) {
       api.initialize({
@@ -204,7 +205,7 @@ const ProfilePage: Component<{ footer?: (children: any) => void }> = (props) => 
             <div class="flex flex-wrap items-center justify-center">
               You can{' '}
               <div class="inline">
-                <Button class="mx-1" size="sm" onClick={() => settingStore.toggleImpersonate(true)}>
+                <Button class="mx-1" size="sm" onClick={() => pageStore.toggleImpersonate(true)}>
                   Impersonate
                 </Button>{' '}
               </div>
@@ -401,7 +402,7 @@ const PasswordModal: Component<{ show: boolean; close: () => void }> = (props) =
 }
 
 const DeleteAccountModal: Component<{ show: boolean; close: () => void }> = (props) => {
-  const state = userStore()
+  const state = userStore((s) => ({ user: s.user }))
   const [username, setUsername] = createSignal('')
 
   const deleteAccount = () => {

@@ -16,8 +16,8 @@ import { wait } from '/common/util'
 
 const LoginPage: Component = () => {
   setComponentPageTitle('Login')
-  const store = userStore()
-  const cfg = settingStore()
+  const store = userStore((s) => ({ error: s.error, loggedIn: s.loggedIn, loading: s.loading }))
+  const cfg = settingStore((s) => ({ config: s.config }))
   const [query] = useSearchParams()
 
   const [register, setRegister] = createSignal(false)
@@ -168,8 +168,8 @@ const LoginForm: Component<FormProps> = (props) => {
   const navigate = useNavigate()
   const [query] = useSearchParams()
   const loc = useLocation()
-  const state = settingStore()
-  const user = userStore()
+  const state = settingStore((s) => ({ config: s.config, initLoading: s.initLoading }))
+  const user = userStore((s) => ({ loggedIn: s.loggedIn }))
 
   const [error, setError] = createSignal<string>()
   const google = useGoogleReady()

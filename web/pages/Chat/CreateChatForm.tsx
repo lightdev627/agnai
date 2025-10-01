@@ -58,7 +58,7 @@ const CreateChatForm: Component<{
   const nav = useNavigate()
 
   const scen = scenarioStore((s) => s.scenarios)
-  const cfg = settingStore()
+  const cfg = settingStore((s) => ({ config: s.config }))
   const user = userStore((s) => ({ ...s.user, sub: s.sub, userLevel: s.userLevel }))
   const chars = characterStore((s) => ({
     char: s.editing,
@@ -74,14 +74,19 @@ const CreateChatForm: Component<{
     return [{ value: '', label: 'None' }, ...scen.map((s) => ({ label: s.name, value: s._id }))]
   })
 
-  createEffect(() => {
-    if (props.charId) return
-    const curr = selectedId()
-    if (curr) return
+  createEffect(
+    on(
+      () => [props.charId, chars.chars],
+      () => {
+        if (props.charId) return
+        const curr = selectedId()
+        if (curr) return
 
-    if (!chars.chars.length) return
-    setSelected(chars.chars[0]._id)
-  })
+        if (!chars.chars.length) return
+        setSelected(chars.chars[0]._id)
+      }
+    )
+  )
 
   createEffect(() => {
     const id = selectedId()

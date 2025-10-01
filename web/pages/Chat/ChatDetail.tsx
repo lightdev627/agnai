@@ -13,7 +13,7 @@ import { useNavigate, useParams } from '@solidjs/router'
 import ChatExport from './ChatExport'
 import Button from '../../shared/Button'
 import { getAssetUrl, setComponentPageTitle, sticky } from '../../shared/util'
-import { characterStore, chatStore, presetStore, settingStore, userStore } from '../../store'
+import { characterStore, chatStore, pageStore, presetStore, userStore } from '../../store'
 import { msgStore } from '../../store'
 import Message from './components/Message'
 import PromptModal from './components/PromptModal'
@@ -54,7 +54,7 @@ const ChatDetail: Component = () => {
   const pane = usePaneManager()
 
   const nav = useNavigate()
-  const user = userStore()
+  const user = userStore((s) => ({ ui: s.ui, profile: s.profile, user: s.user }))
   const chars = characterStore((s) => ({
     botMap: s.characters.map,
     ready: s.characters.loaded > 0 && s.chatChars.chatId === params.id,
@@ -191,23 +191,28 @@ const ChatDetail: Component = () => {
     events.emit('chat-closed')
   })
 
-  createEffect(() => {
-    // On Connect Events
-    if (evented() || !chats.chat || !chats.char || !chars.ready || !chats.ready) return
-    setEvented(true)
+  createEffect(
+    on(
+      () => [msgs.msgs, chats.chat, chats.char, chats.ready],
+      () => {
+        // On Connect Events
+        if (evented() || !chats.chat || !chats.char || !chars.ready || !chats.ready) return
+        setEvented(true)
 
-    const messages = msgs.msgs
-    const isNonEvent = !msgs.msgs[0]?.event
-    if (isNonEvent && messages.length <= 1) {
-      eventStore.onGreeting(chats.chat)
-    } else {
-      eventStore.onChatOpened(chats.chat, new Date(messages[messages.length - 1].createdAt))
-    }
+        const messages = msgs.msgs
+        const isNonEvent = !msgs.msgs[0]?.event
+        if (isNonEvent && messages.length <= 1) {
+          eventStore.onGreeting(chats.chat)
+        } else {
+          eventStore.onChatOpened(chats.chat, new Date(messages[messages.length - 1].createdAt))
+        }
 
-    if (chats.chat.userEmbedId) {
-      embedApi.loadDocument(chats.chat.userEmbedId)
-    }
-  })
+        if (chats.chat.userEmbedId) {
+          embedApi.loadDocument(chats.chat.userEmbedId)
+        }
+      }
+    )
+  )
 
   const descriptionText = createMemo(() => {
     if (!chats.char?.description) return null
@@ -284,7 +289,7 @@ const ChatDetail: Component = () => {
     updateTitle(charName ? `Chat with ${charName || '...'}` : 'Chat')
 
     if (charName && canStartTour('chat')) {
-      settingStore.menu(true)
+      pageStore.menu(true)
       setTimeout(() => {
         startTour('chat')
       }, 500)
@@ -297,7 +302,7 @@ const ChatDetail: Component = () => {
     if (isDevCommand(opts.msg)) {
       switch (opts.msg) {
         case '/devCycleAvatarSettings':
-          devCycleAvatarSettings(user)
+          devCycleAvatarSettings(user.ui)
           opts.onSuccess?.()
           return
 
@@ -397,7 +402,7 @@ const ChatDetail: Component = () => {
 
       if (ev.key === 'i' || ev.code === 'KeyI') {
         ev.preventDefault()
-        settingStore.toggleImpersonate(true)
+        pageStore.toggleImpersonate(true)
       }
 
       if (ev.key === 'a' || ev.code == 'KeyA') {

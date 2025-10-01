@@ -17,7 +17,7 @@ import {
 } from '../../../../common/image'
 import Select from '../../../shared/Select'
 import TextInput from '../../../shared/TextInput'
-import { settingStore, userStore } from '../../../store'
+import { pageStore, settingStore, userStore } from '../../../store'
 import { ImageSettings } from '/common/types/image-schema'
 import { SetStoreFunction } from 'solid-js/store'
 import { applyStoreProperty, createEmitter } from '/web/shared/util'
@@ -34,7 +34,7 @@ export const NovelSettings: Component<{
   cfg: ImageSettings
   setter: SetStoreFunction<ImageSettings>
 }> = (props) => {
-  const state = userStore()
+  const state = userStore((s) => ({ user: s.user }))
 
   const isKeySet = createMemo(() => {
     const provider = state.user?.providers?.find((p) => p.provider === 'known-novel')
@@ -106,7 +106,7 @@ export const HordeSettings: Component<{
   cfg: ImageSettings
   setter: SetStoreFunction<ImageSettings>
 }> = (props) => {
-  const cfg = settingStore()
+  const cfg = settingStore((s) => ({ imageWorkers: s.imageWorkers }))
 
   const models = createMemo(() => {
     const map = new Map<string, number>()
@@ -357,7 +357,7 @@ export const AgnaiSettings: Component<{
       </div>
     )
 
-    settingStore.openConfirm({ message: content })
+    pageStore.openConfirm({ message: content })
   }
 
   return (

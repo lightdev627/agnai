@@ -1,4 +1,13 @@
-import { Component, createEffect, createMemo, createSignal, Match, Show, Switch } from 'solid-js'
+import {
+  Component,
+  createEffect,
+  createMemo,
+  createSignal,
+  Match,
+  on,
+  Show,
+  Switch,
+} from 'solid-js'
 import { AppSchema } from '/common/types'
 import { presetStore } from '/web/store/presets'
 import {
@@ -42,12 +51,12 @@ export const ManageProvider: Component<{
 
   const state = presetStore((s) => ({ testLoading: s.testLoading }))
 
-  const isUsableProvider = (id: string) => {
-    if (!props.user?.providers) return true
-    if (props.provider?.provider === id) return true
-    const match = props.user.providers.find((p) => p.provider === id)
-    return !match
-  }
+  // const isUsableProvider = (id: string) => {
+  //   if (!props.user?.providers) return true
+  //   if (props.provider?.provider === id) return true
+  //   const match = props.user.providers.find((p) => p.provider === id)
+  //   return !match
+  // }
 
   const categories = createMemo(() => {
     const known = {
@@ -56,7 +65,7 @@ export const ManageProvider: Component<{
         .map(([key, info]) => ({
           label: info.name,
           value: `known-${key}`,
-          disabled: !isUsableProvider(`known-${key}`),
+          // disabled: !isUsableProvider(`known-${key}`),
         }))
         .sort(sortAlpha) as CustomOption[],
     }
@@ -84,29 +93,34 @@ export const ManageProvider: Component<{
     return [known, self, custom]
   })
 
-  createEffect(() => {
-    if (!props.show) return
-    setTested(undefined)
-    setProvider(props.provider?.provider || '')
-    setUrl(props.provider?.url || '')
-    setName(props.provider?.name || '')
-    setKey('')
-    setAutourl(props.provider?.disableAutoUrl ?? false)
+  createEffect(
+    on(
+      () => [props.show, props.provider],
+      () => {
+        if (!props.show) return
+        setTested(undefined)
+        setProvider(props.provider?.provider || '')
+        setUrl(props.provider?.url || '')
+        setName(props.provider?.name || '')
+        setKey('')
+        setAutourl(props.provider?.disableAutoUrl ?? false)
 
-    if (!props.provider?.provider || !props.provider.format) return
+        if (!props.provider?.provider || !props.provider.format) return
 
-    const detail = getSafeProviderDetail(props.provider?.provider)
-    if (!detail?.detail?.formats) return
+        const detail = getSafeProviderDetail(props.provider?.provider)
+        if (!detail?.detail?.formats) return
 
-    for (let idx = 0; idx < detail.detail.formats.length; idx++) {
-      const fmt = detail.detail.formats[idx]
+        for (let idx = 0; idx < detail.detail.formats.length; idx++) {
+          const fmt = detail.detail.formats[idx]
 
-      if (fmt.type !== props.provider.format.type) continue
-      if (fmt.value !== props.provider.format.value) continue
-      setFormat(`${idx}`)
-      break
-    }
-  })
+          if (fmt.type !== props.provider.format.type) continue
+          if (fmt.value !== props.provider.format.value) continue
+          setFormat(`${idx}`)
+          break
+        }
+      }
+    )
+  )
 
   const isCustom = createMemo(() => provider().startsWith('custom-'))
   const isSelf = createMemo(() => provider().startsWith('self-'))
@@ -266,7 +280,6 @@ export const ManageProvider: Component<{
           placeholder="Custom label for this provider"
           value={name()}
           onChange={(ev) => setName(ev.currentTarget.value)}
-          hide={!isCustom() && !isSelf()}
         />
 
         <TextInput

@@ -26,7 +26,6 @@ import ChatDetail from './pages/Chat/ChatDetail'
 import Settings, { SettingsModal } from './pages/Settings'
 import ProfilePage, { ProfileModal } from './pages/Profile'
 import { useCharacterBg, usePaneManager } from './shared/hooks'
-import { rootModalStore } from './store/root-modal'
 import { For } from 'solid-js'
 import { css, getMaxChatWidth } from './shared/util'
 import FAQ from './pages/Home/FAQ'
@@ -46,10 +45,12 @@ import { ImageSettingsModal } from './pages/Settings/Image/ImageSettings'
 import { ResetPasswordPage } from './pages/Login/ResetPassword'
 import { api } from './store/api'
 import { GlobalFileInput } from './shared/GlobalFileInput'
+import { pageStore } from './store'
 
 const App: Component = () => {
-  const state = userStore()
-  const cfg = settingStore()
+  const state = userStore((s) => ({ user: s.user, loggedIn: s.loggedIn }))
+  const cfg = settingStore((s) => ({ config: s.config }))
+  const page = pageStore((s) => ({ flags: s.flags }))
 
   return (
     <Router root={Layout}>
@@ -71,7 +72,7 @@ const App: Component = () => {
         path="/presets"
         component={lazy(() => import('./pages/GenerationPresets/PresetList'))}
       />
-      <Show when={cfg.flags.sounds}>
+      <Show when={page.flags.sounds}>
         <Route path="/sounds" component={SoundsPage} />
       </Show>
       <Route path="/oauth/patreon" component={PatreonOauth} />
@@ -126,8 +127,16 @@ const App: Component = () => {
 }
 
 const Layout: Component<{ children?: any }> = (props) => {
-  const state = userStore()
-  const cfg = settingStore()
+  const page = pageStore((s) => ({
+    showMenu: s.showMenu,
+    confirm: s.confirm,
+    showImpersonate: s.showImpersonate,
+  }))
+  const state = userStore((s) => ({ ui: s.ui, banned: s.banned }))
+  const cfg = settingStore((s) => ({
+    init: s.init,
+    initLoading: s.initLoading,
+  }))
 
   const location = useLocation()
   const pane = usePaneManager()
@@ -137,7 +146,6 @@ const Layout: Component<{ children?: any }> = (props) => {
 
     return getMaxChatWidth(state.ui.chatWidth)
   })
-  const rootModals = rootModalStore()
 
   const reload = () => {
     settingStore.init()
@@ -165,8 +173,8 @@ const Layout: Component<{ children?: any }> = (props) => {
             id="main-content"
             class="w-full overflow-y-auto overflow-x-hidden"
             classList={{
-              'sm:ml-[320px]': cfg.showMenu,
-              'sm:ml-0': !cfg.showMenu,
+              'sm:ml-[320px]': page.showMenu,
+              'sm:ml-0': !page.showMenu,
             }}
             data-background
             style={{ ...bgStyles(), 'scrollbar-gutter': 'stable' }}
@@ -228,36 +236,35 @@ const Layout: Component<{ children?: any }> = (props) => {
       </div>
       <Notifications />
       <ImpersonateModal
-        show={cfg.showImpersonate}
-        close={() => settingStore.toggleImpersonate(false)}
+        show={page.showImpersonate}
+        close={() => pageStore.toggleImpersonate(false)}
       />
       <InfoModal />
       <ProfileModal />
       <BannedModal />
       <GlobalFileInput />
-      <For each={rootModals.modals}>{(modal) => modal.element}</For>
       <ImageModal />
       <ImageSettingsModal />
       <SettingsModal />
       <div
         class="absolute bottom-0 left-0 right-0 top-0 z-10 h-[100vh] w-full bg-black bg-opacity-20 sm:hidden"
-        classList={{ hidden: !cfg.showMenu }}
-        onClick={() => settingStore.closeMenu()}
+        classList={{ hidden: !page.showMenu }}
+        onClick={() => pageStore.closeMenu()}
       ></div>
-      <Show when={!!cfg.confirm}>
+      <Show when={!!page.confirm}>
         <Modal
           show={true}
-          title={cfg.confirm?.title || 'Confirm'}
-          close={() => settingStore.closeConfirm(false)}
+          title={page.confirm?.title || 'Confirm'}
+          close={() => pageStore.closeConfirm(false)}
           footer={
             <>
-              <For each={cfg.confirm?.actions || []}>
+              <For each={page.confirm?.actions || []}>
                 {(btn) => (
                   <Button
                     schema={btn.schema}
                     onClick={() => {
                       btn.onClick()
-                      settingStore.closeConfirm(true)
+                      pageStore.closeConfirm(true)
                     }}
                   >
                     {btn.text}
@@ -266,19 +273,19 @@ const Layout: Component<{ children?: any }> = (props) => {
               </For>
 
               <Show
-                when={cfg.confirm?.onConfirm}
-                fallback={<Button onClick={() => settingStore.closeConfirm(false)}>Close</Button>}
+                when={page.confirm?.onConfirm}
+                fallback={<Button onClick={() => pageStore.closeConfirm(false)}>Close</Button>}
               >
-                <Button onClick={() => settingStore.closeConfirm(false)}>Cancel</Button>
+                <Button onClick={() => pageStore.closeConfirm(false)}>Cancel</Button>
 
-                <Button schema="green" onClick={() => settingStore.closeConfirm(true)}>
+                <Button schema="green" onClick={() => pageStore.closeConfirm(true)}>
                   Confirm
                 </Button>
               </Show>
             </>
           }
         >
-          {cfg.confirm?.message}
+          {page.confirm?.message}
         </Modal>
       </Show>
     </ContextProvider>
@@ -286,17 +293,17 @@ const Layout: Component<{ children?: any }> = (props) => {
 }
 
 const InfoModal: Component = (props) => {
-  const state = rootModalStore()
+  const state = pageStore((s) => ({ info: s.info }))
 
   return (
     <Modal
-      title={state.infoTitle || 'Information'}
-      show={state.info}
-      close={() => rootModalStore.closeInfo()}
+      title={state.info?.title || 'Information'}
+      show={!!state.info?.content}
+      close={() => pageStore.closeInfo()}
       maxWidth="half"
     >
-      <Show when={typeof state.info === 'string'} fallback={state.info}>
-        <div class="markdown" innerHTML={markdown.makeHtml(state.info)} />
+      <Show when={typeof state.info === 'string'} fallback={state.info?.content}>
+        <div class="markdown" innerHTML={markdown.makeHtml(state.info?.content)} />
       </Show>
     </Modal>
   )

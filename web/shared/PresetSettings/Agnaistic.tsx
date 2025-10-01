@@ -49,8 +49,10 @@ export const AgnaisticSettings: Component<{
 
   createEffect(
     on(
-      () =>
-        props.state?.providerModels?.agnaistic ?? props.state.registered?.agnaistic?.subscriptionId,
+      () => [
+        props.state?.providerModels?.agnaistic,
+        props.state.registered?.agnaistic?.subscriptionId,
+      ],
       (id) => {
         if (!id) return
 
@@ -222,7 +224,7 @@ function useModelCategories() {
     userLevel: s.userLevel,
   }))
 
-  const settings = settingStore()
+  const settings = settingStore((s) => ({ config: s.config }))
 
   const list = createMemo(() => {
     const tierLevel = state.user?.admin ? Infinity : state.userLevel
