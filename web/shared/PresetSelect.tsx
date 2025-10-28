@@ -26,12 +26,17 @@ export const PresetSelect: Component<{
 }> = (props) => {
   const [filter, setFilter] = createSignal('')
   const [newPreset, setNewPreset] = createSignal(false)
-  const custom = createMemo(() =>
-    props.options.filter((o) => o.custom && o.label.toLowerCase().includes(filter().toLowerCase()))
-  )
 
-  const presets = presetStore((s) => s.presets)
+  const presets = presetStore((s) => ({ list: s.presets }))
   const user = userStore((s) => ({ user: s.user }))
+
+  const custom = createMemo(() => {
+    const filtered = props.options.filter(
+      (o) => o.custom && o.label.toLowerCase().includes(filter().toLowerCase())
+    )
+
+    return filtered
+  })
 
   const selectedLabel = createMemo(() => {
     const opt = props.options.find((o) => o.value === props.selected)
@@ -50,7 +55,7 @@ export const PresetSelect: Component<{
   }
 
   const downloadPreset = () => {
-    const preset = presets.find((p) => p._id === props.selected)
+    const preset = presets.list.find((p) => p._id === props.selected)
     if (!preset) return
 
     exportPreset(preset)

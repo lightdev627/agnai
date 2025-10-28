@@ -70,7 +70,6 @@ const ChatDetail: Component = () => {
     loaded: s.detailLoaded,
     loading: s.detailLoading,
     opts: s.opts,
-    ready: s.allChars.list.length > 0 && (s.active?.char?._id || 'no-id') in s.allChars.map,
     linesAddedCount: s.prompt?.template.linesAddedCount,
     msgVisibility: s.msgVisibility,
     listChat: s.allChats.find((chat) => chat._id === params.id),
@@ -193,10 +192,10 @@ const ChatDetail: Component = () => {
 
   createEffect(
     on(
-      () => [msgs.msgs, chats.chat, chats.char, chats.ready],
+      () => [msgs.msgs, chats.chat, chats.char],
       () => {
         // On Connect Events
-        if (evented() || !chats.chat || !chats.char || !chars.ready || !chats.ready) return
+        if (evented() || !chats.chat || !chats.char || !chars.ready) return
         setEvented(true)
 
         const messages = msgs.msgs
@@ -226,7 +225,9 @@ const ChatDetail: Component = () => {
     )
   })
   const isOwner = createMemo(() => chats.chat?.userId === user.user?._id)
-  const tts = createMemo(() => (user.user?.texttospeech?.enabled ?? true) && !!chats.char?.voice)
+  const tts = createMemo(
+    () => (user.user?.texttospeech?.enabled ?? true) && !!chats.char?.voice?.service
+  )
 
   const clearModal = () => {
     chatStore.option({ options: false, modal: 'none' })
@@ -262,14 +263,10 @@ const ChatDetail: Component = () => {
         }
 
         if (params.id !== chats.chat?._id) {
-          if (chats.listChat) {
-            presetSet.loadChat(chats.listChat)
-          }
-
           chatStore.openChat(params.id, {
             onDone: async (success, chat) => {
               if (success && chat) {
-                await Promise.all([presetSet.loadChat(chat), presetStore.getTemplates(true)])
+                await Promise.all([presetSet.loadChat(chat, true), presetStore.getTemplates(true)])
                 return
               }
 

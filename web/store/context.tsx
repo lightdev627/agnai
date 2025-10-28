@@ -53,6 +53,7 @@ export type ContextState = {
   }
   promptHistory: any
   chatTree: ChatTree
+  msgDeleting?: boolean
   waiting?: MsgState['waiting']
   imgWaiting?: MsgState['imgWaiting']
   status?: MsgState['hordeStatus']
@@ -101,7 +102,6 @@ export function ContextProvider(props: { children: any }) {
     active: s.active,
     allChats: s.allChats,
     lastChatId: s.lastChatId,
-    allChars: s.allChars,
     chatProfiles: s.chatProfiles,
     promptHistory: s.promptHistory,
   }))
@@ -118,6 +118,7 @@ export function ContextProvider(props: { children: any }) {
     imgWaiting: s.imgWaiting,
     hordeStatus: s.hordeStatus,
     attachments: s.attachments,
+    deleting: s.deleting,
   }))
   const page = pageStore((s) => ({ flags: s.flags }))
 
@@ -173,10 +174,11 @@ export function ContextProvider(props: { children: any }) {
     const chat =
       chats.active?.chat ||
       chats.allChats.find((c) => (chats.lastChatId ? c._id === chats.lastChatId : undefined))
+
     const char = chats.active?.char
       ? chats.active.char
       : chat?.characterId
-      ? chats.allChars.map[chat.characterId]
+      ? chars.chatChars.map[chat.characterId] || chars.characters.map[chat.characterId]
       : undefined
 
     const next: Partial<ContextState> = {
@@ -191,6 +193,7 @@ export function ContextProvider(props: { children: any }) {
       activeMap: toMap(activeBots()),
       activeBots: activeBots(),
 
+      msgDeleting: msgs.deleting,
       impersonate: chars.impersonating,
       char: char,
       chat: chat,

@@ -87,23 +87,8 @@ export const PresetProvider: Component<{
   }
 
   const changeProvider = (id: string) => {
-    props.setters.setState('providerId', id)
-
-    props.setters.refreshModels()
-
-    if (props.page !== 'mode' && props.page !== 'menu') {
-      return
-    }
-
-    props.setters.update(
-      { providerId: id },
-      {
-        quiet: true,
-        onSuccess: () => {
-          getStore('toasts').success('Provider changed')
-        },
-      }
-    )
+    const save = props.page === 'mode' || props.page === 'menu'
+    props.setters.provider(id, save)
   }
 
   const editLegacy = (ev: any) => {
@@ -372,7 +357,7 @@ const ThirdPartyUrl: Field = (props) => {
       value={props.state.thirdPartyUrl || ''}
       disabled={props.state.disabled}
       hide={
-        props.setters.hides.thirdPartyUrl ||
+        props.setters.context.hides.thirdPartyUrl ||
         props.state.thirdPartyFormat === 'featherless' ||
         props.state.thirdPartyFormat === 'mistral' ||
         props.state.thirdPartyFormat === 'gemini' ||

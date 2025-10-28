@@ -1,3 +1,4 @@
+import { createMemo } from 'solid-js'
 import { defaultPresets, isDefaultPreset } from '/common/default-preset'
 import { getFallbackPreset } from '/common/presets'
 import { AppSchema } from '/common/types'
@@ -67,6 +68,51 @@ export function getActiveBots(
     .filter((bot) => !!bot)
     .sort(tempSort)
   return all
+}
+
+export function useEditableBots() {
+  const chars = getStore('character')((s) => ({
+    chatBots: s.characters.list,
+    botMap: s.characters.map,
+    impersonate: s.impersonating,
+  }))
+
+  const chats = getStore('chat')((s) => {
+    return {
+      chat: s.active?.chat,
+      char: s.active?.char,
+      opts: s.opts,
+      activeBots: getActiveBots(s.active?.chat!, chars.botMap),
+      tempBots: Object.values(s.active?.chat?.tempCharacters! || {}),
+    }
+  })
+
+  const editableCharcters = createMemo(() => {
+    const ids = new Map<string, AppSchema.Character>()
+
+    if (chats.char) {
+      ids.set(chats.char._id, chats.char)
+    }
+
+    if (chars.impersonate) {
+      ids.set(chars.impersonate._id, chars.impersonate)
+    }
+
+    for (const bot of chats.activeBots) {
+      if (bot.deletedAt) continue
+      if (bot._id.startsWith('temp-') && bot.favorite === false) continue
+      ids.set(bot._id, bot)
+    }
+
+    for (const bot of Object.values(chats.chat?.tempCharacters || {})) {
+      ids.set(bot._id, bot)
+    }
+
+    const editable = Array.from(ids.values())
+    return editable
+  })
+
+  return editableCharcters
 }
 
 export function getBotsForChat(

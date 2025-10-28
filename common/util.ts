@@ -18,6 +18,11 @@ export function incompleteJson(data: string) {
   return false
 }
 
+export function randomElement<T>(elems: T[]) {
+  const rand = Math.floor(Math.random() * elems.length)
+  return elems[rand]
+}
+
 export function parseEvent(msg: string) {
   const event: any = {}
   for (const line of msg.split(/\r?\n/)) {
@@ -43,6 +48,47 @@ export function getMimeTypeBase64(base64: string) {
 
 export function replace<T extends { _id: string }>(id: string, list: T[], item: Partial<T>) {
   return list.map((li) => (li._id === id ? { ...li, ...item } : li))
+}
+
+export function updateList<T extends { _id: string }>(original: T[], incoming: T[]) {
+  const map = toMap(incoming)
+  const next: T[] = []
+
+  for (const item of original) {
+    const inc = map[item._id]
+    if (!inc) {
+      next.push(item)
+      continue
+    }
+
+    next.push({ ...item, ...inc })
+  }
+
+  return next
+}
+
+/**
+ * Replace original items with incoming.
+ * Items that don't cause a replacement are appended.
+ */
+export function combine<T extends { _id: string }>(original: T[], incoming: T[]) {
+  const map = toMap(incoming)
+  const replaced: Record<string, boolean> = {}
+
+  const next: T[] = original.map((item) => {
+    if (map[item._id]) {
+      replaced[item._id] = true
+      return map[item._id]
+    }
+    return item
+  })
+
+  for (const inc of incoming) {
+    if (replaced[inc._id]) continue
+    next.push(inc)
+  }
+
+  return next
 }
 
 export function exclude<T extends { _id: string }>(list: T[], ids: string[]) {
@@ -793,4 +839,9 @@ export function inline(obj: object): string {
 
 function bold(text: string) {
   return `\x1b[1m${text}\x1b[0m`
+}
+
+export function toMap<T extends { _id: string }>(list: T[]): Record<string, T> {
+  const map = list.reduce((prev, curr) => Object.assign(prev, { [curr._id]: curr }), {})
+  return map
 }

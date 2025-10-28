@@ -29,7 +29,6 @@ import { JsonField, TickHandler } from '/common/prompt'
 import { HordeCheck } from '/common/horde-gen'
 import { botGen, GenerateOpts } from './data/bot-generate'
 import type { MsgAttachment } from '/srv/adapter/type'
-import { debug } from '/common/debug'
 
 const SOFT_PAGE_SIZE = 20
 
@@ -56,6 +55,7 @@ export type MsgState = {
   msgs: ChatMessageExt[]
   partial?: string
   retrying?: AppSchema.ChatMessage
+  deleting?: boolean
   waiting?: {
     started: number
     signal?: AbortController
@@ -776,12 +776,21 @@ export const msgStore = createStore<MsgState>(
 
       msgStore.swapMessage(msgId, position, onSuccess)
     },
-    async deleteMessages({ msgs, activeChatId, graph }, fromId: string, deleteOne?: boolean) {
+    async *deleteMessages(
+      { msgs, activeChatId, graph, deleting },
+      fromId: string,
+      deleteOne?: boolean
+    ) {
+      if (deleting) {
+        return
+      }
+
       const index = msgs.findIndex((m) => m._id === fromId)
       if (index === -1) {
         return toastStore.error(`Cannot delete message: Message not found`)
       }
 
+      yield { deleting: true }
       const parents: any = {}
       if (deleteOne) {
         const node = graph.tree[fromId]
@@ -803,10 +812,12 @@ export const msgStore = createStore<MsgState>(
       const res = await msgsApi.deleteMessages(activeChatId, deleteIds, leafId, parents)
 
       if (res.error) {
+        yield { deleting: false }
         return toastStore.error(`Failed to delete messages: ${res.error}`)
       }
 
       updateMsgParents(activeChatId, parents)
+      yield { deleting: false }
     },
     stopSpeech() {
       stopSpeech()
@@ -880,6 +891,7 @@ export const msgStore = createStore<MsgState>(
           characterId: activeCharId,
           messageId,
           started: Date.now(),
+          // signal: new AbortController()
         },
       }
 
@@ -932,6 +944,7 @@ export const msgStore = createStore<MsgState>(
             const next = (imgWaiting?.pos || 1) + 1
             msgStore.setState({ imgWaiting: { ...imgWaiting!, pos: next } })
           },
+
           onTick: opts.onTick,
         }
       )
@@ -1214,7 +1227,9 @@ subscribe(
     const voice = char.voice
 
     if (body.adapter === 'image' || !voice || !user) return
-    const canSpeak = (user?.texttospeech?.enabled ?? true) && !char.voiceDisabled
+    const canSpeak =
+      (user?.texttospeech?.enabled ?? true) && !char.voiceDisabled && !!char.voice?.service
+
     if (canSpeak && active.char.userId === user._id) {
       const parsed = getUtterableText(body.message)
       if (!parsed?.content) return
@@ -1719,15 +1734,13 @@ subscribe('horde-status', { status: 'any' }, (body) => {
 export async function hydrateMessageImages(messageId: string) {
   if (!messageId) return
 
-  const log = debug('msg-imgs')
   const { msgs } = msgStore.getState()
   const curr = findOne(messageId, msgs)
-  log('[%s] loaded none', messageId.slice(0, 4))
+
   if (!curr) return
 
   const cached = await getMessageImages(messageId)
   updateMessageInState(messageId, { extras: cached })
-  log('[%s] loaded %s', messageId.slice(0, 4), cached.length)
 
   // Case 1. Initial load or first image
   // if (!curr.extras?.length) {

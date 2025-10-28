@@ -1,18 +1,21 @@
+import { v4 } from 'uuid'
 import { AppSchema } from '../../common/types/schema'
 import { EVENTS, events } from '../emitter'
 import { downloadJson, storage } from '../shared/util'
-import { api } from './api'
+import { api, isLoggedIn } from './api'
 import { createStore } from './create'
 import { PresetCreate, PresetUpdate, SubscriptionUpdate, presetApi } from './data/presets'
 import { subscribe } from './socket'
 import { toastStore } from './toasts'
 import { AIAdapter } from '/common/adapters'
 import { defaultPresets, isDefaultPreset } from '/common/default-preset'
-import { replace } from '/common/util'
+import { findOne, replace } from '/common/util'
 
 type PresetState = {
-  importing?: AppSchema.UserGenPreset
   presets: AppSchema.UserGenPreset[]
+  presetsLoaded: boolean
+
+  importing?: AppSchema.UserGenPreset
   templates: AppSchema.PromptTemplate[]
   subs: AppSchema.SubscriptionModel[]
   saving: boolean
@@ -22,6 +25,7 @@ type PresetState = {
 
 const initState: PresetState = {
   presets: [],
+  presetsLoaded: false,
   templates: [],
   subs: [],
   saving: false,
@@ -41,7 +45,7 @@ export const presetStore = createStore<PresetState>(
         preset.thirdPartyKey = ''
       }
 
-      presetStore.setState({ presets: init.presets })
+      presetStore.setState({ presets: init.presets, presetsLoaded: true })
     }
   })
 
@@ -61,7 +65,7 @@ export const presetStore = createStore<PresetState>(
             preset.thirdPartyKey = ''
           }
         }
-        return { presets: res.result.presets }
+        return { presets: res.result.presets, presetsLoaded: true }
       }
     },
     async *testConnection(
@@ -98,7 +102,7 @@ export const presetStore = createStore<PresetState>(
       if (res.error) toastStore.error(`Failed to update preset: ${res.error}`)
       if (res.result) {
         if (!opts?.quiet) toastStore.success('Successfully updated preset')
-        yield { presets: presets.map((p) => (p._id === presetId ? res.result! : p)) }
+        yield { presets: replace(presetId, presets, res.result) }
         opts?.onSuccess?.(res.result)
       }
     },
@@ -141,9 +145,14 @@ export const presetStore = createStore<PresetState>(
     },
     async *createPreset(
       { presets },
-      preset: PresetCreate,
+      preset: PresetCreate & { _id?: string },
       onSuccess?: (preset: AppSchema.UserGenPreset) => void
     ) {
+      const payload = { ...preset }
+      if (isDefaultPreset(payload._id)) {
+        payload._id = v4()
+      }
+
       yield { saving: true }
       const res = await presetApi.createPreset(preset)
       yield { saving: false }
@@ -448,4 +457,18 @@ export async function exportPreset(preset: AppSchema.UserGenPreset) {
   }
 
   downloadJson(safe, `preset-${_id.slice(0, 4)}`)
+}
+
+export async function getRemotePreset(presetId: string) {
+  const remote = await presetApi.getPreset(presetId)
+
+  if (isLoggedIn() && remote.result) {
+    const presets = presetStore.getState().presets
+    const match = findOne(presetId, presets)
+
+    const next = match ? replace(presetId, presets, remote.result) : presets.concat(remote.result)
+    presetStore.setState({ presets: next })
+  }
+
+  return remote
 }

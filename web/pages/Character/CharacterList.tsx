@@ -8,7 +8,14 @@ import {
   createSignal,
   onMount,
 } from 'solid-js'
-import { NewCharacter, characterStore, chatStore, userStore } from '../../store'
+import {
+  NewCharacter,
+  characterStore,
+  chatStore,
+  downloadCharacters,
+  pageStore,
+  userStore,
+} from '../../store'
 import { tagStore } from '../../store'
 import PageHeader from '../../shared/PageHeader'
 import Select, { Option } from '../../shared/Select'
@@ -33,6 +40,7 @@ import { ManualPaginate, usePagination } from '/web/shared/Paginate'
 import { Page } from '/web/Layout'
 import { DragDropProvider, DragDropSensors } from '@thisbeyond/solid-dnd'
 import { isMobile } from '/web/shared/hooks'
+import { createStore } from 'solid-js/store'
 
 const CACHE_KEY = 'agnai-charlist-cache'
 
@@ -56,40 +64,47 @@ const CharacterList: Component = () => {
 
   const cached = getListCache()
   const [query, setQuery] = useSearchParams()
+  const [selected, setSelected] = createStore<Record<string, boolean>>({})
+
   const [search, setSearch] = createSignal('')
   const [sortField, setSortField] = createSignal(cached.sort.field)
   const [sortDirection, setSortDirection] = createSignal(cached.sort.direction)
+  const [multi, setMulti] = createSignal(false)
 
-  const chats = chatStore((s) => s.allChats)
   const tags = tagStore((s) => ({ filter: s.filter, hidden: s.hidden }))
   const user = userStore((s) => ({ user: s.user }))
+  const chars = characterStore((s) => ({
+    loading: s.loading,
+    loaded: s.characters.loaded > 0,
+    list: s.characters.list,
+    map: s.characters.map,
+  }))
 
-  const state = chatStore((s) => {
-    const allChars: ListCharacter[] = s.allChars.list
-      .filter((ch) => ch.userId === user.user?._id)
-      .map<ListCharacter>((ch) => ({ ...ch, chat: findLatestChat(ch._id, chats) }))
-
+  const chats = chatStore((s) => {
     return {
-      allChars,
-      list: allChars.filter((ch) => ch.userId === user.user?._id && !ch.favorite),
-
-      loading: s.allLoading,
-      loaded: s.allLoaded,
+      list: s.allChats,
     }
   })
 
-  onMount(() => {
-    const state = chatStore.getState()
+  const characters = createMemo(() => {
+    const allChars: ListCharacter[] = chars.list
+      .filter((ch) => ch.userId === user.user?._id)
+      .map<ListCharacter>((ch) => ({ ...ch, chat: findLatestChat(ch._id, chats.list) }))
+      .filter((ch) => ch.userId === user.user?._id && !ch.favorite)
 
-    if (!state.allLoaded && !state.allLoading) {
-      chatStore.getAllChats()
+    return allChars
+  })
+
+  onMount(() => {
+    if (!chars.loaded && !chars.loading) {
+      characterStore.getAllChats()
     }
   })
 
   const favorites = createMemo(() => {
     const field = sortField()
     const dir = sortDirection()
-    return state.allChars
+    return chars.list
       .filter((ch) => !!ch.favorite)
       .filter((ch) => ch.name.toLowerCase().includes(search().toLowerCase().trim()))
       .filter((ch) => tags.filter.length === 0 || ch.tags?.some((t) => tags.filter.includes(t)))
@@ -100,12 +115,39 @@ const CharacterList: Component = () => {
   const sortedChars = createMemo(() => {
     const field = sortField()
     const dir = sortDirection()
-    const sorted = state.list
+
+    const excludeArchived = !tags.filter.includes('archived') || tags.hidden.includes('archived')
+
+    const tagsVisible = new Set(tags.filter)
+    const tagsHidden = new Set(tags.hidden)
+
+    const selectingIds = new Set<string>()
+    const isSelecting = multi()
+
+    for (const [key, enabled] of Object.entries(selected)) {
+      if (!isSelecting) continue
+      if (enabled) {
+        selectingIds.add(key)
+      }
+    }
+
+    const sorted = characters()
       .slice()
-      .filter((ch) => ch.userId === user.user?._id)
-      .filter((ch) => ch.name.toLowerCase().includes(search().toLowerCase().trim()))
-      .filter((ch) => tags.filter.length === 0 || ch.tags?.some((t) => tags.filter.includes(t)))
-      .filter((ch) => !ch.tags || !ch.tags.some((t) => tags.hidden.includes(t)))
+      .filter((ch) => {
+        if (ch.userId !== user.user?._id) return false
+        if (selectingIds.has(ch._id)) return true
+        if (!ch.name.toLowerCase().includes(search().toLowerCase().trim())) return false
+        if (ch.tags?.includes('archived') && excludeArchived) return false
+        if (tags.filter.length > 0 && !ch.tags?.some((t) => tagsVisible.has(t))) return false
+        if (ch.tags?.some((t) => tagsHidden.has(t))) return false
+        return true
+      })
+      // .filter((ch) => )
+      // .filter(ch => selectingIds.has(ch._id))
+      // .filter((ch) => )
+      // .filter((ch) => ( ? false : true))
+      // .filter((ch) => )
+      // .filter((ch) => !ch.tags || !ch.tags.some((t) => tags.hidden.includes(t)))
       .sort(getSortFunction(field, dir))
     return sorted
   })
@@ -147,8 +189,8 @@ const CharacterList: Component = () => {
   }
 
   createEffect(() => {
-    if (!state.allChars.length) return
-    tagStore.updateTags(state.allChars)
+    if (!chars.list.length) return
+    tagStore.updateTags(chars.list)
   })
 
   createEffect(() => {
@@ -163,26 +205,109 @@ const CharacterList: Component = () => {
     saveListCache(next)
   })
 
+  const multiSelected = createMemo(() => {
+    const ids = Object.entries(selected)
+      .filter(([_, active]) => active === true)
+      .map(([key]) => key)
+
+    return { ids, count: ids.length }
+  })
+
+  const cancelSelect = () => {
+    const { ids } = multiSelected()
+    for (const id of ids) {
+      setSelected(id, false)
+    }
+
+    setMulti(false)
+  }
+
+  const downloadSelected = async () => {
+    const selected = multiSelected()
+
+    if (selected.count) {
+      await downloadCharacters(selected.ids)
+    }
+  }
+
+  const archiveSelected = async () => {
+    const selected = multiSelected()
+
+    if (selected.count) {
+      pageStore.openConfirm({
+        message: `Archive ${selected.count} characters?`,
+        onConfirm: () => characterStore.editMany(selected.ids, { type: 'archive' }),
+      })
+    }
+  }
+
+  const canUnarchive = createMemo(() => {
+    const allowed = multiSelected().ids.some((id) => {
+      const char = chars.map[id]
+      if (!char?.tags) return false
+      if (char.tags.includes('archived')) return true
+      return false
+    })
+    return allowed
+  })
+
+  const canArchive = createMemo(() => {
+    const allowed = multiSelected().ids.some((id) => {
+      const char = chars.map[id]
+      if (!char?.tags) return true
+      if (!char.tags.includes('archived')) return true
+      return false
+    })
+    return allowed
+  })
+
+  const unarchiveSelected = async () => {
+    const selected = multiSelected()
+
+    if (selected.count) {
+      pageStore.openConfirm({
+        message: `Unarchive ${selected.count} characters?`,
+        onConfirm: () =>
+          characterStore.editMany(selected.ids, { type: 'remove-tag', value: 'archived' }),
+      })
+    }
+  }
+
+  const deleteSelected = async () => {
+    const selected = multiSelected()
+
+    if (selected.count) {
+      pageStore.openConfirm({
+        message: `Are you sure you wish to delete ${selected.count} characters?`,
+        onConfirm: () => characterStore.editMany(selected.ids, { type: 'delete' }),
+      })
+    }
+  }
+
   return (
     <Page>
       <PageHeader
-        title={
-          <div class="flex w-full justify-between">
-            <div>Characters</div>
+        title={'Characters'}
+        subtitle={
+          <div class="flex flex-col gap-2">
             <div class="flex gap-2 text-base">
-              <Button onClick={() => setImport(true)}>
+              <Button size="sm" onClick={() => setImport(true)}>
                 <Import />
                 <span class="hidden sm:inline">Import</span>
               </Button>
 
               <A href="/character/create">
-                <Button>
+                <Button size="sm">
                   <Plus />
                   <span class="hidden sm:inline">Create</span>
                 </Button>
               </A>
 
-              <Button onClick={() => chatStore.getAllChats()}>
+              <Button size="sm" class="!h-[32px]" onClick={() => setMulti(true)}>
+                Select
+              </Button>
+
+              <Button onClick={() => characterStore.getAllChats()} size="sm">
                 <RefreshCcw />
               </Button>
             </div>
@@ -244,19 +369,66 @@ const CharacterList: Component = () => {
           </div>
         </div>
       </div>
+
+      <Show when={multi()}>
+        <div class="py-1">
+          <div class="text-500 text-xs font-bold">
+            <Show when={multiSelected().count > 0} fallback={'Selected: None'}>
+              Selected: {multiSelected().count}
+            </Show>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-base">
+            <Button
+              size="sm"
+              schema="error"
+              disabled={multiSelected().count === 0}
+              onClick={deleteSelected}
+            >
+              Delete
+            </Button>
+            <Button
+              size="sm"
+              disabled={multiSelected().count === 0 || !canArchive()}
+              onClick={archiveSelected}
+            >
+              Archive
+            </Button>
+
+            <Button
+              size="sm"
+              disabled={multiSelected().count === 0 || !canUnarchive()}
+              onClick={unarchiveSelected}
+            >
+              Unarchive
+            </Button>
+
+            {/* @todo: need to get detailed char info for downloading before zipping */}
+            <Button size="sm" disabled={multiSelected().count === 0} onClick={downloadSelected}>
+              Download
+            </Button>
+            <Button size="sm" schema="secondary" onClick={cancelSelect}>
+              Done
+            </Button>
+          </div>
+        </div>
+      </Show>
+
       <div class="flex justify-center pb-2" classList={{ hidden: view() === 'folders' }}>
         <ManualPaginate pager={pager} />
       </div>
       <Characters
         allCharacters={sortedChars()}
         characters={pager.items()}
-        loading={state.loading || false}
-        loaded={!!state.loaded}
+        loading={chars.loading || false}
+        loaded={!!chars.loaded}
         type={view()}
         filter={search()}
         sortField={sortField()}
         sortDirection={sortDirection()}
         favorites={favorites()}
+        multiselect={multi()}
+        selected={selected}
+        setSelected={setSelected}
       />
       <div class="flex justify-center pb-5 pt-2" classList={{ hidden: view() === 'folders' }}>
         <ManualPaginate pager={pager} />
@@ -274,6 +446,7 @@ const CharacterList: Component = () => {
 
 const Characters: Component<{
   allCharacters: AppSchema.Character[]
+  multiselect: boolean
   characters: AppSchema.Character[]
   favorites: AppSchema.Character[]
   loading: boolean
@@ -282,7 +455,12 @@ const Characters: Component<{
   filter: string
   sortField: SortField
   sortDirection: SortDirection
+
+  selected: Record<string, boolean>
+  setSelected: (charId: string, state: boolean) => void
 }> = (props) => {
+  const [showDelete, setDelete] = createSignal<AppSchema.Character>()
+  const [download, setDownload] = createSignal<AppSchema.Character>()
   const [editChar, setEditChar] = createSignal<AppSchema.Character>()
   const [showGrouping, setShowGrouping] = createSignal(false)
   const groups = createMemo(() => {
@@ -302,8 +480,11 @@ const Characters: Component<{
     characterStore.setFavorite(charId, favorite)
   }
 
-  const [showDelete, setDelete] = createSignal<AppSchema.Character>()
-  const [download, setDownload] = createSignal<AppSchema.Character>()
+  const selectCharacter = (id: string) => {
+    const prev = !!props.selected[id]
+    props.setSelected(id, !prev)
+  }
+
   return (
     <>
       <DragDropProvider>
@@ -328,6 +509,9 @@ const Characters: Component<{
                 setDownload={setDownload}
                 setDelete={setDelete}
                 setEdit={setEditChar}
+                selecting={props.multiselect}
+                select={selectCharacter}
+                selected={props.selected}
               />
             </Show>
 
@@ -339,6 +523,9 @@ const Characters: Component<{
                 setDelete={setDelete}
                 setDownload={setDownload}
                 setEdit={setEditChar}
+                selecting={props.multiselect}
+                select={selectCharacter}
+                selected={props.selected}
               />
             </Show>
 
@@ -352,6 +539,9 @@ const Characters: Component<{
                 setDelete={setDelete}
                 setDownload={setDownload}
                 setEdit={setEditChar}
+                selecting={props.multiselect}
+                select={selectCharacter}
+                selected={props.selected}
               />
             </Show>
           </Match>

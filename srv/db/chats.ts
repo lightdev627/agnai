@@ -12,11 +12,15 @@ export async function getChatOnly(id: string) {
   return chat
 }
 
-export async function getChat(id: string) {
+export async function getChat(id: string, impersonateId?: string) {
   const chat = await db('chat').findOne({ _id: id })
   if (!chat) return
 
   const charIds = Object.keys(chat.characters || {})
+
+  if (impersonateId) {
+    charIds.concat(impersonateId)
+  }
 
   const characters = await db('character')
     .find({ _id: { $in: charIds.concat(chat.characterId) } })
@@ -211,6 +215,7 @@ export async function getAllChats(userId: string, shallow?: boolean) {
         characters: 1,
         createdAt: 1,
         updatedAt: 1,
+        genPreset: 1,
         'character.name': 1,
       }
 
