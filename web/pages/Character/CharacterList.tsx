@@ -41,6 +41,7 @@ import { Page } from '/web/Layout'
 import { DragDropProvider, DragDropSensors } from '@thisbeyond/solid-dnd'
 import { isMobile } from '/web/shared/hooks'
 import { createStore } from 'solid-js/store'
+import { toPropMap } from '/common/util'
 
 const CACHE_KEY = 'agnai-charlist-cache'
 
@@ -73,27 +74,18 @@ const CharacterList: Component = () => {
 
   const tags = tagStore((s) => ({ filter: s.filter, hidden: s.hidden }))
   const user = userStore((s) => ({ user: s.user }))
+
+  const chats = chatStore((s) => ({
+    list: s.allChats,
+    map: toPropMap(s.allChats, 'characterId'),
+  }))
+
   const chars = characterStore((s) => ({
     loading: s.loading,
     loaded: s.characters.loaded > 0,
     list: s.characters.list,
     map: s.characters.map,
   }))
-
-  const chats = chatStore((s) => {
-    return {
-      list: s.allChats,
-    }
-  })
-
-  const characters = createMemo(() => {
-    const allChars: ListCharacter[] = chars.list
-      .filter((ch) => ch.userId === user.user?._id)
-      .map<ListCharacter>((ch) => ({ ...ch, chat: findLatestChat(ch._id, chats.list) }))
-      .filter((ch) => ch.userId === user.user?._id && !ch.favorite)
-
-    return allChars
-  })
 
   onMount(() => {
     if (!chars.loaded && !chars.loading) {
@@ -105,21 +97,18 @@ const CharacterList: Component = () => {
     const field = sortField()
     const dir = sortDirection()
     return chars.list
+      .filter((ch) => ch.userId === user.user?._id)
       .filter((ch) => !!ch.favorite)
       .filter((ch) => ch.name.toLowerCase().includes(search().toLowerCase().trim()))
       .filter((ch) => tags.filter.length === 0 || ch.tags?.some((t) => tags.filter.includes(t)))
       .filter((ch) => !ch.tags || !ch.tags.some((t) => tags.hidden.includes(t)))
+      .map((ch) => ({ ...ch, chat: chats.map[ch._id] }))
       .sort(getSortFunction(field, dir))
   })
 
   const sortedChars = createMemo(() => {
     const field = sortField()
     const dir = sortDirection()
-
-    const excludeArchived = !tags.filter.includes('archived') || tags.hidden.includes('archived')
-
-    const tagsVisible = new Set(tags.filter)
-    const tagsHidden = new Set(tags.hidden)
 
     const selectingIds = new Set<string>()
     const isSelecting = multi()
@@ -131,23 +120,13 @@ const CharacterList: Component = () => {
       }
     }
 
-    const sorted = characters()
+    const sorted = chars.list
       .slice()
-      .filter((ch) => {
-        if (ch.userId !== user.user?._id) return false
-        if (selectingIds.has(ch._id)) return true
-        if (!ch.name.toLowerCase().includes(search().toLowerCase().trim())) return false
-        if (ch.tags?.includes('archived') && excludeArchived) return false
-        if (tags.filter.length > 0 && !ch.tags?.some((t) => tagsVisible.has(t))) return false
-        if (ch.tags?.some((t) => tagsHidden.has(t))) return false
-        return true
-      })
-      // .filter((ch) => )
-      // .filter(ch => selectingIds.has(ch._id))
-      // .filter((ch) => )
-      // .filter((ch) => ( ? false : true))
-      // .filter((ch) => )
-      // .filter((ch) => !ch.tags || !ch.tags.some((t) => tags.hidden.includes(t)))
+      .filter((ch) => ch.userId === user.user?._id)
+      .filter((ch) => ch.name.toLowerCase().includes(search().toLowerCase().trim()))
+      .filter((ch) => tags.filter.length === 0 || ch.tags?.some((t) => tags.filter.includes(t)))
+      .filter((ch) => !ch.tags || !ch.tags.some((t) => tags.hidden.includes(t)))
+      .map((ch) => ({ ...ch, chat: chats.map[ch._id] }))
       .sort(getSortFunction(field, dir))
     return sorted
   })
@@ -639,20 +618,20 @@ const NoCharacters: Component = () => (
 
 export default CharacterList
 
-function findLatestChat(charId: string, chats: AppSchema.Chat[]) {
-  let match: AppSchema.Chat | undefined
+// function findLatestChat(charId: string, chats: AppSchema.Chat[]) {
+//   let match: AppSchema.Chat | undefined
 
-  for (const chat of chats) {
-    if (chat.characterId !== charId) continue
-    if (!match) {
-      match = chat
-      continue
-    }
+//   for (const chat of chats) {
+//     if (chat.characterId !== charId) continue
+//     if (!match) {
+//       match = chat
+//       continue
+//     }
 
-    if (chat.updatedAt > match.updatedAt) {
-      match = chat
-    }
-  }
+//     if (chat.updatedAt > match.updatedAt) {
+//       match = chat
+//     }
+//   }
 
-  return match
-}
+//   return match
+// }
