@@ -3,7 +3,6 @@ import { getMaxImageContext } from '../../../common/image-prompt'
 import { api } from '../api'
 import { getStore } from '../create'
 import { msgsApi } from './messages'
-import { AIAdapter } from '/common/adapters'
 import { decode, encode, getEncoder } from '/common/tokenize'
 import { parseTemplate } from '/common/template-parser'
 import { neat, wait } from '/common/util'
@@ -14,7 +13,7 @@ import { getAssetUrl } from '/web/shared/util'
 import { v4 } from 'uuid'
 import { md5 } from './md5'
 import { getImagePromptEntities, getPromptEntities } from './common'
-import { genApi } from './inference'
+import { genApi, inferenceHelper } from './inference'
 import { TickHandler } from '/common/prompt'
 import { extractReasoning } from '/common/reasoning'
 import { replaceTags } from '/common/presets/templates'
@@ -48,6 +47,7 @@ export const imageApi = {
   generateImageWithPrompt,
   generateImageAsync,
   getSummaryTemplate,
+  getChatSummary,
   dataURLtoFile,
   getImageData,
   getSDModelList,
@@ -58,10 +58,11 @@ export async function generateImagePrompt(opts: {
   onTick?: TickHandler
   question?: string
   messageId?: string
+  signal?: AbortController
 }) {
-  const { question, onTick } = opts
-
   const imgEnts = await getImagePromptEntities(opts.messageId)
+  const helper = inferenceHelper({ preset: imgEnts.preset, onTick: opts.onTick })
+  const template = getSummaryTemplate({ preset: imgEnts.preset, question: opts.question })
   const settings = imgEnts.preset || imgEnts.entities.settings
 
   console.log(
@@ -71,11 +72,9 @@ export async function generateImagePrompt(opts: {
     settings.name || '',
     `\n${imgEnts.summary || ''}`
   )
-  const result = await getChatSummary(settings, {
-    prompt: imgEnts.summary,
-    onTick,
-    question,
-  })
+
+  const stream = await helper.send({ prompt: template, preset: settings, signal: opts.signal })
+  const result = await stream.promise
 
   if (result.result?.response) {
     const { content } = extractReasoning(result.result.response)
@@ -329,23 +328,23 @@ async function getChatSummary(
     prompt: string
     question?: string
     onTick?: TickHandler
+    signal?: AbortController
   }
 ) {
-  const opts = await msgsApi.getActiveTemplateParts()
-  opts.limit = {
-    context: 8 * 1024,
+  const active = await msgsApi.getActiveTemplateParts()
+  active.limit = {
+    context: settings.maxContextLength!,
     encoder: await getEncoder(),
   }
 
-  let template = getSummaryTemplate({
-    service: settings.service,
-    prompt: params.prompt,
+  const template = getSummaryTemplate({
+    preset: settings,
     question: params.question,
   })
 
   if (!template) throw new Error(`No chat summary template available for "${settings.service!}"`)
 
-  const parsed = await parseTemplate(template, opts)
+  const parsed = await parseTemplate(template, active)
 
   let prompt = parsed.parsed
   prompt = replaceTags(prompt, settings.modelFormat || 'None')
@@ -355,6 +354,7 @@ async function getChatSummary(
       prompt,
       settings,
       messages: parsed.blocks,
+      signal: params.signal,
     },
     (text, state) => {
       if (!params.onTick) return
@@ -367,33 +367,18 @@ async function getChatSummary(
 }
 
 function getSummaryTemplate(opts: {
-  service: AIAdapter | undefined
-  prompt?: string
+  preset: Partial<AppSchema.GenSettings> | undefined
   question?: string
 }) {
-  switch (opts.service) {
-    case 'novel': {
-      const prompt =
-        opts?.prompt ||
-        `Write a detailed image caption of the current scene with a description of each character's appearance`
-      return neat`
-      {{char}}'s personality: {{personality}}
-      [ Style: chat ]
-      ***
-      {{history}}
-      { ${prompt} }`
-    }
+  let prompt =
+    opts?.preset?.imageSettings?.summaryPrompt ||
+    neat`Write an image caption of the current scene using physical descriptions without names. Respond using comma-separate BOORU TAGS.`
 
-    default: {
-      let prompt =
-        opts?.prompt ||
-        neat`Write an image caption of the current scene using physical descriptions without names. Respond using comma-separate BOORU TAGS.`
+  if (opts?.question) {
+    prompt += `\nSpecifically focus on: ${opts.question}`
+  }
 
-      if (opts?.question) {
-        prompt += `\nSpecifically focus on: ${opts.question}`
-      }
-
-      return neat`
+  return neat`
       <system>Your task is to generate an Image Caption using only Comma-separated List of Booru Tags by summarizing the most recent moment in a roleplay scenario.
       Generate an image caption using the details and conversation below.</system>
 
@@ -410,8 +395,6 @@ function getSummaryTemplate(opts: {
       <instruct>${prompt}</instruct>
 
       <assistant>Image caption:</assistant>`
-    }
-  }
 }
 
 export async function dataURLtoFile(base64: string, name?: string): Promise<File> {

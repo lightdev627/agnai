@@ -25,7 +25,7 @@ import { replaceTags } from '/common/presets/templates'
 import { getServiceTempConfig } from '/web/shared/adapter'
 import { getActiveBots } from '/web/pages/Chat/util'
 import iconv from 'iconv-lite'
-import { genApi } from './inference'
+import { genApi, lazyPromise } from './inference'
 import { isDefaultPreset } from '/common/default-preset'
 import { ThirdPartyFormat } from '/common/adapters'
 import { localEmit } from '../socket'
@@ -180,6 +180,7 @@ export async function generateResponse(
   }
 
   request.eventStream = true
+  request.v = 2
 
   console.log(
     `${opts.kind} cx:${!!opts.signal} p:${
@@ -191,14 +192,30 @@ export async function generateResponse(
     genApi.callbacks.set(request.requestId, onTick)
   }
 
+  const lazy = lazyPromise()
+
   api.fetchSSE({
     path: `/chat/${entities.chat._id}/generate`,
     headers: getAuthHeaders(),
     body: request,
     signal: opts.signal,
+    onData: (data) => {
+      if (data.type === 'message-creating') {
+        lazy.resolve({ requestId: request.requestId, generating: true, success: true })
+      }
+      localEmit(data)
+    },
+    onTick: (payload, state) => {
+      if (state === 'error') {
+        lazy.reject(payload)
+        // localEmit({ type: 'message-error', error: payload, chatId: request.chat._id })
+      }
+
+      onTick?.(payload, state)
+    },
   })
 
-  return localApi.result({ requestId: request.requestId, generating: true, success: true })
+  return lazy.promise
 }
 
 async function localRequest(request: GenerateRequestV2, signal: AbortController, prompt: string) {

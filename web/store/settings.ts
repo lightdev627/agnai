@@ -122,10 +122,12 @@ export const settingStore = createStore<SettingState>(
 
         if (caches?.books) {
           init.books = caches.books
+          init.cachedBooks = true
         }
 
         if (caches?.presets) {
           init.presets = caches.presets
+          init.cachedPresets = true
         }
 
         if (caches?.allChars) {
@@ -163,7 +165,7 @@ export const settingStore = createStore<SettingState>(
         }
 
         if (!isMaint) {
-          handlePostInit(caches)
+          handlePostInit(init, caches)
         }
 
         const maint = init.config?.maintenance
@@ -443,12 +445,21 @@ async function loadUserCachedEntities() {
   return { books, templates, presets, allChats, allChars }
 }
 
-async function handlePostInit(caches: Awaited<ReturnType<typeof loadUserCachedEntities>>) {
-  if (caches?.presets) {
-    await getStore('presets').getPresets()
+async function handlePostInit(
+  init: InitEntities,
+  caches: Awaited<ReturnType<typeof loadUserCachedEntities>>
+) {
+  if (init.allChars) {
+    getStore('character').loadImpersonate()
   }
 
-  if (caches?.books) {
-    await getStore('memory').getAll()
+  await Promise.all([
+    caches?.presets ? getStore('presets').getPresets() : Promise.resolve(),
+    caches?.books ? await getStore('memory').getAll() : Promise.resolve(),
+    getStore('character').getAllChats(true),
+  ])
+
+  if (!init.allChars) {
+    getStore('character').loadImpersonate()
   }
 }

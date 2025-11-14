@@ -93,7 +93,7 @@ export const characterStore = createStore<CharacterState>(
   'character',
   initState
 )((get, set) => {
-  events.on(EVENTS.init, (data) => {
+  events.on(EVENTS.init, async (data) => {
     const allChars = Array.isArray(data.allChars)
       ? data.allChars
       : Array.isArray(data.allChars?.list)
@@ -105,15 +105,20 @@ export const characterStore = createStore<CharacterState>(
 
     replaceCharacters(allChars)
 
+    await Promise.resolve()
+
     /**
      * The chat list relies on the characters being available
      * We handle the chat-init here to prevent any race conditions
      */
     getStore('chat').setState({
-      allChats: data.allChats || [],
+      allChats: (data.allChats || []).sort(sortDesc),
       lastFetched: 0,
       lastChatId: null,
     })
+
+    // If we loaded cached chats/characters, forcibly get the latest after we've hydrated the cached data
+    // characterStore.getAllChats(true) // We currently do this in the handlePostInit
   })
 
   return {
@@ -172,7 +177,12 @@ export const characterStore = createStore<CharacterState>(
 
       const chars = res.result.characters.map((c) => ({ __type: 'list_character', ...c }))
       replaceCharacters(chars)
-      events.emit(EVENTS.allChats, res.result.chats)
+
+      await Promise.resolve()
+      getStore('chat').setState({
+        allChats: res.result.chats?.sort(sortDesc),
+        lastFetched: Date.now(),
+      })
     },
 
     async *getCharacters(state, force?: boolean) {
@@ -763,4 +773,8 @@ async function getMultipleCharacters(characterIds: string[]) {
   replaceCharacters(loaded)
 
   return loaded
+}
+
+function sortDesc(left: { updatedAt: string }, right: { updatedAt: string }): number {
+  return left.updatedAt > right.updatedAt ? -1 : left.updatedAt === right.updatedAt ? 0 : 1
 }

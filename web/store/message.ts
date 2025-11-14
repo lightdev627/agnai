@@ -29,6 +29,7 @@ import { JsonField, TickHandler } from '/common/prompt'
 import { HordeCheck } from '/common/horde-gen'
 import { botGen, GenerateOpts } from './data/bot-generate'
 import type { MsgAttachment } from '/srv/adapter/type'
+import { debug } from '/common/debug'
 
 const SOFT_PAGE_SIZE = 20
 
@@ -152,7 +153,7 @@ export const msgStore = createStore<MsgState>(
     msgStore.setState({ canImageCaption: true })
   })
 
-  events.on('logged-out', () => {
+  events.on(EVENTS.loggedOut, () => {
     msgStore.setState(initState)
   })
 
@@ -162,6 +163,10 @@ export const msgStore = createStore<MsgState>(
 
   events.on(EVENTS.clearMsgs, (chatId: string) => {
     msgStore.setState({ activeChatId: chatId, activeCharId: undefined, msgs: [] })
+  })
+
+  events.on(EVENTS.chatClosed, () => {
+    msgStore.setState({ activeChatId: undefined, activeCharId: undefined })
   })
 
   events.on(
@@ -557,8 +562,8 @@ export const msgStore = createStore<MsgState>(
         .catch((err) => ({ error: err.message, result: undefined }))
 
       if (res.error) {
-        toastStore.error(`(Retry) Generation request failed: ${res.error}`)
-        console.log('[wait] retry err')
+        toastStore.error(`(Retry) Generation request failed: ${res.error?.error || res.error}`)
+        console.log('[wait] retry err', res.error)
         yield { partial: undefined, waiting: undefined, retrying: undefined }
       }
     },
@@ -710,7 +715,7 @@ export const msgStore = createStore<MsgState>(
           res = await botGen
             .generate({ signal, kind: opts.mode, text: opts.msg })
             .catch((err) => ({ error: err.message, result: undefined }))
-          if ('result' in res && !res.result.generating) {
+          if ('result' in res && !res.result?.generating) {
             console.log('[wait] send no-gen')
             yield { partial: undefined, waiting: undefined }
           }
@@ -874,14 +879,21 @@ export const msgStore = createStore<MsgState>(
 
     async *generateImagePrompt(
       { activeChatId, activeCharId, msgs },
-      opts: { onSummary?: (summary: string) => void; onTick?: TickHandler; question?: string }
+      opts: {
+        messageId?: string
+        onSummary?: (summary: string) => void
+        onTick?: TickHandler
+        question?: string
+      }
     ) {
-      const messageId = msgs.slice(-1)[0]._id
+      const messageId = opts.messageId || msgs.slice(-1)[0]._id
 
       if (!messageId) {
         toastStore.warn('Could not generate image prompt: Current chat has no messages')
         return
       }
+
+      const signal = new AbortController()
 
       yield {
         hordeStatus: undefined,
@@ -891,7 +903,7 @@ export const msgStore = createStore<MsgState>(
           characterId: activeCharId,
           messageId,
           started: Date.now(),
-          // signal: new AbortController()
+          signal,
         },
       }
 
@@ -899,6 +911,7 @@ export const msgStore = createStore<MsgState>(
         onTick: opts.onTick,
         question: opts.question,
         messageId,
+        signal,
       })
 
       yield { waiting: undefined }
@@ -913,7 +926,7 @@ export const msgStore = createStore<MsgState>(
 
     async *createImage(
       { msgs, activeChatId, activeCharId, imgWaiting },
-      opts: { sourceMsgId?: string; append?: boolean; onTick?: TickHandler }
+      opts: { sourceMsgId?: string; append?: boolean; onTick?: TickHandler; prompt?: string }
     ) {
       if (imgWaiting) return
 
@@ -934,7 +947,7 @@ export const msgStore = createStore<MsgState>(
       const res = await imageApi.generateImage(
         {
           messageId,
-          prompt: prev?.imagePrompt,
+          prompt: opts.prompt || prev?.imagePrompt,
           append: opts.append,
           source: 'summary',
         },
@@ -1173,6 +1186,7 @@ subscribe(
     json: 'any?',
   },
   async (body) => {
+    const log = debug('retry')
     const { msgs, activeChatId, graph } = msgStore.getState()
     const { characters } = getStore('character').getState()
     const { active } = getStore('chat').getState()
@@ -1184,7 +1198,7 @@ subscribe(
     const prev = msgs.find((msg) => msg._id === body.messageId)
     const char = prev?.characterId ? characters.map[prev?.characterId] : undefined
 
-    console.log(`[wait] msg-retry ${inline({ ...body, message: '...', retries: undefined })}`)
+    log(`msg-retry ${inline({ ...body, message: '...', retries: undefined, probs: undefined })}`)
     msgStore.setState({
       partial: undefined,
       retrying: undefined,
@@ -1214,7 +1228,7 @@ subscribe(
     const nextMsgs = replace(body.messageId, msgs, nextMsg)
     const replacement = { ...prev, ...nextMsg }
 
-    console.log(`[wait] msg-retry:2 ${inline({ ...body, message: '...', retries: undefined })}`)
+    log(`msg-retry:2 ${inline({ ...body, message: '...', retries: undefined, probs: undefined })}`)
     msgStore.setState({
       partial: undefined,
       retrying: undefined,

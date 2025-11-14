@@ -6,14 +6,14 @@ import { JsonField, TickHandler } from '/common/prompt'
 import { AppSchema } from '/common/types'
 import { api, getAuthHeaders } from '../api'
 import { toastStore } from '../toasts'
-import { createSignal, onCleanup } from 'solid-js'
+import { onCleanup } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { getEncoder } from '/common/tokenize'
 import { msgsApi } from './messages'
 import { parseTemplate } from '/common/template-parser'
 import { extractReasoning } from '/common/reasoning'
 import { applog } from '/common/debug'
-import { tryParse } from '/common/util'
+import { replaceTags } from '/common/presets/templates'
 
 const inferenceCallbacks = new Map<string, TickHandler>()
 
@@ -41,22 +41,48 @@ type InferenceOpts = {
 }
 
 type InferenceStatus = 'idle' | 'loading' | 'error'
-export function inferenceSignal(init: {
-  preset?: AppSchema.GenSettings
+
+type InferenceState = {
+  status: InferenceStatus
+  response: string
+  error: string
+  preset?: Partial<AppSchema.GenSettings>
+  schema?: JsonField[]
+  maxContext: number
+  thoughts: string[]
+  signal: AbortController | null
+}
+
+const initState = (init?: {
+  preset?: Partial<AppSchema.GenSettings>
+  schema?: JsonField[]
+  maxContext?: number
+}): InferenceState => ({
+  status: 'idle',
+  response: '',
+  error: '',
+  preset: init?.preset,
+  schema: init?.schema,
+  maxContext: init?.maxContext || 0,
+  thoughts: [],
+  signal: null as AbortController | null,
+})
+
+export function inferenceHelper(init: {
+  preset?: Partial<AppSchema.GenSettings>
   schema?: JsonField[]
   onTick?: TickHandler
+  onState?: (next: InferenceState) => void
   maxContext?: number
 }) {
-  const [ctrl, setCtrl] = createSignal<AbortController>()
-  const [state, setState] = createStore({
-    status: 'idle' as InferenceStatus,
-    response: '',
-    error: '',
-    preset: init.preset,
-    schema: init.schema,
-    maxContext: init.maxContext || 0,
-    thoughts: [] as string[],
-  })
+  const state: InferenceState = initState(init)
+
+  const getState = () => ({ ...state })
+
+  const setState = (partial: Partial<typeof state>) => {
+    Object.assign(state, partial)
+    init.onState?.(getState())
+  }
 
   const onTick: TickHandler = (response, tick) => {
     if (state.status !== 'loading') return
@@ -65,8 +91,7 @@ export function inferenceSignal(init: {
 
     switch (tick) {
       case 'error': {
-        setState({ status: 'error', error: response })
-        setCtrl()
+        setState({ status: 'error', error: response, signal: null })
         init.onTick?.(response, tick)
         return
       }
@@ -85,8 +110,8 @@ export function inferenceSignal(init: {
           status: 'idle',
           response: parsed.content,
           thoughts: parsed.thoughts,
+          signal: null,
         })
-        setCtrl()
         break
       }
     }
@@ -95,9 +120,10 @@ export function inferenceSignal(init: {
   }
 
   const generate = async (opts: {
+    signal?: AbortController
     prompt: string
     image?: string
-    preset?: AppSchema.GenSettings
+    preset?: Partial<AppSchema.GenSettings>
     schema?: JsonField[]
     maxContext?: number
   }) => {
@@ -114,6 +140,7 @@ export function inferenceSignal(init: {
       encoder: await getEncoder(),
     }
     const parsed = await parseTemplate(opts.prompt, active)
+    parsed.parsed = replaceTags(parsed.parsed, preset?.modelFormat || 'None')
 
     const stream = genApi.cancellableStream(
       {
@@ -122,39 +149,51 @@ export function inferenceSignal(init: {
         image: opts.image,
         settings: preset,
         jsonSchema: schema,
+        signal: opts.signal,
       },
       onTick
     )
 
-    setCtrl(stream.signal)
-    setState({ status: 'loading' })
+    setState({ status: 'loading', signal: stream.signal })
+
+    return stream
   }
 
   const cancel = () => {
     if (state.status !== 'loading') return
-    const signal = ctrl()
-    if (!signal) return
+    if (!state.signal) return
 
     applog('cancelling stream')
-    setState({ status: 'idle' })
-    signal.abort()
-    setCtrl()
+    state.signal.abort()
+    setState({ status: 'idle', signal: null })
   }
 
+  return { getState, setState, send: generate, cancel }
+}
+
+export function inferenceSignal(init: {
+  preset?: AppSchema.GenSettings
+  schema?: JsonField[]
+  onTick?: TickHandler
+  maxContext?: number
+}) {
+  const helper = inferenceHelper({ ...init, onState: (next) => setState(next) })
+  const [state, setState] = createStore(helper.getState())
+
   onCleanup(() => {
-    cancel()
+    helper.cancel()
   })
 
   return {
     state,
-    cancel,
-    send: generate,
+    cancel: helper.cancel,
+    send: helper.send,
     update: (next: {
       preset?: AppSchema.GenSettings
       schema?: JsonField[]
       maxContext?: number
     }) => {
-      setState(next)
+      helper.setState(next)
     },
   }
 }
@@ -236,7 +275,7 @@ export async function basicInference(opts: InferenceOpts) {
 }
 
 export function cancellableStream(opts: InferenceOpts, onTick?: TickHandler) {
-  const signal = new AbortController()
+  const signal = opts.signal || new AbortController()
 
   const promise = inferenceStream({ ...opts, signal }, onTick)
 
@@ -304,33 +343,7 @@ export async function inferenceStream(opts: InferenceOpts, onTick?: TickHandler)
       headers: getAuthHeaders(),
       body: payload,
       signal: opts.signal,
-      onTick: (payload) => {
-        if (!payload.data) return
-        const json = tryParse(payload.data)
-        if (!json) return
-
-        switch (json.type) {
-          case 'inference-partial': {
-            tickWrapper(json.partial, 'partial')
-            break
-          }
-
-          case 'inference-error': {
-            tickWrapper(json.error, 'error')
-            break
-          }
-
-          case 'inference': {
-            tickWrapper(json.response, 'done')
-            break
-          }
-
-          case 'inference-warning': {
-            tickWrapper(json.warning, 'warning')
-            break
-          }
-        }
-      },
+      onTick: tickWrapper,
     })
 
     return lazy.promise
