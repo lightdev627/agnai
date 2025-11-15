@@ -8,16 +8,19 @@ import { parseTemplate } from '/common/template-parser'
 import { neat, wait } from '/common/util'
 import { AppSchema } from '/common/types'
 import { localApi } from './storage'
-import { subscribe } from '../socket'
+import { localEmit, subscribe } from '../socket'
 import { getAssetUrl } from '/web/shared/util'
 import { v4 } from 'uuid'
 import { md5 } from './md5'
 import { getImagePromptEntities, getPromptEntities } from './common'
-import { genApi, inferenceHelper } from './inference'
+import { genApi, inferenceHelper, lazyPromise } from './inference'
 import { TickHandler } from '/common/prompt'
 import { extractReasoning } from '/common/reasoning'
 import { replaceTags } from '/common/presets/templates'
 import { toastStore } from '../toasts'
+import { swarmApi } from '/common/requests/swarmui'
+import { ImageRequestOpts } from '/srv/image/types'
+import { getImagePrompt, getImageSettings } from '/common/image'
 
 type GenerateOpts = {
   chatId?: string
@@ -51,6 +54,7 @@ export const imageApi = {
   dataURLtoFile,
   getImageData,
   getSDModelList,
+  getImageModelList,
   ALLOWED_TYPES,
 }
 
@@ -110,6 +114,26 @@ export async function getSDModelList(
   return { models: [] }
 }
 
+export async function getImageModelList(opts: {
+  type: 'sd' | 'swarm'
+  url: string
+  key?: string
+  local?: boolean
+  providerId?: string
+}) {
+  if (opts.type === 'swarm' && opts.local) {
+    const models = await swarmApi.getModelList(opts.url)
+    return models
+  }
+
+  const res = await api.post<{ models: SDModel[] }>('/chat/image-models', opts)
+  if (res.result) {
+    return res.result
+  }
+
+  return { models: [] }
+}
+
 export async function generateImage(
   opts: GenerateOpts,
   callbacks?: { onDone?: (summary: string) => void; onTick?: TickHandler }
@@ -137,6 +161,25 @@ export async function generateImage(
   const trimmed = await encode(summary)
     .then((tokens) => tokens.slice(0, max))
     .then(decode)
+
+  const req = await createImageRequest({ prompt: trimmed, messageId: opts.messageId })
+
+  if (req.provider?.local && req.provider.type === 'swarm') {
+    const lazy = lazyPromise()
+
+    swarmApi.generateImage(req.request).then((res) => {
+      localEmit({
+        type: 'image-generated',
+        chatId: opts.chatId,
+        messageId: opts.messageId,
+        image: res.content,
+        requestId: v4(),
+        source: opts.source,
+      })
+    })
+
+    return lazy.promise
+  }
 
   const res = await api.post<{ success: boolean }>(
     `/chat/${opts.chatId || entities.chat._id}/image`,
@@ -219,7 +262,9 @@ export async function generateImageAsync(
     throw new Error('Could not get user settings')
   }
 
-  if (!user.images || user.images.type === 'horde') {
+  const req = await createImageRequest({ prompt, noAffix: opts.noAffix })
+
+  if (req.provider?.type === 'horde') {
     try {
       const { text: image } = await horde.generateImage(
         user,
@@ -242,6 +287,16 @@ export async function generateImageAsync(
   }
 
   const requestId = opts.requestId || v4()
+
+  if (req.provider?.local && req.provider.type === 'swarm') {
+    const res = await swarmApi.generateImage(req.request)
+    opts.onDone?.({ file: res.file, image: res.content, data: res.content })
+    return {
+      image: res.content,
+      file: res.file,
+      data: res.content,
+    }
+  }
 
   const promise = new Promise<ImageResult>((resolve, reject) => {
     callbacks.set(requestId, (image) => {
@@ -432,4 +487,39 @@ export async function getImageData(file: File | Blob | string | undefined, name?
       resolve(evt.target.result.toString())
     }
   })
+}
+
+export async function createImageRequest(input: {
+  prompt: string
+  messageId?: string
+  noAffix?: boolean
+}) {
+  const ents = await getPromptEntities({ messageId: input.messageId })
+  const { settings, provider } = getImageSettings(ents.chat, ents.char, ents.user)
+  const { rawPrompt, prompt } = getImagePrompt(input, settings)
+
+  const opts: ImageRequestOpts = {
+    negative: settings?.negative || '',
+    prompt,
+    raw_prompt: rawPrompt,
+    settings,
+    user: ents.user,
+    override: '',
+    params: {
+      cfg_scale: settings?.cfg,
+      clip_skip: settings?.clipSkip,
+      height: settings?.height,
+      negative: settings?.negative || '',
+      seed: settings?.seed ?? -1,
+      steps: settings?.steps,
+      width: settings?.width,
+    },
+  }
+
+  if (!opts.params?.width || !opts.params.height) {
+    opts.params!.width = 1024
+    opts.params!.height = 1024
+  }
+
+  return { request: opts, settings, provider }
 }
