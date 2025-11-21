@@ -16,6 +16,7 @@ import { msgsApi } from './data/messages'
 export type VoiceState = 'generating' | 'playing'
 
 export type ResponseState = {
+  partialId?: string
   partial?: string
   waiting?: {
     started: number
@@ -248,19 +249,6 @@ export const responseStore = createStore<ResponseState>(
             yield { partial: undefined, waiting: undefined }
           }
 
-          input = res.result?.input
-          if (input) {
-            yield {
-              waiting: {
-                signal,
-                chatId: opts.chatId,
-                mode: opts.mode,
-                characterId: replyingCharId,
-                input,
-                started: Date.now(),
-              },
-            }
-          }
           break
 
         default:
@@ -521,7 +509,7 @@ subscribe(
 
 subscribe(
   ['message-partial', 'inference-partial'],
-  { partial: 'string', chatId: 'string', kind: 'string?', json: 'any?' },
+  { partial: 'string', partialId: 'string?', chatId: 'string', kind: 'string?', json: 'any?' },
   (body) => {
     const { activeChatId } = getStore('messages').getState()
     const { waiting } = responseStore.getState()
@@ -529,10 +517,23 @@ subscribe(
     if (body.chatId !== activeChatId) return
 
     if (body.kind !== 'chat-query') {
-      responseStore.setState({ partial: body.partial })
+      responseStore.setState({ partial: body.partial, partialId: body.partialId })
     }
   }
 )
+
+subscribe('message-created', { msg: 'any' }, (body) => {
+  if (!body.msg._id) return
+  const { partialId } = responseStore.getState()
+
+  if (body.msg._id !== partialId) return
+  responseStore.setState({
+    partial: undefined,
+    partialId: undefined,
+    waiting: undefined,
+    retrying: undefined,
+  })
+})
 
 responseStore.subscribe((state, prev) => {
   const msgState = getStore('messages').getState()
