@@ -18,6 +18,7 @@ import {
   Braces,
   ImagePlus,
   Eye,
+  EyeOff,
 } from 'lucide-solid'
 import {
   Accessor,
@@ -35,10 +36,18 @@ import {
   Signal,
   Switch,
 } from 'solid-js'
-import { BOT_REPLACE, SELF_REPLACE } from '../../../../common/prompt'
+import { BOT_REPLACE, isMessageInvisible, SELF_REPLACE } from '../../../../common/prompt'
 import { AppSchema } from '../../../../common/types/schema'
 import AvatarIcon, { CharacterAvatar } from '../../../shared/AvatarIcon'
-import { chatStore, userStore, msgStore, ChatState, VoiceState, pageStore } from '../../../store'
+import {
+  chatStore,
+  userStore,
+  msgStore,
+  ChatState,
+  VoiceState,
+  pageStore,
+  responseStore,
+} from '../../../store'
 import { markdown } from '../../../shared/markdown'
 import Button, { ButtonSchema } from '/web/shared/Button'
 import { ContextState, useAppContext } from '/web/store/context'
@@ -299,6 +308,27 @@ const Message: Component<MessageProps> = (props) => {
     msgStore.setMetadataMsg(msg())
   }
 
+  const visibleIcon = createMemo(() => {
+    const message = msg()
+    if (!ctx.chat) return null
+    if (!ctx.replyAs) return null
+
+    const state = isMessageInvisible(ctx.chat, message, ctx.replyAs)
+
+    const Icon = state ? EyeOff : Eye
+    const nextState = state ? false : true
+    const invisible = { ...message.invisible, [ctx.replyAs]: nextState }
+
+    return (
+      <span
+        class="icon-button ml-2"
+        onClick={() => msgStore.editMessageProp(message._id, { invisible })}
+      >
+        <Icon size={14} />
+      </span>
+    )
+  })
+
   return (
     <div
       class={'flex w-full rounded-md px-2 py-2 pr-2 sm:px-4'}
@@ -335,13 +365,13 @@ const Message: Component<MessageProps> = (props) => {
                 </Match>
 
                 <Match when={props.voice === 'generating'}>
-                  <div class="animate-pulse cursor-pointer" onClick={msgStore.stopSpeech}>
+                  <div class="animate-pulse cursor-pointer" onClick={responseStore.stopSpeech}>
                     <AvatarIcon format={format()} Icon={DownloadCloud} />
                   </div>
                 </Match>
 
                 <Match when={props.voice === 'playing'}>
-                  <div class="animate-pulse cursor-pointer" onClick={msgStore.stopSpeech}>
+                  <div class="animate-pulse cursor-pointer" onClick={responseStore.stopSpeech}>
                     <AvatarIcon format={format()} Icon={PauseCircle} bot />
                   </div>
                 </Match>
@@ -444,6 +474,7 @@ const Message: Component<MessageProps> = (props) => {
                       <Info size={14} />
                     </span>
                   </Show>
+                  {visibleIcon()}
                 </span>
               </span>
               <Switch>
@@ -779,7 +810,12 @@ const MessageOptions: Component<{
       visible: {
         key: 'visible',
         class: '',
-        icon: Eye,
+        icon:
+          props.ctx.replyAs &&
+          props.ctx.chat &&
+          isMessageInvisible(props.ctx.chat, props.msg, props.ctx.replyAs)
+            ? EyeOff
+            : Eye,
         label: 'Visibility',
         show: true,
         outer: props.ui.msgOptsInline.visible,
@@ -795,7 +831,6 @@ const MessageOptions: Component<{
         class: 'delete-btn',
         schema: 'red',
         icon: Trash,
-        disabled: props.ctx.msgDeleting,
       },
 
       'gen-image': {
@@ -889,7 +924,9 @@ const MessageOptions: Component<{
       >
         <div
           class="icon-button"
-          onClick={() => !props.partial && msgStore.continuation(props.msg.chatId, undefined, true)}
+          onClick={() =>
+            !props.partial && responseStore.continuation(props.msg.chatId, undefined, true)
+          }
         >
           <Repeat1 size={18} />
         </div>
@@ -898,7 +935,12 @@ const MessageOptions: Component<{
       <Show when={props.last && !props.msg.characterId}>
         <div
           class="icon-button"
-          onClick={() => !props.partial && msgStore.resend(props.msg.chatId, props.msg._id)}
+          onClick={() => {
+            if (props.partial) return
+            // msgStore.resend(props.msg.chatId, props.msg._id)
+            if (!props.ctx.chat?.characterId) return
+            responseStore.request(props.ctx.chat._id, props.ctx.chat.characterId)
+          }}
         >
           <RefreshCw size={18} />
         </div>
@@ -1052,14 +1094,14 @@ const MessageOption: Component<{
 
 function retryMessage(original: AppSchema.ChatMessage, split: SplitMessage) {
   if (original.adapter !== 'image') {
-    msgStore.retry({ chatId: split.chatId, msgId: original._id })
+    responseStore.retry({ chatId: split.chatId, msgId: original._id })
   } else {
     msgStore.createImage({ sourceMsgId: split._id })
   }
 }
 
 function retryJsonSchema(original: AppSchema.ChatMessage, split: SplitMessage) {
-  msgStore.retrySchema(split.chatId, original._id)
+  responseStore.retrySchema(split.chatId, original._id)
 }
 
 function renderMessage(ctx: ContextState, text: string, isUser: boolean, adapter?: string) {

@@ -17,7 +17,7 @@ import { extractReasoning } from './reasoning'
 
 export type TickHandler<T = any> = (response: string, state: InferenceState, json?: T) => void
 
-export type InferenceState = 'partial' | 'done' | 'error' | 'warning'
+export type InferenceState = 'partial' | 'done' | 'error' | 'warning' | 'headers' | 'meta'
 
 export const SAMPLE_CHAT_MARKER = `System: New conversation started. Previous conversations are examples only.`
 export const SAMPLE_CHAT_PREAMBLE = `How {{char}} speaks:`
@@ -554,9 +554,9 @@ export async function buildPromptPlaceholders(
 
     const post = createPostPrompt(opts)
 
-    if (opts.continue) {
-      post.unshift(`${char.name}: ${opts.continue}`)
-    }
+    // if (opts.continue) {
+    //   post.unshift(`${char.name}: ${opts.continue}`)
+    // }
 
     const books: AppSchema.MemoryBook[] = []
     if (replyAs.characterBook) books.push(replyAs.characterBook)
@@ -719,17 +719,8 @@ export async function getLinesForPrompt(
    * Message Visibility Filtering
    */
   const filtered = messages.filter((msg) => {
-    if (!msg.invisible && !opts.chat.invisible) return true
-
-    // If there are no keys, fallback to the chat defaults
-    if (msg.invisible && Object.keys(msg.invisible).length > 0) {
-      if (msg.invisible[opts.replyAs._id]) return false
-      return true
-    }
-
-    // Chat Defaults - ignored if message flags are present
-    if (opts.chat.invisible?.[opts.replyAs._id]) return false
-
+    const invisible = isMessageInvisible(opts.chat, msg, opts.replyAs._id)
+    if (invisible) return false
     return true
   })
 
@@ -747,6 +738,45 @@ export async function getLinesForPrompt(
   }
 
   return { lines: history.slice(-lines.length) }
+}
+
+export function isMessageInvisible(
+  chat: AppSchema.Chat,
+  msg: AppSchema.ChatMessage,
+  characterId: string
+): boolean {
+  const specific = msg.invisible?.[characterId]
+  const defaults = chat.invisible?.[characterId]
+
+  if (specific !== undefined) return specific
+  if (defaults !== undefined) return defaults
+  return false
+}
+
+export function isMessageVisible(
+  chat: AppSchema.Chat,
+  msg: AppSchema.ChatMessage,
+  characterId: string
+): boolean {
+  const specific = msg.invisible?.[characterId]
+  const defaults = chat.invisible?.[characterId]
+
+  if (specific !== undefined) return !specific
+  if (defaults !== undefined) return !defaults
+  return true
+}
+
+export function getMessageVisibility(
+  chat: AppSchema.Chat,
+  msg: AppSchema.ChatMessage,
+  characterId: string
+) {
+  const specific = msg.invisible?.[characterId]
+  const defaults = chat.invisible?.[characterId]
+
+  if (specific !== undefined) return specific ? 'invisible' : 'visible'
+  if (defaults !== undefined) return defaults ? 'invisible' : 'visible'
+  return 'default'
 }
 
 function trimAddedLine(added: HistoryLine): HistoryLine {

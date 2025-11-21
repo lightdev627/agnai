@@ -1,17 +1,21 @@
 import { InferenceState } from '../../../common/prompt'
 import { AppSchema } from '../../../common/types/schema'
-import { api, isLoggedIn } from '../api'
+import { api, getUserId, isLoggedIn } from '../api'
 import { chatStore } from '../chat'
 import { localApi } from './storage'
 import { toastStore } from '../toasts'
-import { TemplateOpts } from '/common/template-parser'
+import { parseTemplate, TemplateOpts } from '/common/template-parser'
 import { exclude, replace } from '/common/util'
 import { toMap } from '/web/shared/util'
-import { subscribe } from '../socket'
+import { localEmit, subscribe } from '../socket'
 import { genApi } from './inference'
 import { botGen } from './bot-generate'
+import { getPromptEntities } from './common'
+import { emptyMsg } from '/web/pages/Chat/helpers'
+import { v4 } from 'uuid'
 
 export const msgsApi = {
+  createMessage,
   swapMessage,
   editMessage,
   editMessageProps,
@@ -24,6 +28,75 @@ export type StreamCallback = (res: string, state: InferenceState) => any
 
 export async function swapMessage(msg: AppSchema.ChatMessage, text: string, retries: string[]) {
   return swapMessageProps(msg, { msg: text, retries })
+}
+
+export async function createMessage(opts: {
+  text: string
+  chatId: string
+
+  /** New Message ID */
+  messageId: string
+
+  /** New message parent ID */
+  parent?: string
+
+  /** The message will be authored by this character */
+  character?: AppSchema.Character
+
+  /** If true, no user ID will be attributed to the message */
+  bot?: boolean
+
+  /** If 'ooc' or 'send-event:ooc', the message will be flagged as OOC */
+  kind?: string
+
+  /** Shorthand for the `kind` property */
+  ooc?: boolean
+
+  meta?: any
+}) {
+  const props = await getPromptEntities()
+  const messageId = opts.messageId || v4()
+
+  const text = await parseTemplate(opts.text, {
+    char: props.char,
+    chat: props.chat,
+    sender: props.profile,
+    impersonate: opts.character,
+    replyAs: props.char,
+    lastMessage: props.lastMessage?.date,
+    jsonValues: props.messages.reduce(
+      (prev, curr) => Object.assign(prev, curr.json?.values || {}),
+      {}
+    ),
+  })
+
+  const preMsg = emptyMsg({
+    id: messageId,
+    message: text.parsed + '  ',
+    chatId: opts.chatId,
+    charId: opts.character?._id,
+    parent: opts.parent,
+    userId: getUserId(),
+  })
+
+  localEmit({ type: 'message-created', msg: preMsg, chatId: opts.chatId })
+
+  const result = await api.post(`/chat/${opts.chatId}/send`, {
+    kind: opts.kind,
+    text: text.parsed,
+    impersonate: opts.character,
+    ooc: opts.ooc,
+    parent: opts.parent,
+    bot: opts.bot,
+    messageId,
+    meta: opts.meta,
+  })
+
+  if (result.result?.message) {
+    localEmit({ type: 'message-created', msg: result.result.message, chatId: opts.chatId })
+  }
+
+  return result
 }
 
 export async function swapMessageProps(
@@ -46,17 +119,21 @@ export async function editMessage(msg: AppSchema.ChatMessage, replace: string) {
 }
 
 export async function editMessageProps(
-  msg: AppSchema.ChatMessage,
+  msg: Pick<AppSchema.ChatMessage, '_id' | 'chatId'>,
   update: Partial<AppSchema.ChatMessage>
 ) {
   if (isLoggedIn()) {
     const res = await api.method('put', `/chat/${msg._id}/message-props`, update)
+    if (res.result) {
+      localEmit({ type: 'message-edited', chatId: msg.chatId, messageId: msg._id, ...update })
+    }
     return res
   }
 
   const messages = await localApi.getMessages(msg.chatId)
   const next = replace(msg._id, messages, update)
   await localApi.saveMessages(msg.chatId, next)
+  localEmit({ type: 'message-edited', chatId: msg.chatId, messageId: msg._id, ...update })
   return localApi.result({ success: true })
 }
 
@@ -121,6 +198,11 @@ export async function deleteMessages(
       leafId,
       parents,
     })
+
+    if (res.result) {
+      localEmit({ type: 'messages-deleted', ids: msgIds })
+    }
+
     return res
   }
 
@@ -169,18 +251,7 @@ function messageToLine(opts: {
  * Partials
  */
 subscribe(
-  'inference-partial',
-  { partial: 'string', requestId: 'string', output: 'any?' },
-  (body) => {
-    const cb = genApi.callbacks.get(body.requestId)
-    if (!cb) return
-
-    cb(body.partial, 'partial', body.output)
-  }
-)
-
-subscribe(
-  'message-partial',
+  ['message-partial', 'inference-partial'],
   { requestId: 'string', partial: 'string', json: 'boolean?' },
   (body) => {
     const cb = genApi.callbacks.get(body.requestId)
@@ -220,27 +291,27 @@ subscribe('chat-query', { requestId: 'string', response: 'string' }, (body) => {
 /**
  * Errors
  */
-subscribe('message-error', { requestId: 'string', error: 'string' }, (body) => {
-  const cb = genApi.callbacks.get(body.requestId)
-  if (!cb) return
+subscribe(
+  ['inference-error', 'message-error'],
+  { requestId: 'string', error: 'string' },
+  (body) => {
+    const cb = genApi.callbacks.get(body.requestId)
+    if (!cb) return
 
-  cb(body.error, 'error')
-  genApi.callbacks.delete(body.requestId)
-  toastStore.error(`Inference failed: ${body.error}`)
-})
+    cb(body.error, 'error')
+    genApi.callbacks.delete(body.requestId)
+    toastStore.error(`Inference error: ${body.error}`)
+  }
+)
 
-subscribe('inference-warning', { requestId: 'string', warning: 'string' }, (body) => {
-  const cb = genApi.callbacks.get(body.requestId)
-  if (!cb) return
+subscribe(
+  ['inference-warning', 'message-warning'],
+  { requestId: 'string', warning: 'string' },
+  (body) => {
+    const cb = genApi.callbacks.get(body.requestId)
+    if (!cb) return
 
-  cb(body.warning, 'warning')
-  toastStore.warn(`Inference warning: ${body.warning}`)
-})
-
-subscribe('inference-error', { requestId: 'string', error: 'string' }, (body) => {
-  const cb = genApi.callbacks.get(body.requestId)
-  if (!cb) return
-
-  cb(body.error, 'error')
-  toastStore.warn(`Inference error: ${body.error}`)
-})
+    cb(body.warning, 'warning')
+    toastStore.warn(`Inference warning: ${body.warning}`)
+  }
+)

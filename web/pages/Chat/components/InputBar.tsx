@@ -35,6 +35,7 @@ import {
   ChatMessageExt,
   promptStore,
   pageStore,
+  responseStore,
 } from '../../../store'
 import { msgStore } from '../../../store'
 import { SpeechRecognitionRecorder } from './SpeechRecognitionRecorder'
@@ -57,7 +58,12 @@ import { MsgAttachment } from '/srv/adapter/type'
 import { extractReasoning } from '/common/reasoning'
 import { usePresetContext } from '/web/store/preset-context'
 
-export type SendFunc = (opts: { msg: string; ooc: boolean; onSuccess?: () => void }) => void
+export type SendFunc = (opts: {
+  msg: string
+  ooc: boolean
+  onSuccess?: () => void
+  onError?: (err?: string) => void
+}) => void
 
 const InputBar: Component<{
   chat: AppSchema.Chat
@@ -167,14 +173,20 @@ const InputBar: Component<{
       return toastStore.warn(`Confirm or cancel swiping before sending`)
     }
 
+    ref.value = ''
+    setText('')
+    setCleared(0)
+
     props.send({
       msg: value,
       ooc: props.ooc,
       onSuccess: () => {
-        ref.value = ''
-        setText('')
-        setCleared(0)
         draft.clear()
+      },
+      onError: () => {
+        ref.value = value
+        setText(value)
+        draft.update(value)
       },
     })
   }, 100)
@@ -185,7 +197,7 @@ const InputBar: Component<{
   }
 
   const respondAgain = () => {
-    msgStore.request(props.chat._id, props.chat.characterId)
+    responseStore.request(props.chat._id, props.chat.characterId)
   }
 
   const more = () => {
@@ -214,7 +226,7 @@ const InputBar: Component<{
       display: ctx.ui.displayReasoning,
     })
 
-    msgStore.textToSpeech(
+    responseStore.textToSpeech(
       lastTextMsg._id,
       text.content,
       char.voice,
@@ -312,7 +324,7 @@ const InputBar: Component<{
             class="animate-pulse cursor-pointer p-2"
             onClick={() => {
               console.log('Cancel clicked', !!ctx.waiting?.signal)
-              msgStore.abortMessage()
+              responseStore.abortMessage()
             }}
           >
             <StopCircle />
@@ -416,7 +428,7 @@ const InputBar: Component<{
               class="w-full"
               onClick={() => {
                 setMenu(false)
-                msgStore.selfGenerate()
+                responseStore.selfGenerate()
               }}
               alignLeft
               disabled={!ctx.impersonate}

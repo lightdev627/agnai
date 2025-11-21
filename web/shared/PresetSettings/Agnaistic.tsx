@@ -214,7 +214,9 @@ function useModelCategories() {
       if (sub.preset.subDisabled && !state.user?.admin) continue
 
       const limit = getSubscriptionModelLimits(sub.preset, level)
-      const disabled = !!sub.preset.allowGuestUsage ? false : sub.level > level
+      const disabled = !!sub.preset.allowGuestUsage
+        ? false
+        : (limit?.level ?? sub.preset.subLevel) > level
       const tier =
         sub.level <= 0
           ? 'Free'

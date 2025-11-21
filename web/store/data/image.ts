@@ -13,7 +13,7 @@ import { getAssetUrl } from '/web/shared/util'
 import { v4 } from 'uuid'
 import { md5 } from './md5'
 import { getImagePromptEntities, getPromptEntities } from './common'
-import { genApi, inferenceHelper, lazyPromise } from './inference'
+import { genApi, inferenceHelper } from './inference'
 import { TickHandler } from '/common/prompt'
 import { extractReasoning } from '/common/reasoning'
 import { replaceTags } from '/common/presets/templates'
@@ -21,6 +21,7 @@ import { toastStore } from '../toasts'
 import { swarmApi } from '/common/requests/swarmui'
 import { ImageRequestOpts } from '/srv/image/types'
 import { getImagePrompt, getImageSettings } from '/common/image'
+import { imageStore } from '../images'
 
 type GenerateOpts = {
   chatId?: string
@@ -147,8 +148,8 @@ export async function generateImage(
         question: opts.question,
       })
 
-  if (!result.result?.response) {
-    return result
+  if (result.error || !result.result) {
+    return localApi.error(result.error)
   }
 
   const summary = result.result.response
@@ -165,20 +166,26 @@ export async function generateImage(
   const req = await createImageRequest({ prompt: trimmed, messageId: opts.messageId })
 
   if (req.provider?.local && req.provider.type === 'swarm') {
-    const lazy = lazyPromise()
-
-    swarmApi.generateImage(req.request).then((res) => {
-      localEmit({
-        type: 'image-generated',
-        chatId: opts.chatId,
-        messageId: opts.messageId,
-        image: res.content,
-        requestId: v4(),
-        source: opts.source,
+    swarmApi
+      .generateImageWS(req.request, {
+        onDone: () => imageStore.setState({ preview: undefined }),
+        onError: () => imageStore.setState({ preview: undefined }),
+        onPreview: (step) => imageStore.setState({ preview: step }),
       })
-    })
+      .then((res) => {
+        const result = {
+          type: 'image-generated',
+          chatId: opts.chatId,
+          messageId: opts.messageId,
+          image: res.content,
+          requestId: v4(),
+          source: opts.source,
+          summary,
+        }
+        localEmit(result)
+      })
 
-    return lazy.promise
+    return localApi.result({ success: true, summary })
   }
 
   const res = await api.post<{ success: boolean }>(
@@ -196,7 +203,8 @@ export async function generateImage(
       requestId: v4(),
     }
   )
-  return res
+
+  return localApi.result({ success: res.result?.success, summary })
 }
 
 export async function generateImageWithPrompt(opts: {
@@ -289,7 +297,16 @@ export async function generateImageAsync(
   const requestId = opts.requestId || v4()
 
   if (req.provider?.local && req.provider.type === 'swarm') {
-    const res = await swarmApi.generateImage(req.request)
+    const signal = new AbortController()
+
+    imageStore.setState({ signal })
+
+    const res = await swarmApi.generateImageWS(req.request, {
+      signal,
+      onDone: () => imageStore.setState({ preview: undefined }),
+      onError: () => imageStore.setState({ preview: undefined }),
+      onPreview: (step) => imageStore.setState({ preview: step }),
+    })
     opts.onDone?.({ file: res.file, image: res.content, data: res.content })
     return {
       image: res.content,
