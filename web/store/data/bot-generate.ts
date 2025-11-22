@@ -174,12 +174,14 @@ async function streamResponse(opts: StreamOpts, onTick?: TickHandler) {
 
         case 'partial': {
           const trimmed = santitize(prefix + response)
-          localEmit({
-            type: 'message-partial',
-            chatId: active.chat._id,
-            partial: trimmed,
-            partialId: req.request.requestId,
-          })
+          if (req.request.settings?.streamResponse) {
+            localEmit({
+              type: 'message-partial',
+              chatId: active.chat._id,
+              partial: trimmed,
+              partialId: req.request.requestId,
+            })
+          }
           break
         }
 
@@ -223,12 +225,14 @@ async function handlePostStreamResponse(
       }
 
       const retries = [replacing.msg].concat(replacing.retries || [])
-      await msgsApi.editMessageProps(replacing, {
+      const payload: Partial<AppSchema.ChatMessage> = {
         msg: response,
         retries,
         state: 'retried',
         meta,
-      })
+      }
+
+      await msgsApi.editMessageProps(replacing, payload)
       return
     }
 
