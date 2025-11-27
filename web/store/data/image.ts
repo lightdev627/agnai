@@ -17,11 +17,14 @@ import { genApi, inferenceHelper } from './inference'
 import { TickHandler } from '/common/prompt'
 import { extractReasoning } from '/common/reasoning'
 import { replaceTags } from '/common/presets/templates'
-import { toastStore } from '../toasts'
 import { swarmApi } from '/common/requests/swarmui'
 import { ImageRequestOpts } from '/srv/image/types'
 import { getImagePrompt, getImageSettings } from '/common/image'
 import { imageStore } from '../images'
+import { isChatPage } from '/web/shared/hooks'
+import { FileInputResult } from '/web/shared/FileInput'
+
+export type ImageRequestEntities = Awaited<ReturnType<typeof createImageRequest>>
 
 type GenerateOpts = {
   chatId?: string
@@ -43,7 +46,16 @@ export const ALLOWED_TYPES = new Map([
   ['png', 'image/png'],
   ['apng', 'image/apng'],
   ['gif', 'image/gif'],
+  ['webp', 'image/webp'],
 ])
+
+export function getImageType(image: string) {
+  for (const [ext, _mimetype] of ALLOWED_TYPES.entries()) {
+    if (image.toLowerCase().endsWith(`.${ext}`)) return { type: 'url' as const, image }
+  }
+
+  return { type: 'base64' as const, image }
+}
 
 export const imageApi = {
   generateImage,
@@ -56,9 +68,23 @@ export const imageApi = {
   getImageData,
   getSDModelList,
   getImageModelList,
+  getImageBase64,
+  processBase64,
+  asyncImage,
+  processImageFile,
   ALLOWED_TYPES,
 }
 
+async function processImageFile(file: File): Promise<FileInputResult> {
+  const buf = await file.arrayBuffer()
+  const buffer = Buffer.from(buf)
+  const base64 = `data:${file.type};base64,${buffer.toString('base64')}`
+
+  return {
+    file,
+    content: base64,
+  }
+}
 export async function generateImagePrompt(opts: {
   onTick?: TickHandler
   question?: string
@@ -137,7 +163,7 @@ export async function getImageModelList(opts: {
 
 export async function generateImage(
   opts: GenerateOpts,
-  callbacks?: { onDone?: (summary: string) => void; onTick?: TickHandler }
+  callbacks?: { onSummary?: (summary: string) => void; onTick?: TickHandler }
 ) {
   const entities = await getPromptEntities({ messageId: opts.messageId })
   const result = opts.prompt
@@ -154,9 +180,7 @@ export async function generateImage(
 
   const summary = result.result.response
 
-  callbacks?.onDone?.(result.result?.response)
-
-  const characterId = entities.messages.reduceRight((id, msg) => id || msg.characterId)
+  callbacks?.onSummary?.(summary)
 
   const max = getMaxImageContext(entities.user)
   const trimmed = await encode(summary)
@@ -164,47 +188,70 @@ export async function generateImage(
     .then(decode)
 
   const req = await createImageRequest({ prompt: trimmed, messageId: opts.messageId })
+  const requestId = v4()
 
+  try {
+    const image = await dispatchImage(req, opts, requestId)
+
+    const payload = {
+      type: 'image-generated',
+      chatId: opts.chatId,
+      messageId: opts.messageId,
+      image: image.content,
+      requestId,
+      source: opts.source,
+      summary,
+    }
+
+    localEmit(payload)
+    return localApi.result({ ...image, summary, messageId: opts.messageId, requestId })
+  } catch (ex: any) {
+    localEmit({ type: 'image-error', error: ex?.message || ex })
+    return localApi.error(ex?.message || ex)
+  }
+}
+
+async function dispatchImage(req: ImageRequestEntities, opts: GenerateOpts, requestId: string) {
   if (req.provider?.local && req.provider.type === 'swarm') {
-    swarmApi
-      .generateImageWS(req.request, {
-        onDone: () => imageStore.setState({ preview: undefined }),
-        onError: () => imageStore.setState({ preview: undefined }),
-        onPreview: (step) => imageStore.setState({ preview: step }),
-      })
-      .then((res) => {
-        const result = {
-          type: 'image-generated',
-          chatId: opts.chatId,
-          messageId: opts.messageId,
-          image: res.content,
-          requestId: v4(),
-          source: opts.source,
-          summary,
-        }
-        localEmit(result)
-      })
+    const result = await swarmApi.generateImageWS(req.request, {
+      onDone: () => imageStore.setState({ preview: undefined }),
+      onError: () => imageStore.setState({ preview: undefined }),
+      onPreview: (step) => imageStore.setState({ preview: step }),
+    })
 
-    return localApi.result({ success: true, summary })
+    return result
   }
 
-  const res = await api.post<{ success: boolean }>(
-    `/chat/${opts.chatId || entities.chat._id}/image`,
+  const res = await api.post<{ success: boolean; output?: string; error?: string }>(
+    `/chat/${opts.chatId}/image`,
     {
-      prompt: trimmed,
-      user: entities.user,
+      sync: true,
+      prompt: req.request.prompt,
       messageId: opts.messageId,
       ephemeral: opts.ephemeral,
       append: opts.append,
       source: opts.source,
       chatId: opts.chatId,
-      characterId,
+      characterId: req.entities.message?.characterId,
       parent: opts.parent,
-      requestId: v4(),
+      requestId,
     }
   )
 
-  return localApi.result({ success: res.result?.success, summary })
+  if (res.error) {
+    throw new Error(res.error)
+  }
+
+  if (!res.result?.output) {
+    const msg = res.result?.error || `Image generation failed to return a result`
+    throw new Error(msg)
+  }
+
+  const base64 = await imageApi.getImageBase64(res.result.output)
+  const proc = imageApi.processBase64(base64)
+
+  const buffer = await proc.file.arrayBuffer()
+  return { content: base64, file: proc.file, buffer }
 }
 
 export async function generateImageWithPrompt(opts: {
@@ -315,18 +362,19 @@ export async function generateImageAsync(
     }
   }
 
-  const promise = new Promise<ImageResult>((resolve, reject) => {
-    callbacks.set(requestId, (image) => {
-      opts.onDone?.(image)
-      if (image.error) {
-        toastStore.error(image.error)
-        return reject(new Error(image.error))
-      }
-      resolve(image)
-    })
-  })
+  // const promise = new Promise<ImageResult>((resolve, reject) => {
+  //   callbacks.set(requestId, (image) => {
+  //     opts.onDone?.(image)
+  //     if (image.error) {
+  //       toastStore.error(image.error)
+  //       return reject(new Error(image.error))
+  //     }
+  //     resolve(image)
+  //   })
+  // })
 
-  await api.post<{ success: boolean }>(`/character/image`, {
+  const res = await api.post<{ success: boolean; output?: string }>(`/character/image`, {
+    sync: true,
     prompt,
     user,
     ephemeral: true,
@@ -336,7 +384,36 @@ export async function generateImageAsync(
     requestId,
   })
 
-  return promise
+  if (res.result?.output) {
+    const type = getImageType(res.result.output)
+    const base64 = type.type === 'url' ? await getImageBase64(res.result.output) : type.image
+    const proc = processBase64(base64)
+
+    const result: ImageResult = {
+      file: proc.file,
+      image: base64,
+      data: res.result.output,
+    }
+
+    return result
+  }
+
+  if (res.error) {
+    throw new Error(res.error)
+  }
+
+  throw new Error(`Image generation failed: Empty result`)
+}
+
+export async function getImageBase64(image: string) {
+  if (image.startsWith('data:')) return image
+
+  if (!image.startsWith('http')) {
+    image = getAssetUrl(image)
+  }
+
+  const base64 = await imageApi.getImageData(image)
+  return base64!
 }
 
 const callbacks = new Map<string, (result: ImageResult) => void>()
@@ -506,12 +583,32 @@ export async function getImageData(file: File | Blob | string | undefined, name?
   })
 }
 
+export function asyncImage(src: string) {
+  return new Promise<{ name: string; image: HTMLImageElement }>(async (resolve, reject) => {
+    const data = await getImageBase64(src)
+    const image = new Image()
+    image.setAttribute('crossorigin', 'anonymous')
+    image.src = data
+
+    image.onload = () => resolve({ name: src, image })
+    image.onerror = (ev) => reject(ev)
+  })
+}
+
+export function processBase64(base64: string) {
+  const full = base64.startsWith('data:') ? base64 : `data:image/png;base64,${base64}`
+  const blob = new Blob([full])
+  const file = new File([blob], `image_${Date.now()}.png`, { type: 'image/png' })
+  return { base64: full, file }
+}
+
 export async function createImageRequest(input: {
   prompt: string
   messageId?: string
   noAffix?: boolean
 }) {
-  const ents = await getPromptEntities({ messageId: input.messageId })
+  const ents = await getImageEntities()
+  const { user } = getStore('user').getState()
   const { settings, provider } = getImageSettings(ents.chat, ents.char, ents.user)
   const { rawPrompt, prompt } = getImagePrompt(input, settings)
 
@@ -520,7 +617,7 @@ export async function createImageRequest(input: {
     prompt,
     raw_prompt: rawPrompt,
     settings,
-    user: ents.user,
+    user: user!,
     override: '',
     params: {
       cfg_scale: settings?.cfg,
@@ -538,5 +635,21 @@ export async function createImageRequest(input: {
     opts.params!.height = 1024
   }
 
-  return { request: opts, settings, provider }
+  return { request: opts, settings, provider, entities: ents }
+}
+
+function getImageEntities(messageId?: string) {
+  const { user } = getStore('user').getState()
+  const { active } = getStore('chat').getState()
+  const { graph } = getStore('messages').getState()
+  const isChat = isChatPage()
+
+  const message = messageId ? graph.tree[messageId]?.msg : undefined
+
+  return {
+    user: user!,
+    chat: isChat ? active?.chat : undefined,
+    char: isChat ? active?.char : undefined,
+    message,
+  }
 }

@@ -22,7 +22,7 @@ import { GenerateRequestV2 } from '/srv/adapter/type'
 import { GenerateEntities, getPromptEntities, PromptEntities } from './common'
 import { embedApi } from '../embeddings'
 import { ChatState } from '../chat'
-import { replaceTags } from '/common/presets/templates'
+import { BUILTIN_FORMATS, replaceTags } from '/common/presets/templates'
 import { getServiceTempConfig } from '/web/shared/adapter'
 import { getActiveBots } from '/web/pages/Chat/util'
 import iconv from 'iconv-lite'
@@ -132,6 +132,14 @@ async function streamResponse(opts: StreamOpts, onTick?: TickHandler) {
       stops,
     })
 
+  const format = req.request.settings?.modelFormat
+  if (stops.length < 4 && format) {
+    const tags = BUILTIN_FORMATS[format]
+    if (tags) {
+      stops.push(tags.closeBot, tags.closeUser)
+    }
+  }
+
   await genApi.inferenceStream(
     {
       settings: req.request.settings,
@@ -140,7 +148,7 @@ async function streamResponse(opts: StreamOpts, onTick?: TickHandler) {
       prompt: assembled.prompt,
       payload,
       signal: opts.signal,
-      stop: req.request.settings?.stopSequences,
+      stop: stops,
       // TODO: Re-enable multiplayer streaming
       // broadcast: {
       //   type: 'chat',
@@ -415,7 +423,7 @@ async function buildChatRequest(opts: GenerateOpts) {
     lines: prompt.lines.map((l) => l.msg),
     history: prompt.lines,
     linesCount: props.messages.length,
-    settings: { ...entities.settings },
+    settings: entities.settings,
     replacing: props.replacing,
     continuing: props.continuing,
     replyAs: removeAvatar(
@@ -715,6 +723,12 @@ async function getGenerateProps(
   }
 
   const getBot = (id: string) => {
+    if (!isLoggedIn() && !id.startsWith('temp-')) {
+      const { characters } = getStore('character').getState()
+      const char = characters.list.find((ch) => ch._id === id)
+      if (char) return char
+    }
+
     if (id.startsWith('temp-')) return entities.chat.tempCharacters?.[id]!
     return entities.chatBots.find((ch) => ch._id === id)!
   }
@@ -850,22 +864,6 @@ async function createMessage(
     parent: getMessageParent(opts.kind, props.messages)?._id,
   })
 }
-
-// function emptyMsg(
-//   chat: AppSchema.Chat,
-//   props: Partial<AppSchema.ChatMessage>
-// ): AppSchema.ChatMessage {
-//   return {
-//     _id: '',
-//     kind: 'chat-message',
-//     chatId: chat._id,
-//     createdAt: new Date().toISOString(),
-//     updatedAt: new Date().toISOString(),
-//     msg: '',
-//     retries: [],
-//     ...props,
-//   }
-// }
 
 function useLocalRequest(settings: Partial<AppSchema.UserGenPreset>, user: AppSchema.User) {
   if (!settings.providerId) {
