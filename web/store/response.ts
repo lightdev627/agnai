@@ -13,12 +13,16 @@ import { voiceApi } from './data/voice'
 import { v4 } from 'uuid'
 import { msgsApi } from './data/messages'
 import { debug } from '/common/debug'
+import { EVENTS, events } from '../emitter'
+import { getScenarioEventType } from '/common/scenario'
 
 export type VoiceState = 'generating' | 'playing'
 
 export type ResponseState = {
   partialId?: string
   partial?: string
+
+  /** Primarily controlled in bot-gen, but can be cleared in here in specific error conditions */
   waiting?: {
     started: number
     signal?: AbortController
@@ -73,27 +77,21 @@ export const responseStore = createStore<ResponseState>(
 
       const msg = opts.msgId ? msgs.find((msg) => msg._id === opts.msgId)! : msgs[msgs.length - 1]
       const replace = msg?.userId ? undefined : { ...msg, voiceUrl: undefined }
-      const characterId = replace?.characterId || activeCharId
       const signal = new AbortController()
-      yield {
-        partial: '',
-        waiting: { signal, chatId: opts.chatId, mode: 'retry', characterId, started: Date.now() },
-        retrying: replace,
-      }
+
+      yield { partial: '', retrying: replace }
 
       const res = await botGen
         .stream({ signal, kind: 'retry', messageId: opts.msgId }, (_, state) => {
           if (state === 'done') {
-            debug('waiting')('retry:done')
-            setter({ partial: undefined, waiting: undefined, retrying: undefined })
+            setter({ partial: undefined, retrying: undefined })
           }
         })
         .catch((err) => ({ error: err.message, result: undefined }))
 
       if (res.error) {
         toastStore.error(`(Retry) Generation request failed: ${res.error?.error || res.error}`)
-        debug('waiting')('retry:error')
-        yield { partial: undefined, waiting: undefined, retrying: undefined }
+        yield { partial: undefined, retrying: undefined }
       }
     },
 
@@ -119,13 +117,8 @@ export const responseStore = createStore<ResponseState>(
       }
 
       const replace = msg?.userId ? undefined : { ...msg, voiceUrl: undefined }
-      const characterId = replace?.characterId || activeCharId
       const signal = new AbortController()
-      yield {
-        partial: '',
-        waiting: { signal, chatId, mode: 'retry', characterId, started: Date.now() },
-        retrying: replace,
-      }
+      yield { partial: '', retrying: replace }
 
       const res = await botGen
         .stream({ signal, kind: 'retry', messageId, reschema_prompt: msg.json?.values.response })
@@ -133,8 +126,7 @@ export const responseStore = createStore<ResponseState>(
 
       if (res.error) {
         toastStore.error(`(Retry) Generation request failed: ${res.error}`)
-        debug('waiting')('retry-schema:error')
-        yield { partial: undefined, waiting: undefined, retrying: undefined }
+        yield { partial: undefined, retrying: undefined }
       }
     },
 
@@ -146,10 +138,7 @@ export const responseStore = createStore<ResponseState>(
       }
 
       const signal = new AbortController()
-      yield {
-        partial: undefined,
-        waiting: { signal, chatId, mode: 'request', characterId, started: Date.now() },
-      }
+      yield { partial: undefined }
 
       const res = await botGen
         .stream({ signal, kind: 'request', characterId })
@@ -157,8 +146,7 @@ export const responseStore = createStore<ResponseState>(
 
       if (res.error) {
         toastStore.error(`(Bot) Generation request failed: ${res.error}`)
-        debug('waiting')('request:error')
-        yield { partial: undefined, waiting: undefined }
+        yield { partial: undefined }
       }
 
       if (res.result) onSuccess?.()
@@ -189,46 +177,31 @@ export const responseStore = createStore<ResponseState>(
     ) {
       if (waiting) return
 
-      const { activeCharId } = getStore('messages').getState()
       if (!opts.chatId) {
         toastStore.error('Could not send message: No active chat')
         yield { partial: undefined }
         return
       }
 
-      const { details, lastChatId } = getStore('chat').getState()
-      const active = details[lastChatId]
-      const replyingCharId = active?.replyAs || activeCharId
       const signal = new AbortController()
 
       let res: { result?: any; error?: string }
 
-      yield {
-        partial: '',
-        waiting: {
-          signal,
-          chatId: opts.chatId,
-          mode: opts.mode,
-          characterId: replyingCharId,
-          started: Date.now(),
-        },
-      }
+      yield { partial: '' }
 
       const created = await handlePreSend(opts)
 
       if (created?.error) {
         toastStore.error(`(Send) Message request failed: ${created?.error ?? 'Unknown error'}`)
-        debug('waiting')('send-created:error')
         yield { partial: undefined, waiting: undefined }
         return
       }
 
-      let input = ''
+      // let input = ''
 
       switch (opts.mode) {
         case 'send-noreply': {
-          debug('waiting')('send-noreply:switch')
-          yield { partial: undefined, waiting: undefined }
+          yield { partial: undefined }
           return
         }
 
@@ -249,8 +222,7 @@ export const responseStore = createStore<ResponseState>(
             .stream({ signal, kind: opts.mode, text: opts.msg, messageId: created?.messageId })
             .catch((err) => ({ error: err.message, result: undefined }))
           if ('result' in res && !res.result?.generating) {
-            debug('waiting')('send-no-gen:switch')
-            yield { partial: undefined, waiting: undefined }
+            yield { partial: undefined }
           }
 
           break
@@ -261,23 +233,11 @@ export const responseStore = createStore<ResponseState>(
 
       if (res.error) {
         toastStore.error(`(Send) Generation request failed: ${res?.error ?? 'Unknown error'}`)
-        debug('waiting')('send:error')
-        yield { partial: undefined, waiting: undefined }
+        yield { partial: undefined }
       }
 
       if (res.result?.messageId) {
-        yield {
-          partial: '',
-          waiting: {
-            signal,
-            chatId: opts.chatId,
-            mode: opts.mode,
-            characterId: replyingCharId,
-            messageId: res.result.messageId,
-            input,
-            started: Date.now(),
-          },
-        }
+        yield { partial: '' }
       }
     },
 
@@ -298,17 +258,7 @@ export const responseStore = createStore<ResponseState>(
       const signal = new AbortController()
 
       const [_, replace] = msgs.slice(-2)
-      yield {
-        partial: '',
-        waiting: {
-          signal,
-          chatId,
-          mode: 'continue',
-          characterId: replace.characterId!,
-          started: Date.now(),
-        },
-        retrying: replace,
-      }
+      yield { partial: '', retrying: replace }
 
       const msgState = getStore('messages').getState()
       const textBeforeGenMore = retryLatestGenMoreOutput
@@ -323,8 +273,7 @@ export const responseStore = createStore<ResponseState>(
           },
           (_, state) => {
             if (state === 'done') {
-              debug('waiting')('continue:done')
-              setter({ partial: undefined, waiting: undefined, retrying: undefined })
+              setter({ partial: undefined, retrying: undefined })
             }
           }
         )
@@ -332,8 +281,7 @@ export const responseStore = createStore<ResponseState>(
 
       if (res.error) {
         toastStore.error(`(Continue) Generation request failed: ${res.error}`)
-        debug('waiting')('continue:error')
-        yield { partial: undefined, waiting: undefined }
+        yield { partial: undefined }
       }
 
       if (res.result) {
@@ -452,7 +400,9 @@ async function handlePreSend(opts: {
   onSuccess?: () => void
   onError?: (err?: string) => void
 }) {
-  if (opts.mode !== 'ooc' && opts.mode !== 'send' && opts.mode !== 'send-noreply') return
+  const isEvent = opts.mode.startsWith('send-event:')
+  if (!isEvent && opts.mode !== 'ooc' && opts.mode !== 'send' && opts.mode !== 'send-noreply')
+    return
 
   const { impersonating } = getStore('character').getState()
   const { messageHistory, msgs } = getStore('messages').getState()
@@ -466,7 +416,7 @@ async function handlePreSend(opts: {
   const parent = botGen.getMessageParent(opts.mode, messageHistory.concat(msgs))
 
   const res = await msgsApi.createMessage({
-    kind: 'send-noreply',
+    kind: isEvent ? getScenarioEventType(opts.mode) : 'send-noreply',
     chatId: opts.chatId,
     messageId,
     text: opts.msg,
@@ -495,20 +445,9 @@ subscribe(
   { chatId: 'string', senderId: 'string?', mode: 'string?', characterId: 'string' },
   (body) => {
     const { activeChatId } = getStore('messages').getState()
-    const { waiting } = responseStore.getState()
     if (body.chatId !== activeChatId) return
 
-    responseStore.setState({
-      waiting: {
-        signal: waiting?.signal,
-        chatId: activeChatId,
-        mode: body.mode as any,
-        userId: body.senderId,
-        characterId: body.characterId,
-        started: Date.now(),
-      },
-      partial: '',
-    })
+    responseStore.setState({ partial: '' })
   }
 )
 
@@ -526,19 +465,6 @@ subscribe(
     }
   }
 )
-
-// subscribe('message-created', { msg: 'any' }, (body) => {
-//   if (!body.msg._id) return
-//   const { partialId } = responseStore.getState()
-
-//   if (body.msg._id !== partialId) return
-//   responseStore.setState({
-//     partial: undefined,
-//     partialId: undefined,
-//     waiting: undefined,
-//     retrying: undefined,
-//   })
-// })
 
 responseStore.subscribe((state, prev) => {
   const msgState = getStore('messages').getState()
@@ -642,3 +568,7 @@ subscribe(
     playVoiceFromUrl(body.chatId, body.messageId, body.url, body.rate)
   }
 )
+
+events.on(EVENTS.setWaiting, (next) => {
+  responseStore.setState({ waiting: next })
+})
