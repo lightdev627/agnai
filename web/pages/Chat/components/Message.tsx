@@ -59,7 +59,7 @@ import { Portal } from 'solid-js/web'
 import { UI } from '/common/types'
 import { LucideProps } from 'lucide-solid/dist/types/types'
 import { createStore } from 'solid-js/store'
-import { RelativeSpinner } from '/web/shared/Loading'
+import { Spinner } from '/web/shared/Loading'
 import { MessageImages } from './MessageImages'
 import Select from '/web/shared/Select'
 import { FileInputResult, getFileAsDataURL } from '/web/shared/FileInput'
@@ -557,7 +557,7 @@ const Message: Component<MessageProps> = (props) => {
             <div ref={avatarRef} classList={{ 'overflow-hidden': !user.ui.imageWrap }}>
               <Switch>
                 <Match when={msg().adapter === 'image'}>
-                  <MessageImages msg={msg()} onEditClick={editMessageMeta} />
+                  <MessageImages msg={msg()} onEditClick={editMessageMeta} ctx={ctx} />
                 </Match>
 
                 <Match when={!edit()}>
@@ -603,8 +603,8 @@ const Message: Component<MessageProps> = (props) => {
                     </span>
                   </Show>
                   <Show when={ctx.imgWaiting?.pos && ctx.imgWaiting.messageId === msg()._id}>
-                    <div class="flex w-full justify-center">
-                      <RelativeSpinner speed={imageSpeed()} />{' '}
+                    <div class="relative flex w-full justify-center">
+                      <Spinner speed={imageSpeed()} />{' '}
                       <span
                         class="text-500 text-xs italic"
                         classList={{ hidden: !ctx.status?.wait_time }}
@@ -614,7 +614,7 @@ const Message: Component<MessageProps> = (props) => {
                     </div>
                   </Show>
 
-                  <MessageImages msg={msg()} onEditClick={editMessageMeta} />
+                  <MessageImages msg={msg()} onEditClick={editMessageMeta} ctx={ctx} />
                   <MessageAttachments msg={msg()} ctx={ctx} />
 
                   <Show when={!props.partial && props.last}>
@@ -761,7 +761,8 @@ const MessageOptions: Component<{
         label: 'Edit',
         class: 'edit-btn',
         outer: props.ui.msgOptsInline.edit,
-        show: props.msg.adapter !== 'image' && !props.partial,
+        show: props.msg.adapter !== 'image',
+        disabled: !!props.ctx.waiting,
         onClick: props.startEdit,
         icon: Pencil,
       },
@@ -843,6 +844,7 @@ const MessageOptions: Component<{
         class: 'delete-btn',
         schema: 'red',
         icon: Trash,
+        disabled: !!props.ctx.waiting,
       },
 
       'gen-image': {
@@ -1082,9 +1084,16 @@ const MessageOption: Component<{
     <Show when={props.show && show()}>
       <Portal mount={document.querySelector(`#${props.outer ? 'outer' : 'inner'}-${props.id}`)!}>
         <Show when={props.outer}>
-          <div class={`icon-button ${props.class || ''}`} onClick={props.onClick}>
+          <button
+            class={`icon-button ${props.class || ''}`}
+            disabled={props.disabled}
+            onClick={(ev) => {
+              ev.preventDefault()
+              props.onClick()
+            }}
+          >
             {props.children}
-          </div>
+          </button>
         </Show>
 
         <Show when={!props.outer}>

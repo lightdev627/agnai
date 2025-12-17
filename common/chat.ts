@@ -1,3 +1,4 @@
+import { debug } from './debug'
 import { AppSchema } from './types'
 
 type Created = { _id: string; createdAt: string }
@@ -7,41 +8,67 @@ export type ChatTree = Record<string, ChatNode>
 export type ChatNode = {
   depth: number
   msg: AppSchema.ChatMessage
-  children: Set<string>
+  children: Record<string, true>
 }
 
 export type ChatDepths = Record<number, string[]>
 
 export function toChatGraph(messages: AppSchema.ChatMessage[]): { tree: ChatTree; root: string } {
+  const log = debug('build-graph')
   const tree: ChatTree = {}
 
   const seenMsgs: Record<string, boolean> = {}
 
+  // Initial child-less tree
+  for (const msg of messages) {
+    tree[msg._id] = { msg, depth: -1, children: {} }
+  }
+
+  // Populate the depths and descendants
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
-    if (seenMsgs[msg._id]) continue
+    if (seenMsgs[msg._id]) {
+      log(`seen: %s`, msg._id)
+      continue
+    }
     seenMsgs[msg._id] = true
 
     const parent = messages[i - 1]
-    if (!msg.parent && parent) {
-      msg.parent = parent._id
-    }
 
-    tree[msg._id] = {
-      depth: getMessageDepth(tree, msg.parent || '') + 1,
-      msg,
-      children: new Set(),
-    }
-  }
-
-  for (const { msg } of Object.values(tree)) {
     if (!msg.parent) {
-      continue
+      if (parent) {
+        log('modified parent of %s', msg._id.slice(0, 4))
+        msg.parent = parent._id
+      } else {
+        log('root? %s', msg._id.slice(0, 4))
+      }
     }
-    const parent = tree[msg.parent]
-    if (!parent) continue
-    parent.children.add(msg._id)
+
+    tree[msg._id].depth = getMessageDepth(tree, msg.parent || '') + 1
+    if (msg.parent) {
+      const base = `${msg.parent.slice(0, 4)} <-- ${msg._id.slice(0, 4)}`
+      const ancestor = tree[msg.parent]
+
+      if (ancestor) {
+        log(base)
+        ancestor.children[msg._id] = true
+      } else {
+        log('%s: ancestor not found', base)
+      }
+    }
   }
+
+  // for (const { msg } of Object.values(tree)) {
+  //   if (!msg.parent) {
+  //     log(`root? %s`, msg._id.slice(0, 4))
+  //     continue
+  //   }
+
+  //   const parent = tree[msg.parent]
+  //   if (!parent) continue
+  //   log('assigned to %s: %s', parent.msg._id.slice(0, 4), msg._id.slice(0, 4))
+  //   parent.children[msg._id] = true
+  // }
 
   return { tree, root: messages[0]?._id || '' }
 }
@@ -51,7 +78,7 @@ export function updateChatTreeNode(tree: ChatTree, msg: AppSchema.ChatMessage) {
 
   next[msg._id] = {
     msg,
-    children: new Set(),
+    children: {},
     depth: getMessageDepth(tree, msg.parent || '') + 1,
   }
 
@@ -59,7 +86,7 @@ export function updateChatTreeNode(tree: ChatTree, msg: AppSchema.ChatMessage) {
     if (!msg.parent) continue
     const parent = tree[msg.parent]
     if (!parent) continue
-    parent.children.add(msg._id)
+    parent.children[msg._id] = true
   }
 
   return next
@@ -74,10 +101,10 @@ export function removeChatTreeNodes(tree: ChatTree, ids: string[]) {
 
     const parent = node.msg.parent ? next[node.msg.parent] : null
     if (parent) {
-      parent.children.delete(id)
+      delete parent.children[id]
 
-      for (const childId of node.children) {
-        parent.children.add(childId)
+      for (const childId in node.children) {
+        parent.children[childId] = true
 
         const child = next[childId]
         if (!child) continue
@@ -150,7 +177,7 @@ export function getPathOptions(tree: ChatTree, nodeId: string) {
       continue
     }
 
-    if (children.size > 0) {
+    if (Object.keys(children).length > 0) {
       candidates.delete(id)
       continue
     }

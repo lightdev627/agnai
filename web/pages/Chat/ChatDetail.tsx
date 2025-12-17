@@ -49,6 +49,7 @@ import { usePresetContext } from '/web/store/preset-context'
 import { SendFunc } from './components/InputBar'
 import { MessageVisibility } from './components/Visibility'
 import { PendingMessages } from './components/Pending'
+import { debug } from '/common/debug'
 
 export { ChatDetail as default }
 
@@ -207,19 +208,28 @@ const ChatDetail: Component = () => {
 
   createEffect(
     on(
-      () => params.id,
+      () => [params.id, ctx.appReady],
       () => {
+        if (!ctx.appReady) return
         if (!params.id) {
           if (!chats.lastId) return nav('/character/list')
           return nav(`/chat/${chats.lastId}`)
         }
 
         if (params.id !== chats.lastId) {
-          presetSet.loadChatId(params.id)
           presetStore.getTemplates(true)
+          const listChat = chats.listChat
+
+          if (listChat) {
+            debug('chat-detail')('loading preset early')
+            presetSet.loadChat(listChat)
+          }
+
           chatStore.openChat(params.id, {
             onDone: async (success, chat) => {
               if (success && chat) {
+                debug('chat-detail')('loading preset late')
+                presetSet.loadChat(chat)
                 return
               }
 
@@ -416,6 +426,7 @@ const ChatDetail: Component = () => {
   return (
     <>
       <ChatMenu ctx={ctx} isOwner={isOwner()} />
+      <Show when={!ctx.appReady}>Agnaistic loading...</Show>
       <ModeDetail
         footer={
           <ChatFooter
@@ -507,73 +518,6 @@ const ChatDetail: Component = () => {
               isPaneOpen={pane.showing()}
               handle={ctx.impersonate?.name || ctx.profile?.handle || 'You'}
             />
-
-            {/* <Show when={waitingMsg()?.input}>
-              <Message
-                index={-1}
-                messageId={waitingMsg()!.input!._id}
-                content={waitingMsg()!.input!.msg}
-                editing={chats.opts.editing}
-                last={-1 === indexOfLastRPMessage()}
-                onRemove={() => setRemoveId(waitingMsg()!.input!._id)}
-                swipe={
-                  waitingMsg()!.input!._id === retries()?.msgId &&
-                  swipe() > 0 &&
-                  retries()?.list[swipe()]
-                }
-                confirmSwipe={() => confirmSwipe(waitingMsg()!.input!._id)}
-                cancelSwipe={cancelSwipe}
-                discardSwipe={() => discardSwipe(waitingMsg()!.input!._id, swipe())}
-                tts={tts()}
-                retrying={msgs.retrying}
-                characterId={waitingMsg()!.input!.characterId}
-                userId={waitingMsg()!.input!.userId}
-                sendMessage={sendMessage}
-                isPaneOpen={pane.showing()}
-                textBeforeGenMore={msgs.textBeforeGenMore}
-                preset={_}
-                canUseAttachments={presetSet.context.attachments}
-                voice={
-                  waitingMsg()!.input!._id === msgs.speaking?.messageId
-                    ? msgs.speaking.status
-                    : undefined
-                }
-              ></Message>
-            </Show>
-
-            <Show when={waitingMsg()?.response}>
-              <Message
-                index={-1}
-                messageId={waitingMsg()!.response!._id}
-                content={waitingMsg()!.response!.msg}
-                editing={chats.opts.editing}
-                last={-1 === indexOfLastRPMessage()}
-                onRemove={() => setRemoveId(waitingMsg()!.response!._id)}
-                swipe={
-                  waitingMsg()!.response!._id === retries()?.msgId &&
-                  swipe() > 0 &&
-                  retries()?.list[swipe()]
-                }
-                confirmSwipe={() => confirmSwipe(waitingMsg()!.response!._id)}
-                cancelSwipe={cancelSwipe}
-                discardSwipe={() => discardSwipe(waitingMsg()!.response!._id, swipe())}
-                tts={tts()}
-                retrying={msgs.retrying}
-                partial={msgs.partial}
-                characterId={waitingMsg()!.response!.characterId}
-                userId={waitingMsg()!.response!.userId}
-                sendMessage={sendMessage}
-                isPaneOpen={pane.showing()}
-                textBeforeGenMore={msgs.textBeforeGenMore}
-                preset={_}
-                canUseAttachments={presetSet.context.attachments}
-                voice={
-                  waitingMsg()!.response!._id === msgs.speaking?.messageId
-                    ? msgs.speaking.status
-                    : undefined
-                }
-              ></Message>
-            </Show> */}
           </div>
         </section>
       </ModeDetail>

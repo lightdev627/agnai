@@ -36,6 +36,7 @@ import { toastStore } from '../toasts'
 import { lazyPromise } from '/common/util'
 import type { ResponseState } from '../response'
 import { EVENTS, events } from '/web/emitter'
+import { debug } from '/common/debug'
 
 iconv.enableStreamingAPI(require('stream'))
 
@@ -93,7 +94,7 @@ async function streamResponse(opts: StreamOpts, onTick?: TickHandler) {
     )
   }
 
-  if (assembled.linesAddedCount === 0 && req.props.messages.length) {
+  if (assembled.linesAddedCount === 0 && req.prompt.lines.length) {
     return localApi.error(
       `Could not fit any messages in prompt. Check your character definition, context size, and template`
     )
@@ -632,6 +633,12 @@ async function getGenerateProps(opts: GenerateOpts, active: ChatDetail): Promise
     }
 
     if (id.startsWith('temp-')) return entities.chat.tempCharacters?.[id]!
+
+    const { chatChars } = getStore('character').getState()
+    const fullChar = chatChars.map[id]
+    if (fullChar) return fullChar
+
+    debug('props')('full-char not found: %s', id.slice(0, 4))
     return entities.chatBots.find((ch) => ch._id === id)!
   }
 

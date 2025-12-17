@@ -15,8 +15,10 @@ import { ChatTree } from '/common/chat'
 import { PresetStateProvider } from './preset-context'
 import { pageStore } from './page'
 import { ResponseState, responseStore } from './response'
+import { imageStore } from './images'
 
 export type ContextState = {
+  appReady: boolean
   tooltip?: string | JSX.Element
   anonymize: boolean
 
@@ -57,7 +59,9 @@ export type ContextState = {
   chatTree: ChatTree
   msgDeleting?: boolean
   waiting?: ResponseState['waiting']
+  imgPrompt?: ResponseState['imgWaiting']
   imgWaiting?: MsgState['imgWaiting']
+  imgPreview?: string
   status?: MsgState['hordeStatus']
   attachments: MsgState['attachments']
   ui: UI.UISettings
@@ -65,6 +69,7 @@ export type ContextState = {
 }
 
 const initial: ContextState = {
+  appReady: false,
   anonymize: false,
   tempMap: {},
   allBots: {},
@@ -95,6 +100,7 @@ const AppContext = createContext([initial, (next: Partial<ContextState>) => {}] 
 export function ContextProvider(props: { children: any }) {
   const [state, setState] = createStore(initial)
 
+  const image = imageStore((s) => ({ preview: s.preview, signal: s.signal }))
   const chars = characterStore((s) => ({
     chatChars: s.chatChars,
     characters: s.characters,
@@ -113,7 +119,7 @@ export function ContextProvider(props: { children: any }) {
     profile: s.profile,
     user: s.user,
   }))
-  const cfg = settingStore((s) => ({ anonymize: s.anonymize, config: s.config }))
+  const cfg = settingStore((s) => ({ anonymize: s.anonymize, config: s.config, inited: !!s.init }))
   const msgs = msgStore((s) => ({
     graph: s.graph,
     imgWaiting: s.imgWaiting,
@@ -124,6 +130,7 @@ export function ContextProvider(props: { children: any }) {
 
   const response = responseStore((s) => ({
     waiting: s.waiting,
+    imgWaiting: s.imgWaiting,
   }))
 
   const page = pageStore((s) => ({ flags: s.flags }))
@@ -189,6 +196,7 @@ export function ContextProvider(props: { children: any }) {
 
     const next: Partial<ContextState> = {
       bg: visuals(),
+      appReady: cfg.inited,
       flags: page.flags,
       anonymize: cfg.anonymize,
       config: cfg.config,
@@ -213,7 +221,9 @@ export function ContextProvider(props: { children: any }) {
       promptHistory: chats.promptHistory,
       chatTree: msgs.graph.tree,
       waiting: response.waiting,
+      imgPrompt: response.imgWaiting,
       imgWaiting: msgs.imgWaiting,
+      imgPreview: msgs.imgWaiting ? image.preview?.base64 : undefined,
       status: msgs.hordeStatus,
       attachments: msgs.attachments,
       // canUseAttachments: canAttachImage(detail?.conn, subModel()),

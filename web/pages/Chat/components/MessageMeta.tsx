@@ -8,7 +8,7 @@ import {
   onCleanup,
   Show,
 } from 'solid-js'
-import { imageStore, msgStore, promptStore, toastStore } from '../../../store'
+import { imageStore, msgStore, promptStore, responseStore, toastStore } from '../../../store'
 import Button from '/web/shared/Button'
 import { useAppContext } from '/web/store/context'
 import TextInput from '/web/shared/TextInput'
@@ -18,6 +18,7 @@ import Modal from '/web/shared/Modal'
 import { cleanPrompt } from '/common/util'
 import { AppSchema } from '/common/types'
 import { SquareArrowOutUpRight, WandSparkles } from 'lucide-solid'
+import { RelativeSpinner } from '/web/shared/Loading'
 
 export const MessageMeta: Component = () => {
   const [ctx] = useAppContext()
@@ -32,7 +33,7 @@ export const MessageMeta: Component = () => {
     const self = state.graph.tree[state.msg._id]
     if (!self) return []
 
-    return Array.from(self.children.values())
+    return Object.keys(self.children)
   })
 
   const depth = createMemo(() => {
@@ -46,44 +47,52 @@ export const MessageMeta: Component = () => {
         <Card>
           <LogProbs msg={state.msg!} />
           <table class="text-sm">
-            <Show when={state.msg!.adapter}>
+            <tbody>
               <tr>
                 <td class="pr-2">
-                  <b>Adapter</b>
+                  <b>created</b>
                 </td>
-                <td>{state.msg!.adapter}</td>
+                <td>{new Date(state.msg!.createdAt).toLocaleString()}</td>
               </tr>
-            </Show>
-            <Show when={depth() >= 0}>
-              <tr>
-                <td>
-                  <b>depth</b>
-                </td>
-                <td>#{depth() + 1}</td>
-              </tr>
-            </Show>
-            <Show when={descendants().length > 0 && ctx.flags.debug}>
-              <tr>
-                <td>
-                  <b>descendants</b>
-                </td>
-                <td>
-                  {descendants()
-                    .map((d) => d.slice(0, 4))
-                    .join(', ')}
-                </td>
-              </tr>
-            </Show>
-            <For each={Object.entries(state.msg!.meta || {}).filter(([key]) => key !== 'probs')}>
-              {([key, value]) => (
+              <Show when={state.msg!.adapter}>
                 <tr>
                   <td class="pr-2">
-                    <b>{key}</b>
+                    <b>Adapter</b>
                   </td>
-                  <td>{value as string}</td>
+                  <td>{state.msg!.adapter}</td>
                 </tr>
-              )}
-            </For>
+              </Show>
+              <Show when={depth() >= 0}>
+                <tr>
+                  <td>
+                    <b>depth</b>
+                  </td>
+                  <td>#{depth() + 1}</td>
+                </tr>
+              </Show>
+              <Show when={descendants().length > 0 && ctx.flags.debug}>
+                <tr>
+                  <td>
+                    <b>descendants</b>
+                  </td>
+                  <td>
+                    {descendants()
+                      .map((d) => d.slice(0, 4))
+                      .join(', ')}
+                  </td>
+                </tr>
+              </Show>
+              <For each={Object.entries(state.msg!.meta || {}).filter(([key]) => key !== 'probs')}>
+                {([key, value]) => (
+                  <tr>
+                    <td class="pr-2">
+                      <b>{key}</b>
+                    </td>
+                    <td>{value as string}</td>
+                  </tr>
+                )}
+              </For>
+            </tbody>
           </table>
         </Card>
 
@@ -140,14 +149,15 @@ export const MessageImagePrompt: Component<{
   }
 
   const generatePrompt = () => {
-    if (ctx.waiting?.signal) {
-      ctx.waiting.signal.abort()
+    if (ctx.imgPrompt?.signal) {
+      ctx.imgPrompt.signal.abort()
       return
     }
 
-    if (ctx.waiting) return
+    if (ctx.imgPrompt) return
 
-    msgStore.generateImagePrompt({
+    responseStore.generateImagePrompt({
+      chatId: ctx.chat?._id!,
       question: persist.imageHint,
       onSummary: (summary) => receivePrompt(summary),
       onTick: (res, state) => (state === 'partial' ? setPrompt(res) : null),
@@ -191,16 +201,17 @@ export const MessageImagePrompt: Component<{
                 size="pill"
                 schema="secondary"
                 onClick={generatePrompt}
-                disabled={ctx.waiting && !ctx.waiting.signal}
+                disabled={ctx.imgPrompt && !ctx.imgPrompt.signal}
               >
                 <Show
-                  when={ctx.waiting}
+                  when={ctx.imgPrompt}
                   fallback={
                     <>
                       <WandSparkles size={16} /> Prompt
                     </>
                   }
                 >
+                  <RelativeSpinner size={8} />
                   Interrupt
                 </Show>
               </Button>
@@ -223,8 +234,8 @@ export const MessageImagePrompt: Component<{
                 Editor
                 <SquareArrowOutUpRight size={16} />
               </div>
+              {props.children}
             </div>
-            {props.children}
           </div>
         }
         parentClass="text-sm"

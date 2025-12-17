@@ -15,6 +15,7 @@ import { msgsApi } from './data/messages'
 import { debug } from '/common/debug'
 import { EVENTS, events } from '../emitter'
 import { getScenarioEventType } from '/common/scenario'
+import { imageApi } from './data/image'
 
 export type VoiceState = 'generating' | 'playing'
 
@@ -24,14 +25,21 @@ export type ResponseState = {
 
   /** Primarily controlled in bot-gen, but can be cleared in here in specific error conditions */
   waiting?: {
+    chatId: string
     started: number
     signal?: AbortController
-    chatId: string
     mode?: GenerateOpts['kind']
     input?: string
     userId?: string
-    characterId: string
     messageId?: string
+    characterId?: string
+  }
+
+  imgWaiting?: {
+    chatId?: string
+    messageId?: string
+    started: number
+    signal?: AbortController
   }
 
   speaking?: { messageId: string; status: VoiceState }
@@ -340,6 +348,45 @@ export const responseStore = createStore<ResponseState>(
       return { speaking: undefined }
     },
 
+    async *generateImagePrompt(
+      _,
+      opts: {
+        chatId: string
+        messageId?: string
+        onSummary?: (summary: string) => void
+        onTick?: TickHandler
+        question?: string
+      }
+    ) {
+      const signal = new AbortController()
+
+      yield {
+        hordeStatus: undefined,
+        imgWaiting: {
+          chatId: opts.chatId,
+          messageId: opts.messageId,
+          started: Date.now(),
+          signal,
+        },
+      }
+
+      const res = await imageApi.generateImagePrompt({
+        onTick: opts.onTick,
+        question: opts.question,
+        messageId: opts.messageId,
+        signal,
+      })
+
+      yield { imgWaiting: undefined }
+      if (res.result?.response) {
+        console.log(`Image Prompt:\n${res.result.response}`)
+        opts.onSummary?.(res.result?.response)
+        return
+      }
+
+      toastStore.error(`Image prompt failed to generate`)
+    },
+
     async *textToSpeech(
       _,
       messageId: string,
@@ -401,8 +448,9 @@ async function handlePreSend(opts: {
   onError?: (err?: string) => void
 }) {
   const isEvent = opts.mode.startsWith('send-event:')
-  if (!isEvent && opts.mode !== 'ooc' && opts.mode !== 'send' && opts.mode !== 'send-noreply')
+  if (!isEvent && opts.mode !== 'ooc' && opts.mode !== 'send' && opts.mode !== 'send-noreply') {
     return
+  }
 
   const { impersonating } = getStore('character').getState()
   const { messageHistory, msgs } = getStore('messages').getState()
@@ -422,7 +470,7 @@ async function handlePreSend(opts: {
     text: opts.msg,
     parent: parent?._id,
     character: impersonating,
-    bot: false,
+    bot: isEvent ? true : false,
   })
 
   if (res.result) {
