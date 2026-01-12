@@ -69,7 +69,7 @@ const ChatDetail: Component = () => {
   }))
 
   const [ctx] = useAppContext()
-  const [_, presetSet] = usePresetContext()
+  const [presetCtx, presetSet] = usePresetContext()
 
   const chats = chatStore((s) => ({
     ...(ctx.active?.chat._id === params.id ? ctx.active : undefined),
@@ -386,6 +386,15 @@ const ChatDetail: Component = () => {
         ev.preventDefault()
         msgStore.createImage({})
       }
+
+      if (ev.key === 'j' || ev.key === 'KeyJ') {
+        ev.preventDefault()
+        const messageId = chatMsgs().slice(-1)[0]?._id
+
+        if (messageId) {
+          responseStore.chatQuery({ question: '', messageId })
+        }
+      }
     }
 
     document.addEventListener('keydown', keyboardShortcuts)
@@ -488,8 +497,8 @@ const ChatDetail: Component = () => {
                     sendMessage={sendMessage}
                     isPaneOpen={pane.showing()}
                     textBeforeGenMore={msgs.textBeforeGenMore}
-                    preset={_}
-                    canUseAttachments={presetSet.context.attachments}
+                    preset={presetCtx}
+                    canUseAttachments={presetCtx.attachments}
                     voice={
                       msg()._id === response.speaking?.messageId
                         ? response.speaking.status
@@ -514,7 +523,7 @@ const ChatDetail: Component = () => {
               ctx={ctx}
               userId={ctx.user?._id}
               impersonateId={ctx.impersonate?._id}
-              preset={_}
+              preset={presetCtx}
               isPaneOpen={pane.showing()}
               handle={ctx.impersonate?.name || ctx.profile?.handle || 'You'}
             />

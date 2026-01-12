@@ -2,12 +2,21 @@ import { AppSchema } from './types/schema'
 import { AIAdapter, AI_ADAPTERS, ChatAdapter, THIRDPARTY_FORMATS } from './adapters'
 import { defaultPresets, presetDefaults } from './default-preset'
 import { deepClone } from './util'
+import { Sampler, SamplerState } from './types/presets'
 
 export { defaultPresets }
 
 export type GenerationPreset = keyof typeof defaultPresets
 
 export type GenMap = { [key in keyof Omit<AppSchema.GenSettings, 'name'>]: string }
+
+export const samplerOptions: { [key in Sampler]?: SamplerState[] } = {
+  topK: ['on', 'off'],
+  topA: ['on', 'off'],
+  topP: ['on', 'off'],
+  typicalP: ['on', 'off'],
+  minP: ['on', 'off'],
+}
 
 export const presetValidator = {
   service: AI_ADAPTERS,

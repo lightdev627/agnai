@@ -50,7 +50,7 @@ export function toChatGraph(messages: AppSchema.ChatMessage[]): { tree: ChatTree
       const ancestor = tree[msg.parent]
 
       if (ancestor) {
-        log(base)
+        // log(base)
         ancestor.children[msg._id] = true
       } else {
         log('%s: ancestor not found', base)
@@ -82,11 +82,19 @@ export function updateChatTreeNode(tree: ChatTree, msg: AppSchema.ChatMessage) {
     depth: getMessageDepth(tree, msg.parent || '') + 1,
   }
 
-  for (const { msg } of Object.values(next)) {
-    if (!msg.parent) continue
-    const parent = tree[msg.parent]
+  for (const node of Object.values(next)) {
+    if (!node.msg.parent) continue
+
+    if (node.msg.parent !== msg._id) continue
+
     if (!parent) continue
-    parent.children[msg._id] = true
+
+    next[msg._id].children[node.msg._id] = true
+  }
+
+  const nextParent = next[msg.parent || '']
+  if (nextParent) {
+    nextParent.children[msg._id] = true
   }
 
   return next

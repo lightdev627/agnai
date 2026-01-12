@@ -7,8 +7,11 @@ import {
   createPromptParts,
   getLinesForPrompt,
   getTemplate,
+  InferenceState,
   JsonField,
+  JsonOutput,
   PromptLine,
+  registerTemplateLocator,
   resolveScenario,
   TickHandler,
 } from '/common/prompt'
@@ -17,7 +20,7 @@ import { countTokens, getEncoder } from '/common/tokenize'
 import { AppSchema } from '/common/types'
 import { UserEmbed } from '/common/types/memory'
 import { GenerateRequestV2 } from '/srv/adapter/type'
-import { GenerateEntities, getPromptEntities, PromptEntities } from './common'
+import { getPromptEntities, PromptEntities } from './common'
 import { embedApi } from '../embeddings'
 import { ChatDetail } from '../chat'
 import { BUILTIN_FORMATS, replaceTags } from '/common/presets/templates'
@@ -33,12 +36,21 @@ import { getProvider } from '../preset-context'
 import { getLocalPayload, getStoppingStrings } from '/common/requests/payloads'
 import { sanitiseAndTrim } from '/common/requests/util'
 import { toastStore } from '../toasts'
-import { lazyPromise } from '/common/util'
+import { inline, LazyPromise, lazyPromise } from '/common/util'
 import type { ResponseState } from '../response'
 import { EVENTS, events } from '/web/emitter'
 import { debug } from '/common/debug'
+import { formatJsonSchemaVars, prepareJsonSchema } from '/common/guidance/json-schema'
+import { getJsonSchema } from '/web/shared/util'
+import { ResponseSchema } from '/common/types/library'
 
 iconv.enableStreamingAPI(require('stream'))
+
+registerTemplateLocator((id: string) => {
+  const list = getStore('presets').getState().templates
+  const match = list.find((t) => t._id === id)
+  return match
+})
 
 export const botGen = {
   stream: streamResponse,
@@ -72,13 +84,21 @@ export type GenerateOpts = { signal: AbortController; hint?: string } & /**
    */
   | { kind: 'self' }
   | { kind: 'summary' }
-  | { kind: 'chat-query'; text: string; schema?: JsonField[] }
+  | {
+      kind: 'chat-query'
+      messageId?: string
+      text: string
+      assistant?: string
+      schema?: JsonField[]
+    }
 )
 
 type ChatRequest = Awaited<ReturnType<typeof buildChatRequest>>
-type StreamOpts = Exclude<GenerateOpts, { type: 'ooc' | 'send-noreply' | 'send-event:ooc' }>
+type StreamOpts = Exclude<GenerateOpts, { type: 'ooc' | 'send-noreply' | 'send-event:ooc' }> & {
+  onTick?: TickHandler
+}
 
-async function streamResponse(opts: StreamOpts, onTick?: TickHandler) {
+async function streamResponse(opts: StreamOpts) {
   const { details, lastChatId } = getStore('chat').getState()
   const active = details[lastChatId]
   if (!active) {
@@ -87,6 +107,15 @@ async function streamResponse(opts: StreamOpts, onTick?: TickHandler) {
 
   const req = await buildChatRequest(opts)
   const { messages, assembled } = await toChatMessages(req.request, countTokens)
+
+  if (opts.kind === 'chat-query') {
+    const assistant = opts.assistant || 'Chat Query'
+
+    messages.push({
+      role: 'user',
+      content: `${assistant}: ${opts.text}`,
+    })
+  }
 
   if (assembled.sections.warnings.noHistory) {
     return localApi.error(
@@ -125,7 +154,7 @@ async function streamResponse(opts: StreamOpts, onTick?: TickHandler) {
   }
 
   const stops = getStoppingStrings(req.request, req.entities.settings)
-  const santitize = (text: string) =>
+  const sanitize = (text: string) =>
     sanitiseAndTrim({
       char: req.props.replyAs,
       members: req.entities.members,
@@ -155,74 +184,212 @@ async function streamResponse(opts: StreamOpts, onTick?: TickHandler) {
 
   localEmit({ type: 'service-prompt', id: messageId, prompt: JSON.stringify(messages, null, 2) })
 
+  const jsonSchema =
+    opts.kind === 'chat-query' || req.entities.settings.jsonEnabled === 'standard'
+      ? req.schema?.schema
+      : undefined
+
   await genApi.inferenceStream(
     {
       settings: req.request.settings,
-      jsonSchema: req.request.jsonSchema,
+      jsonSchema,
       messages: messages,
       prompt: assembled.prompt,
       payload,
       signal: opts.signal,
       stop: stops,
       chatId: req.request.chat._id,
-      // TODO: Re-enable multiplayer streaming
-      // broadcast: {
-      //   type: 'chat',
-      //   id: active.chat._id,
-      //   payload: {
-      //     messageId: out.request.requestId,
-      //     characterId: out.request.replyAs._id,
-      //     chatId: active.chat._id,
-      //   },
-      // },
     },
     async (response, state, json) => {
-      switch (state) {
-        case 'error':
-          lazy.reject(response)
-          toastStore.error(response)
-          waiting(undefined)
-          break
-
-        case 'meta':
-          Object.assign(meta, json)
-          break
-
-        case 'headers': {
-          lazy.resolve({
-            generating: true,
-            input: opts.kind === 'send' ? opts.text : undefined,
-            requestId: req.request.requestId,
-          })
-          break
-        }
-
-        case 'partial': {
-          const trimmed = santitize(prefix + response)
-          if (req.request.settings?.streamResponse) {
-            localEmit({
-              type: 'message-partial',
-              chatId: active.chat._id,
-              partial: trimmed,
-              partialId: req.request.requestId,
-            })
-          }
-          break
-        }
-
-        case 'done': {
-          const trimmed = santitize(prefix + response)
-          await handlePostStreamResponse(opts, req, trimmed, meta)
-          waiting(undefined)
-          break
-        }
-      }
-
-      onTick?.(response, state, json)
+      await handleStreamTick(
+        { opts, req, lazy, meta, active, sanitize, jsonCall: !!jsonSchema },
+        { response, state, json }
+      )
     }
   )
 
+  /** In development: Performing JSON output in a separate call if specified by the schema */
+
+  if (
+    opts.kind !== 'chat-query' &&
+    req.entities.settings.jsonEnabled === 'separate' &&
+    req.schema
+  ) {
+    await genApi.inferenceStream(
+      {
+        settings: req.entities.presets.json || req.request.settings,
+        jsonSchema: req.schema.schema,
+        messages: messages,
+        prompt: assembled.prompt,
+        payload,
+        signal: opts.signal,
+        stop: stops,
+        chatId: req.request.chat._id,
+      },
+      async (response, state, json) => {
+        await handleSecondaryStreamTick(
+          { opts, req, lazy, meta, active, sanitize, jsonCall: true },
+          { response, state, json }
+        )
+      }
+    )
+  }
+
+  waiting(undefined)
   return lazy.promise
+}
+
+async function handleStreamTick(
+  input: {
+    opts: StreamOpts
+    req: ChatRequest
+    lazy: LazyPromise
+    meta: any
+    active: { chat: AppSchema.Chat }
+    sanitize: (text: string) => string
+    jsonCall?: boolean
+  },
+  tick: { state: InferenceState; response: string; json?: JsonOutput }
+) {
+  const { opts, req, active, sanitize } = input
+
+  let prefix = input.req.request.continuing?.msg || ''
+  if (prefix) {
+    prefix += ' '
+  }
+
+  switch (tick.state) {
+    case 'error':
+      input.lazy.reject(tick.response)
+      toastStore.error(tick.response)
+      // waiting(undefined)
+      break
+
+    case 'meta':
+      Object.assign(input.meta, tick.json)
+      break
+
+    case 'headers': {
+      input.lazy.resolve({
+        generating: true,
+        input: input.opts.kind === 'send' ? input.opts.text : undefined,
+        requestId: req.request.requestId,
+      })
+      break
+    }
+
+    case 'partial': {
+      const trimmed = sanitize(prefix + tick.response)
+      if (req.request.settings?.streamResponse) {
+        const hydrated = input.jsonCall ? req.schema?.hydrator?.(trimmed) : undefined
+
+        if (hydrated) {
+          tick.json = hydrated
+        }
+
+        if (opts.kind === 'chat-query') break
+
+        localEmit({
+          type: 'message-partial',
+          chatId: active.chat._id,
+          partial: tick.json?.response || trimmed,
+          json: tick.json,
+          partialId: req.request.requestId,
+        })
+      }
+      break
+    }
+
+    case 'done': {
+      const trimmed = sanitize(prefix + tick.response)
+      const hydrated = input.jsonCall ? req.schema?.hydrator?.(trimmed) : undefined
+
+      if (hydrated) {
+        tick.json = hydrated
+        console.log(inline(tick.json))
+      }
+
+      await handlePostStreamResponse({
+        opts,
+        req,
+        response: trimmed,
+        meta: input.meta,
+        json: tick.json,
+        jsonCall: input.jsonCall,
+      })
+
+      break
+    }
+  }
+
+  opts.onTick?.(tick.response, tick.state, tick.json)
+}
+
+/** This is used exclusively by JSON structured responses */
+async function handleSecondaryStreamTick(
+  input: {
+    opts: StreamOpts
+    req: ChatRequest
+    lazy: LazyPromise
+    meta: any
+    active: { chat: AppSchema.Chat }
+    sanitize: (text: string) => string
+    jsonCall?: boolean
+  },
+  tick: { state: InferenceState; response: string; json?: JsonOutput }
+) {
+  const { req, sanitize } = input
+  const messageId = req.request.replacing?._id || req.request.requestId
+  const chatId = req.request.chat._id
+
+  let prefix = input.req.request.continuing?.msg || ''
+  if (prefix) {
+    prefix += ' '
+  }
+
+  switch (tick.state) {
+    case 'error':
+      toastStore.warn(`JSON response failed: ${tick.response}`)
+      // waiting(undefined)
+      break
+
+    case 'meta':
+      Object.assign(input.meta, tick.json)
+      break
+
+    case 'headers': {
+      break
+    }
+
+    case 'partial': {
+      // const trimmed = sanitize(prefix + tick.response)
+      // const hydrated = req.schema?.hydrator?.(trimmed)
+
+      // if (hydrated) {
+      //   console.log(hydrated)
+      // }
+      break
+    }
+
+    case 'done': {
+      const trimmed = sanitize(prefix + tick.response)
+      const hydrated = input.jsonCall ? req.schema?.hydrator?.(trimmed) : undefined
+
+      if (!hydrated) break
+
+      tick.json = hydrated
+      console.log(inline(tick.json))
+      // waiting(undefined)
+
+      const update: Partial<AppSchema.ChatMessage> = { json: tick.json }
+      if (hydrated.imageCaption) {
+        update.imagePrompt = hydrated.imageCaption
+      }
+
+      await msgsApi.editMessageProps({ _id: messageId, chatId }, update)
+      break
+    }
+  }
 }
 
 async function handlePreStreamResponse(opts: StreamOpts, req: ChatRequest) {
@@ -230,12 +397,16 @@ async function handlePreStreamResponse(opts: StreamOpts, req: ChatRequest) {
   if (opts.messageId) return { messageId: opts.messageId }
 }
 
-async function handlePostStreamResponse(
-  opts: StreamOpts,
-  req: ChatRequest,
-  response: string,
+async function handlePostStreamResponse(input: {
+  opts: StreamOpts
+  req: ChatRequest
+  response: string
   meta: any
-) {
+  json?: JsonOutput
+  jsonCall?: boolean
+}) {
+  const { req, opts, response, json, meta } = input
+
   const { replacing, parent, replyAs, continuing } = req.request
   const messageId = replacing?._id || req.request.requestId
   const chatId = req.request.chat._id
@@ -253,6 +424,7 @@ async function handlePostStreamResponse(
       const retries = [replacing.msg].concat(replacing.retries || [])
       const payload: Partial<AppSchema.ChatMessage> = {
         msg: response,
+        json,
         retries,
         state: 'retried',
         meta,
@@ -275,7 +447,18 @@ async function handlePostStreamResponse(
       return
     }
 
-    case 'chat-query':
+    case 'chat-query': {
+      if (!opts.messageId || !input.json) return
+
+      const update: Partial<AppSchema.ChatMessage> = { json: input.json }
+      if (input.json.imageCaption) {
+        update.imagePrompt = input.json.imageCaption
+      }
+
+      await msgsApi.editMessageProps({ _id: opts.messageId, chatId }, update)
+      return
+    }
+
     case 'ooc':
     case 'send-event:ooc':
     case 'send-noreply':
@@ -293,6 +476,10 @@ async function handlePostStreamResponse(
     }
   }
 
+  if (input.jsonCall) {
+    await msgsApi.editMessageProps({ _id: messageId, chatId }, { json })
+  }
+
   req.request.response = response
 
   await msgsApi.createMessage({
@@ -304,10 +491,10 @@ async function handlePostStreamResponse(
     character: replyAs,
     bot: true,
     meta,
+    json,
   })
 
   getStore('responses').setState({
-    waiting: undefined,
     retrying: undefined,
     partial: undefined,
     partialId: undefined,
@@ -321,9 +508,8 @@ async function buildChatRequest(opts: GenerateOpts) {
     throw new Error(activePrompt.err.message || activePrompt.err)
   }
 
-  const { prompt, props, entities, chatEmbeds, userEmbeds } = activePrompt
+  const { prompt, props, entities, chatEmbeds, userEmbeds, schema } = activePrompt
 
-  const jsonSchema = opts.kind === 'chat-query' ? opts.schema : undefined
   const request: GenerateRequestV2 = {
     requestId: v4(),
     kind: opts.kind,
@@ -351,13 +537,13 @@ async function buildChatRequest(opts: GenerateOpts) {
     impersonate: removeAvatar(props.impersonate),
     characters: removeAvatars(entities.characters),
     parent: props.parent?._id,
-    lastMessage: entities.lastMessage?.date,
-    jsonSchema,
+    lastMessage: props.lastMessage?.date,
     chatEmbeds,
     userEmbeds,
     jsonValues: props.json,
     reschemaPrompt: props.reschemaPrompt,
     eventStream: true,
+    jsonSchema: schema?.schema,
   }
 
   const stops = getStoppingStrings(request, request.settings)
@@ -374,7 +560,7 @@ async function buildChatRequest(opts: GenerateOpts) {
     request.attachments = entities.attachments
   }
 
-  return { request, prompt, entities, activePrompt, props }
+  return { request, prompt, entities, activePrompt, props, schema }
 }
 
 async function getActivePromptOptions(
@@ -412,10 +598,15 @@ async function getActivePromptOptions(
     chatEmbeds: [],
     settings: entities.settings,
     messages: entities.messages,
-    lastMessage: entities.lastMessage?.date || '',
+    lastMessage: props.lastMessage?.date || '',
     resolvedScenario,
     jsonValues: props.json,
   }
+
+  const schemaSrc =
+    entities.settings.jsonSource === 'character' ? props.replyAs.json : entities.settings.json
+
+  const schema = schemaSrc?.schema?.length ? formatJsonSchemaVars(schemaSrc, promptOpts) : undefined
 
   const { lines } = await getLinesForPrompt(promptOpts, encoder)
   const parts = await buildPromptPlaceholders(promptOpts, lines, encoder)
@@ -424,7 +615,7 @@ async function getActivePromptOptions(
     hint: promptState.hintsEnabled ? promptState.hint : '',
   }
 
-  return { lines, parts, entities, props }
+  return { lines, parts, entities, props, schema }
 }
 
 type EventKind =
@@ -438,7 +629,6 @@ async function createActiveChatPrompt(opts: GenerateOpts) {
   const active = details[lastChatId]
 
   const { ui } = getStore('user').getState()
-  const { templates } = getStore('presets').getState()
 
   if (!active) {
     throw new Error('No active chat. Try refreshing')
@@ -446,7 +636,10 @@ async function createActiveChatPrompt(opts: GenerateOpts) {
 
   const props = await getGenerateProps(opts, active)
   const entities = props.entities
-  const template = getTemplate({ settings: entities.settings, chat: entities.chat }, templates)
+  const template = getTemplate({
+    settings: opts.kind === 'chat-query' ? entities.presets.json : entities.settings,
+    chat: entities.chat,
+  })
 
   const resolvedScenario = resolveScenario(entities.chat, entities.char, entities.scenarios || [])
 
@@ -462,6 +655,45 @@ async function createActiveChatPrompt(opts: GenerateOpts) {
       : entities.lastMessage?.msg
 
   const encoder = await getEncoder()
+
+  const presetDefs = getJsonSchema({
+    characterId: props.replacing?.characterId,
+    preset: entities.presets.current,
+  })
+
+  const realDefs: ResponseSchema | undefined =
+    opts.kind === 'chat-query' && opts.schema?.length
+      ? { schema: opts.schema, history: '', response: '', imageCaption: '' }
+      : presetDefs?.schema
+
+  debug('request')(
+    `json source: %s (exists: %s)`,
+    presetDefs?.source,
+    (!!presetDefs?.schema).toString()
+  )
+
+  const jsonEnabled =
+    entities.settings.jsonEnabled === true ||
+    entities.settings.jsonEnabled === 'standard' ||
+    entities.settings.jsonEnabled === 'separate'
+  const schemaEnabled = opts.kind === 'chat-query' || jsonEnabled
+  const includeResponse =
+    opts.kind !== 'chat-query' &&
+    (entities.settings.jsonEnabled === 'standard' || entities.settings.jsonEnabled === true)
+
+  const schema =
+    realDefs && schemaEnabled
+      ? prepareJsonSchema(
+          realDefs,
+          {
+            char: props.replyAs.name,
+            impersonate: props.impersonate?.name,
+            sender: entities.profile.handle,
+          },
+          includeResponse
+        )
+      : undefined
+
   const prompt = await createPromptParts(
     {
       kind: opts.kind,
@@ -489,6 +721,7 @@ async function createActiveChatPrompt(opts: GenerateOpts) {
       jsonValues: props.json,
       contextBuffer: entities.settings.maxTokens,
       props: entities.props,
+      schema: schema?.schema,
     },
     encoder
   )
@@ -518,11 +751,18 @@ async function createActiveChatPrompt(opts: GenerateOpts) {
     }
   }
 
-  if (opts.kind === 'chat-query') {
-    prompt.lines.push({ msg: `Chat Query: ${opts.text}`, role: 'user', _id: '' })
-  }
+  // if (opts.kind === 'chat-query') {
+  //   const assistant = opts.assistant || 'Chat Query'
 
-  return { prompt, props, entities, chatEmbeds, userEmbeds, template }
+  //   prompt.lines.push({
+  //     msg: `${assistant}: ${opts.text}`,
+  //     role: 'user',
+  //     _id: '',
+  //     json: {},
+  //   })
+  // }
+
+  return { prompt, props, entities, chatEmbeds, userEmbeds, template, schema }
 }
 
 async function getRetrievalBreakpoint(
@@ -567,9 +807,9 @@ export type GenerateProps = {
   retry?: AppSchema.ChatMessage
   continuing?: AppSchema.ChatMessage
   replacing?: AppSchema.ChatMessage
-  lastMessage?: AppSchema.ChatMessage
-  entities: GenerateEntities
+  entities: PromptEntities
   replyAs: AppSchema.Character
+  lastMessage?: NonNullable<PromptEntities['lastMessage']>
   messages: AppSchema.ChatMessage[]
   continue?: string
   impersonate?: AppSchema.Character
@@ -578,7 +818,7 @@ export type GenerateProps = {
   reschemaPrompt?: string
 }
 
-async function getGenerateProps(opts: GenerateOpts, active: ChatDetail): Promise<GenerateProps> {
+async function getGenerateProps(opts: GenerateOpts, active: ChatDetail) {
   const entities = await getPromptEntities()
 
   const json = entities.messages.reduce<Record<string, any>>(
@@ -608,6 +848,10 @@ async function getGenerateProps(opts: GenerateOpts, active: ChatDetail): Promise
     impersonate: entities.impersonating,
     parent: getMessageParent(opts.kind, entities.messages),
     json,
+  }
+
+  if (opts.kind === 'chat-query' && entities.presets.json) {
+    entities.settings = entities.presets.json
   }
 
   if ('text' in opts) {

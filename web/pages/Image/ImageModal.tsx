@@ -11,12 +11,12 @@ import {
   promptStore,
   toastStore,
 } from '../../store'
-import { getAssetUrl } from '../../shared/util'
+import { getAssetUrl, getJsonSchema } from '../../shared/util'
 import Button from '/web/shared/Button'
 import { useImageCache } from '/web/shared/hooks'
 import TextInput from '/web/shared/TextInput'
 import { ArrowLeft, ArrowRight, Download, SettingsIcon, Trash, WandSparkles } from 'lucide-solid'
-import { cleanPrompt } from '/common/util'
+import { cleanPrompt, hydrateTemplate } from '/common/util'
 import { RelativeSpinner } from '/web/shared/Loading'
 import { imageApi } from '/web/store/data/image'
 import { getStore } from '/web/store/create'
@@ -27,6 +27,8 @@ import { downloadImage } from '../Character/util'
 import { debug } from '/common/debug'
 import { genApi } from '/web/store/data/inference'
 import { getImagePromptEntities } from '/web/store/data/common'
+import { usePresetContext } from '/web/store/preset-context'
+import { useAppContext } from '/web/store/context'
 
 const log = debug('image-modal')
 
@@ -98,7 +100,9 @@ const ImageUrlModal: Component<{
 }
 
 const ImageCollectionModal: Component<{}> = (props) => {
-  // const [ctx] = useImageContext()
+  const [context] = useAppContext()
+  const [presets] = usePresetContext()
+
   const reel = useImageCache()
   const store = imageStore((s) => {
     return {
@@ -129,6 +133,33 @@ const ImageCollectionModal: Component<{}> = (props) => {
 
     return 'Image: 0/0'
   })
+
+  const getSchemaPrompt = () => {
+    if (!store.src?.messageId) return ''
+
+    const msg = context.chatTree[store.src?.messageId]
+    if (!msg) return
+
+    const autoDefs = getJsonSchema({
+      characterId: msg.msg.characterId,
+      preset: presets.current,
+    })
+
+    if (!autoDefs?.schema) return ''
+
+    const reply = msg.msg.characterId
+      ? context.allBots[msg.msg.characterId]?.name
+      : msg.msg.name || ''
+
+    const rendered = hydrateTemplate(autoDefs.schema, msg.msg.json?.values, {
+      replyAs: { name: reply },
+      char: { name: context.char?.name || '' },
+      impersonate: { name: context.impersonate?.name || '' },
+      sender: context.profile,
+    })
+
+    return rendered.imageCaption || ''
+  }
 
   const attachImage = () => {
     const chatId = imageSettings().chatId
@@ -167,6 +198,13 @@ const ImageCollectionModal: Component<{}> = (props) => {
         }
         if (store.src?.type === 'message') {
           const msg = getGraphMessage(store.src.messageId)
+
+          if (!msg?.imagePrompt) {
+            const schemaPrompt = getSchemaPrompt()
+            update('prompt', schemaPrompt || '')
+            return
+          }
+
           update('prompt', msg?.imagePrompt || '')
           return
         }
@@ -358,9 +396,9 @@ const PromptSettings: Component<{
     const ents = await getImagePromptEntities(props.messageId)
 
     const template = imageApi.getSummaryTemplate({
-      preset: ents.preset,
-      summaryPrompt: ents.summary,
-      question: persist.imageHint,
+      task: ents.summary,
+      generate: 'Image Caption',
+      focus: persist.imageHint,
     })
 
     await gen.send({ prompt: template, preset: ents.preset })
@@ -388,6 +426,7 @@ const PromptSettings: Component<{
     <div class="image-modal">
       <section class="flex flex-col gap-1" style={{ 'grid-area': 'options' }}>
         <Show when={props.messageId}>
+          <Show when={window.flags.debug}>{props.messageId?.slice(0, 4)}</Show>
           <TextInput
             placeholder="Caption Hint: What to focus on when generating the caption?"
             class="!text-sm"
@@ -402,8 +441,8 @@ const PromptSettings: Component<{
         </Show>
 
         <TextInput
-          parentClass="w-full !h-[80px]"
-          class="!h-[80px] !max-h-[80px] !py-1 !text-sm"
+          parentClass="w-full sm:h-[200px] h-[80px]"
+          class="h-[80px] max-h-[80px] !py-1 !text-sm sm:h-[200px] sm:max-h-[200px]"
           prelabel="Prompt"
           value={props.state.prompt}
           onChange={(ev) => props.update('prompt', ev.currentTarget.value)}

@@ -69,7 +69,8 @@ export const responseStore = createStore<ResponseState>(
       return { waiting: undefined, partial: undefined, retrying: undefined }
     },
 
-    async *retry(_, opts: { chatId: string; msgId?: string }) {
+    async *retry({ waiting }, opts: { chatId: string; msgId?: string }) {
+      if (waiting) return
       const { msgs, activeCharId } = getStore('messages').getState()
 
       if (!opts.chatId) {
@@ -90,10 +91,15 @@ export const responseStore = createStore<ResponseState>(
       yield { partial: '', retrying: replace }
 
       const res = await botGen
-        .stream({ signal, kind: 'retry', messageId: opts.msgId }, (_, state) => {
-          if (state === 'done') {
-            setter({ partial: undefined, retrying: undefined })
-          }
+        .stream({
+          signal,
+          kind: 'retry',
+          messageId: opts.msgId,
+          onTick: (_, state) => {
+            if (state === 'done') {
+              setter({ partial: undefined, retrying: undefined })
+            }
+          },
         })
         .catch((err) => ({ error: err.message, result: undefined }))
 
@@ -178,6 +184,7 @@ export const responseStore = createStore<ResponseState>(
       opts: {
         chatId: string
         msg: string
+        msgId?: string
         mode: SendModes
         onSuccess?: () => void
         onError?: (error?: string) => void
@@ -216,7 +223,7 @@ export const responseStore = createStore<ResponseState>(
         case 'self':
         case 'retry':
           res = await botGen
-            .stream({ signal, kind: opts.mode })
+            .stream({ signal, kind: opts.mode, messageId: opts.msgId })
             .catch((err) => ({ error: err.message, result: undefined }))
           break
 
@@ -273,18 +280,16 @@ export const responseStore = createStore<ResponseState>(
         ? msgState.textBeforeGenMore ?? replace.msg
         : replace.msg
       const res = await botGen
-        .stream(
-          {
-            signal,
-            kind: 'continue',
-            retry: retryLatestGenMoreOutput,
-          },
-          (_, state) => {
+        .stream({
+          signal,
+          kind: 'continue',
+          retry: retryLatestGenMoreOutput,
+          onTick: (_, state) => {
             if (state === 'done') {
               setter({ partial: undefined, retrying: undefined })
             }
-          }
-        )
+          },
+        })
         .catch((err) => ({ error: err.message, result: undefined }))
 
       if (res.error) {
@@ -304,7 +309,11 @@ export const responseStore = createStore<ResponseState>(
       responseStore.send({ chatId: activeChatId, msg: '', mode: 'self' })
     },
 
-    async *chatQuery({ waiting }, message: string, onTick: TickHandler) {
+    async *chatQuery(
+      { waiting },
+      opts: { assistant?: string; question: string; fields?: JsonField[]; messageId?: string },
+      onTick?: TickHandler
+    ) {
       if (waiting) return
       const { activeChatId } = getStore('messages').getState()
 
@@ -316,7 +325,15 @@ export const responseStore = createStore<ResponseState>(
       const signal = new AbortController()
 
       const res = await botGen
-        .stream({ signal, kind: 'chat-query', text: message }, onTick)
+        .stream({
+          signal,
+          kind: 'chat-query',
+          text: opts.question || 'Details from the above conversation',
+          assistant: opts.assistant,
+          schema: opts.fields,
+          onTick,
+          messageId: opts.messageId,
+        })
         .catch((err) => ({ error: err.message, result: undefined }))
 
       if (res.error) {
@@ -335,7 +352,7 @@ export const responseStore = createStore<ResponseState>(
 
       const signal = new AbortController()
       const res = await botGen
-        .stream({ signal, kind: 'chat-query', text: message, schema }, onTick)
+        .stream({ signal, kind: 'chat-query', text: message, schema, onTick })
         .catch((err) => ({ error: err.message, result: undefined }))
 
       if (res.error) {
@@ -618,5 +635,15 @@ subscribe(
 )
 
 events.on(EVENTS.setWaiting, (next) => {
+  if (next === undefined) {
+    responseStore.setState({
+      waiting: next,
+      retrying: undefined,
+      partial: undefined,
+      partialId: undefined,
+    })
+    return
+  }
+
   responseStore.setState({ waiting: next })
 })

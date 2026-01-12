@@ -2,20 +2,22 @@ import { Component, createMemo, Show } from 'solid-js'
 import TextInput from '../TextInput'
 import Select from '../Select'
 import { Toggle } from '../Toggle'
-import { chatStore } from '../../store'
+import { chatStore, userStore } from '../../store'
 import PromptEditor, { BasicPromptTemplate } from '../PromptEditor'
 import { defaultTemplate } from '/common/mode-templates'
 import { CharacterSchema } from '/web/pages/Character/CharacterSchema'
-import { ToggleButton } from '../Button'
 import { isChatPageMemo } from '../hooks'
 import { Jailbreak, ReasoningTags, JinjaTemplate, SystemPrompt } from './Fields'
 import { InlineRangeInput } from '../RangeInput'
 import { FormLabel } from '../FormLabel'
 import { PresetTabProps } from '/web/store/preset-context'
 import Accordian from '../Accordian'
+import { HelpModal } from '../Modal'
+import { HelpCircle } from 'lucide-solid'
 
 export const PromptSettings: Component<PresetTabProps> = (props) => {
-  const character = chatStore((s) => s.details[s.lastChatId]?.char)
+  const character = chatStore((s) => ({ char: s.details[s.lastChatId]?.char }))
+  const state = userStore((s) => ({ user: s.user }))
   const isChat = isChatPageMemo()
 
   const jsonCharId = createMemo(() => {
@@ -23,7 +25,7 @@ export const PromptSettings: Component<PresetTabProps> = (props) => {
     if (src !== 'character') return
     if (!isChat()) return
 
-    return character?._id
+    return character.char?._id
   })
 
   const reasonWarning = createMemo(() => {
@@ -41,36 +43,74 @@ export const PromptSettings: Component<PresetTabProps> = (props) => {
     return null
   })
 
+  const sources = createMemo(() => {
+    const base = [
+      { label: 'Source: Chat Preset', value: 'preset' },
+      { label: 'Source: Character', value: 'character' },
+    ]
+
+    if (state.user?.jsonPreset) {
+      base.unshift({ label: 'Source: JSON Preset', value: 'json-preset' })
+    }
+
+    return base
+  })
+
   return (
     <div class="flex flex-col gap-4" classList={{ hidden: props.tab !== 'Prompt' }}>
       <div class="flex flex-col items-center gap-2">
         <div class="flex w-full flex-col gap-4">
           <CharacterSchema
             characterId={jsonCharId()}
-            presetId={props.state._id}
+            preset={props.state}
             update={(schema) => {
               props.setters.setState('json', schema)
             }}
-            inherit={props.state.json}
           >
             <Select
               fieldName="jsonSource"
-              items={[
-                { label: 'Source: Preset', value: 'preset' },
-                { label: 'Source: Character', value: 'character' },
-              ]}
+              items={sources()}
               value={props.state.jsonSource}
               onChange={(ev) => props.setters.setState('jsonSource', ev.value as any)}
             />
-            <ToggleButton
-              fieldName="jsonEnabled"
-              value={props.state.jsonEnabled}
-              onChange={(ev) => props.setters.setState('jsonEnabled', ev)}
-            >
-              <Show when={props.state.json} fallback="Disabled">
-                <span class="text-900">Enabled</span>
-              </Show>
-            </ToggleButton>
+
+            <Select
+              label=""
+              value={
+                typeof props.state.jsonEnabled === 'string'
+                  ? props.state.jsonEnabled
+                  : props.state.jsonEnabled
+                  ? 'standard'
+                  : 'off'
+              }
+              items={[
+                { value: 'off', label: 'Disabled' },
+                { value: 'standard', label: 'Single Request' },
+                { value: 'separate', label: 'Separate Request' },
+              ]}
+              onChange={(ev) => props.setters.setState('jsonEnabled', ev.value as any)}
+            />
+
+            <HelpModal cta={<HelpCircle />}>
+              <div>
+                <span class="font-bold text-[var(--hl-500)]">Standard Request</span>
+                <br />
+                <span>
+                  The character's response and the JSON output are generated in a single request.
+                </span>
+              </div>
+
+              <div class="mt-2">
+                <span class="font-bold text-[var(--hl-500)]">Separate Request</span>
+                <br />
+                <span>
+                  The character's response and the JSON output are generated using seperate
+                  requests.
+                  <br />
+                  This can increase the quality of both outputs, but can be more expensive.
+                </span>
+              </div>
+            </HelpModal>
           </CharacterSchema>
           <div class="flex gap-2"></div>
 
@@ -174,9 +214,9 @@ export const PromptSettings: Component<PresetTabProps> = (props) => {
             fieldName="gaslight"
             value={props.state.gaslight!}
             state={props.state}
-            onChange={(ev) =>
+            onChange={(ev) => {
               props.setters.setState({ promptTemplateId: ev.templateId, gaslight: ev.prompt })
-            }
+            }}
             placeholder={defaultTemplate}
             disabled={props.state.disabled}
             showHelp

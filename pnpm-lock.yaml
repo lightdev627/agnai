@@ -129,7 +129,7 @@ importers:
         specifier: ^13.0.3
         version: 13.0.3
       stripe:
-        specifier: ^13.7.0
+        specifier: ^13.11.0
         version: 13.11.0
       supports-color:
         specifier: ^10.2.0
@@ -10431,7 +10431,7 @@ snapshots:
 
   stripe@13.11.0:
     dependencies:
-      '@types/node': 18.19.80
+      '@types/node': 20.19.2
       qs: 6.14.0
 
   strnum@1.1.2: {}

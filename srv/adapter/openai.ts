@@ -14,6 +14,7 @@ import { OPENAI_MODELS } from '/common/presets/openai'
 import { streamGenerator } from '/common/requests/stream'
 import { getStoppingStrings, toImageJinjaTemplate } from '/common/requests/payloads'
 import { JsonField } from '/common/prompt'
+import { adjustMessageFormatting } from './util'
 
 type CompletionContent<T = {}> = Array<
   {
@@ -42,6 +43,7 @@ const REASONING_MODELS: Record<string, boolean> = {
   'gpt-5-mini-2025-08-07': true,
   'gpt-5-nano': true,
   'gpt-5-nano-2025-08-07': true,
+  'gpt-5.1-chat-latest': true,
   o1: true,
   'o1-2024-12-17': true,
   o3: true,
@@ -80,11 +82,12 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     temperature: gen.temp ?? defaultPresets.openai.temp,
     max_tokens: maxResponseLength,
     // max_completion_tokens: maxResponseLength,
+    // max_response_tokens: maxResponseLength,
     top_p: gen.topP ?? 1,
     stop: stops,
   }
 
-  if (REASONING_MODELS[oaiModel]) {
+  if (REASONING_MODELS[oaiModel] || opts.conn.provider?.subFormat === 'reasoning') {
     body.max_completion_tokens = maxResponseLength
     delete body.max_tokens
     delete body.stop
@@ -112,11 +115,15 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     }
   }
 
-  if (gen.jsonEnabled && opts.jsonSchema) {
-    const responseField = `${opts.replyAs?.name || opts.char?.name}'s response`
-    const base = {
-      [responseField]: { type: 'string' },
+  if (opts.jsonSchema) {
+    const base: any = {}
+
+    const responseName = opts.replyAs?.name || opts.char?.name
+    if (responseName) {
+      const field = `${responseName}'s response`
+      base[field] = { type: 'string' }
     }
+
     const fields = opts.jsonSchema.reduce((prev: any, field: JsonField) => {
       const { disabled, name, type, ...rest } = field
       prev[field.name] = {
@@ -133,10 +140,11 @@ export const handleOAI: ModelAdapter = async function* (opts) {
       type: 'json_schema',
       json_schema: {
         name: 'response',
-        type: 'object',
-        strict: true,
+        // type: 'object',
+        // strict: true,
         schema: {
           strict: true,
+          type: 'object',
           properties: fields,
           required,
           additionalProperties: false,
@@ -150,7 +158,9 @@ export const handleOAI: ModelAdapter = async function* (opts) {
   }
 
   const isChatFormat =
-    gen.thirdPartyFormat === 'openai-chat' || gen.thirdPartyFormat == 'openai-chatv2'
+    gen.thirdPartyFormat === 'openai-chat' ||
+    gen.thirdPartyFormat == 'openai-chatv2' ||
+    gen.thirdPartyFormat === 'lm-studio'
   const useChat = (isThirdParty && isChatFormat) || gen.service === 'openai'
 
   if (useChat) {
@@ -210,6 +220,10 @@ export const handleOAI: ModelAdapter = async function* (opts) {
   if (opts.conn.provider?.provider === 'known-mistral' && body.messages) {
     const merged = ensureMessagesAlternate(body.messages, { userFirst: true, userLast: true })
     body.messages = merged
+  }
+
+  if (body.messages) {
+    body.messages = adjustMessageFormatting(opts.conn, body.messages)
   }
 
   const iter = body.stream

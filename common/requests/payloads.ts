@@ -101,7 +101,7 @@ function getBasePayload(opts: MinOpts, stops: string[] = []) {
   const conn = getPresetConnection(gen, opts.user.providers)
   const format = opts.subscription?.preset?.thirdPartyFormat || conn.format
 
-  const json_schema = opts.jsonSchema && gen.jsonEnabled ? toJsonSchema(opts.jsonSchema) : undefined
+  const json_schema = opts.jsonSchema ? toJsonSchema(opts.jsonSchema) : undefined
 
   const characterNames = Object.values(opts.characters || {})
     .map((c) => c.name.split(' '))
@@ -128,6 +128,7 @@ function getBasePayload(opts: MinOpts, stops: string[] = []) {
     format === 'openai' ||
     format === 'openai-chat' ||
     format === 'openai-chatv2' ||
+    format === 'lm-studio' ||
     format === 'kobold'
   ) {
     const model = gen.thirdPartyModel || gen.oaiModel || defaultPresets.openai.oaiModel
@@ -206,7 +207,7 @@ function getBasePayload(opts: MinOpts, stops: string[] = []) {
       body.top_k = -1
     }
 
-    if (gen.jsonEnabled && opts.jsonSchema && opts.char) {
+    if (opts.jsonSchema && opts.char) {
       const char = opts.char! // TypeScript being stupid
       const schema = getJsonSchemaPayload(opts.jsonSchema, 'guided_json', { ...opts, char })
       body.guided_json = schema
@@ -665,16 +666,26 @@ type OutgoingFields = Record<
 >
 
 export function toCompatStructured(opts: MinOpts, jsonSchema: any) {
-  const responseField = `${opts.replyAs?.name || opts.char?.name}'s response`
-  const base: OutgoingFields = {
-    [responseField]: { type: 'string' },
+  const base: OutgoingFields = {}
+
+  const defaultName = opts.replyAs?.name || opts.char?.name
+  if (defaultName) {
+    const responseField = `${defaultName}'s response`
+    base[responseField] = { type: 'string' }
   }
+
   const fields: OutgoingFields = jsonSchema.reduce((prev: OutgoingFields, field: JsonField) => {
-    const { disabled, name, type, ...rest } = field
+    let { disabled, name, type, ...rest } = field
+
+    if ('maxLength' in rest) {
+      rest.maxLength = +(rest.maxLength as string)
+    }
+
     prev[field.name] = {
       type: type.type,
       ...rest,
     }
+
     return prev
   }, base)
 
@@ -686,9 +697,8 @@ export function toCompatStructured(opts: MinOpts, jsonSchema: any) {
     type: 'json_schema',
     json_schema: {
       name: 'response',
-      type: 'object',
-      strict: true,
       schema: {
+        type: 'object',
         strict: true,
         properties: fields,
         required,

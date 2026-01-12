@@ -19,6 +19,7 @@ import { cleanPrompt } from '/common/util'
 import { AppSchema } from '/common/types'
 import { SquareArrowOutUpRight, WandSparkles } from 'lucide-solid'
 import { RelativeSpinner } from '/web/shared/Loading'
+import { getMessageImagePrompt } from '/web/shared/hooks'
 
 export const MessageMeta: Component = () => {
   const [ctx] = useAppContext()
@@ -41,6 +42,26 @@ export const MessageMeta: Component = () => {
     return state.graph.tree[state.msg._id]?.depth || -1
   })
 
+  const jsonValues = createMemo(() => {
+    if (!state.msg?.json?.values) return
+    const entries = Object.entries(state.msg.json.values)
+
+    if (!entries.length) return
+
+    const list = entries.map(([field, value]) => ({ field, value: value as string }))
+    return list
+  })
+
+  createEffect(
+    on(
+      () => state.msg,
+      (msg) => {
+        if (!msg || !window.flags.debug) return
+        console.log(JSON.stringify(msg, null, 2))
+      }
+    )
+  )
+
   return (
     <Modal show={!!state.msg} close={close} title="Message Info" maxWidth="half">
       <div class="flex w-full flex-col gap-2">
@@ -48,6 +69,18 @@ export const MessageMeta: Component = () => {
           <LogProbs msg={state.msg!} />
           <table class="text-sm">
             <tbody>
+              <tr>
+                <td class="pr-2">
+                  <b>id</b>
+                </td>
+                <td>{state.msg?._id}</td>
+              </tr>
+              <tr>
+                <td class="pr-2">
+                  <b>chat</b>
+                </td>
+                <td>{state.msg?.chatId}</td>
+              </tr>
               <tr>
                 <td class="pr-2">
                   <b>created</b>
@@ -92,6 +125,25 @@ export const MessageMeta: Component = () => {
                   </tr>
                 )}
               </For>
+
+              <Show when={jsonValues()?.length}>
+                <tr>
+                  <td colspan={2}>
+                    <span class="font-bold">json output</span>
+                  </td>
+                </tr>
+
+                <For each={jsonValues()!}>
+                  {(item) => (
+                    <tr>
+                      <td colSpan={2}>
+                        <div class="font-bold">{item.field}</div>
+                        <div class="text-600 font-normal">{item.value}</div>
+                      </td>
+                    </tr>
+                  )}
+                </For>
+              </Show>
             </tbody>
           </table>
         </Card>
@@ -135,8 +187,11 @@ export const MessageImagePrompt: Component<{
     on(
       () => props.msg.imagePrompt,
       (next) => {
-        if (!next?.trim()) return
-        receivePrompt(next)
+        const imagePrompt = getMessageImagePrompt(props.msg._id)
+        if (imagePrompt?.trim()) {
+          receivePrompt(imagePrompt)
+          return
+        }
       }
     )
   )

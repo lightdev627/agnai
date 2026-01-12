@@ -42,18 +42,26 @@ export async function random<T extends keyof Chance.Chance>(kind: T, opts: Chanc
 
 export type InvokeEmitter = (...args: any[]) => void
 
-export type PartialEmitter<T extends string> = {
-  emit: { [key in T]?: InvokeEmitter }
+export type PartialEventEmitter<T extends string> = {
+  emit: PartialEmit<T>
   on: ComponentSubscriber<any>
   off: (id: string | Function) => boolean
 }
 
-export type PartialListener<T extends string> = PartialEmitter<T>['emit']
+export type PartialListener<T extends string> = PartialEventEmitter<T>['emit']
 
-export type ComponentEmitter<T extends string> = {
-  emit: { [key in T]: InvokeEmitter }
+export type ComponentEventEmitter<T extends string> = {
+  emit: ComponentEmit<T>
   on: ComponentSubscriber<T>
   off: (id: string | Function) => boolean
+}
+
+export type ComponentEmit<T extends string> = {
+  [key in T]: InvokeEmitter
+}
+
+export type PartialEmit<T extends string> = {
+  [key in T]?: InvokeEmitter
 }
 
 type UnsubFunc = () => void
@@ -127,7 +135,7 @@ export function createEmitter<T extends string>(...events: T[]) {
     emit = undefined
   })
 
-  return { emit, on, off } as ComponentEmitter<T>
+  return { emit, on, off } as ComponentEventEmitter<T>
 }
 
 async function userCacheGet<T = any>(key: string) {
@@ -960,6 +968,38 @@ export function isUsableService(
   }
 
   return false
+}
+
+export function getJsonSchema(opts: {
+  characterId?: string
+  preset: Pick<AppSchema.GenSettings, 'json' | 'jsonSource'>
+}) {
+  const { chatChars } = getStore('character').getState()
+  const { user } = getStore('user').getState()
+  const { presets } = getStore('presets').getState()
+
+  const source = opts.preset.jsonSource
+
+  switch (source) {
+    case 'character': {
+      if (!opts.characterId) return
+      const char = chatChars.map[opts.characterId]
+      return { source: 'character' as const, schema: char?.json }
+    }
+
+    case 'json-preset': {
+      if (!user?.jsonPreset) return
+      const preset = presets.find((p) => p._id === user.jsonPreset)
+
+      return { source: 'json-preset' as const, schema: preset?.json }
+    }
+
+    case 'preset':
+    case undefined:
+    default: {
+      return { source: 'preset' as const, schema: opts.preset.json }
+    }
+  }
 }
 
 export function toLocalTime(date: string) {

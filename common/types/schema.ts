@@ -141,7 +141,10 @@ export namespace AppSchema {
     defaultAdapter: AIAdapter
     defaultPresets?: { [key in AIAdapter]?: string }
     defaultPreset?: string
+
     chargenPreset?: string
+    summaryPreset?: string
+    jsonPreset?: string
 
     createdAt?: string
 
@@ -344,6 +347,7 @@ export namespace AppSchema {
     json?: {
       response: string
       history: string
+      imageCaption: string
       values: any
     }
 

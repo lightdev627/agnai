@@ -25,6 +25,7 @@ import { HordeCheck } from '/common/horde-gen'
 import type { MsgAttachment } from '/srv/adapter/type'
 import { debug } from '/common/debug'
 import { responseStore } from './response'
+import { getMessageImagePrompt } from '../shared/hooks'
 
 const SOFT_PAGE_SIZE = 20
 
@@ -256,6 +257,41 @@ export const msgStore = createStore<MsgState>(
       }
     },
 
+    async *softEditMessageParent(
+      { msgs, graph },
+      msgId: string,
+      update: Partial<AppSchema.ChatMessage>,
+      onSuccess?: Function
+    ) {
+      const prev = graph.tree[msgId]
+      if (!prev) return toastStore.error(`Cannot find message`)
+
+      const next = { ...prev.msg, ...update, voiceUrl: undefined }
+      updateGraphAndReload(msgId, next)
+      onSuccess?.()
+    },
+
+    async *editMessageParent(
+      { msgs, graph },
+      msgId: string,
+      update: Partial<AppSchema.ChatMessage>,
+      onSuccess?: Function
+    ) {
+      const prev = graph.tree[msgId]
+      if (!prev) return toastStore.error(`Cannot find message`)
+
+      const res = await msgsApi.editMessageProps(prev.msg, update)
+      if (res.result) {
+        const next = { ...prev.msg, ...update, voiceUrl: undefined }
+        updateGraphAndReload(msgId, next)
+        onSuccess?.()
+      }
+
+      if (res.error) {
+        toastStore.error(`Failed to update: ${res.error}`)
+      }
+    },
+
     async *editMessageProp(
       { msgs, graph },
       msgId: string,
@@ -473,53 +509,6 @@ export const msgStore = createStore<MsgState>(
       yield { deleting: false }
     },
 
-    // async *generateImagePrompt(
-    //   { activeChatId, activeCharId, msgs },
-    //   opts: {
-    //     messageId?: string
-    //     onSummary?: (summary: string) => void
-    //     onTick?: TickHandler
-    //     question?: string
-    //   }
-    // ) {
-    //   const messageId = opts.messageId || msgs.slice(-1)[0]._id
-
-    //   if (!messageId) {
-    //     toastStore.warn('Could not generate image prompt: Current chat has no messages')
-    //     return
-    //   }
-
-    //   const signal = new AbortController()
-
-    //   yield {
-    //     hordeStatus: undefined,
-    //     waiting: {
-    //       chatId: activeChatId,
-    //       mode: 'send',
-    //       characterId: activeCharId,
-    //       messageId,
-    //       started: Date.now(),
-    //       signal,
-    //     },
-    //   }
-
-    //   const res = await imageApi.generateImagePrompt({
-    //     onTick: opts.onTick,
-    //     question: opts.question,
-    //     messageId,
-    //     signal,
-    //   })
-
-    //   yield { waiting: undefined }
-    //   if (res.result?.response) {
-    //     console.log(`Image Prompt:\n${res.result.response}`)
-    //     opts.onSummary?.(res.result?.response)
-    //     return
-    //   }
-
-    //   toastStore.error(`Image prompt failed to generate`)
-    // },
-
     async *createImage(
       { msgs, activeChatId, activeCharId, imgWaiting },
       opts: { sourceMsgId?: string; append?: boolean; prompt?: string }
@@ -527,7 +516,8 @@ export const msgStore = createStore<MsgState>(
       if (imgWaiting) return
 
       const messageId = opts.sourceMsgId || msgs.slice(-1)[0]._id
-      const prev = messageId ? msgs.find((msg) => msg._id === messageId) : undefined
+      const messageImagePromt =
+        messageId && !opts.prompt ? getMessageImagePrompt(messageId) : undefined
 
       yield {
         hordeStatus: undefined,
@@ -544,7 +534,7 @@ export const msgStore = createStore<MsgState>(
         {
           messageId,
           chatId: activeChatId,
-          prompt: opts.prompt || prev?.imagePrompt,
+          prompt: opts.prompt || messageImagePromt,
           append: opts.append,
           source: 'summary',
         },
@@ -716,12 +706,7 @@ async function onMessageReceived(body: {
   } else {
     msgStore.setState({ msgs: nextMsgs })
     debug('waiting')('msg-received:not-user-msg or no-generate')
-    getStore('responses').setState({
-      speaking: speech?.speaking,
-      partial: undefined,
-      waiting: undefined,
-      retrying: undefined,
-    })
+    getStore('responses').setState({ speaking: speech?.speaking })
   }
 
   const chatAttachments = attachments[body.chatId]
@@ -1017,6 +1002,29 @@ export async function hydrateMessageImages(messageId: string) {
   // }
 
   // Case 2.
+}
+
+function updateGraphAndReload(messageId: string, updates: Partial<AppSchema.ChatMessage>) {
+  const { graph, msgs } = msgStore.getState()
+  const target = graph.tree[messageId]
+
+  if (!target) {
+    throw new Error(`Could not locate message in graph`)
+  }
+
+  const nextMsg = { ...target.msg, ...updates }
+  const nextGraph = updateChatTreeNode(graph.tree, nextMsg)
+
+  const leaf = msgs.slice(-1)[0]
+
+  const fullPath = resolveChatPath(nextGraph, leaf?._id)
+  const recent = fullPath.splice(-SOFT_PAGE_SIZE)
+
+  msgStore.setState({
+    graph: { tree: nextGraph, root: graph.root },
+    messageHistory: fullPath,
+    msgs: recent,
+  })
 }
 
 function updateMessageInState(messageId: string, updates: Partial<AppSchema.ChatMessage>) {

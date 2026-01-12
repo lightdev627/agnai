@@ -12,6 +12,7 @@ import { getJsonSchemaPayload } from '/common/guidance/json-schema'
 import { getStoppingStrings } from '/common/requests/payloads'
 import { modelNeedsUserRoleLast } from './chat-completion'
 import { stripImageContent } from '/common/template-messages'
+import { adjustMessageFormatting } from './util'
 
 const baseUrl = 'https://openrouter.ai/api/v1'
 const chatUrl = `${baseUrl}/chat/completions`
@@ -69,7 +70,7 @@ export const handleOpenRouter: ModelAdapter = async function* (opts) {
     payload.model = opts.gen.thirdPartyModel
   }
 
-  if (opts.gen.jsonEnabled && opts.jsonSchema) {
+  if (opts.jsonSchema) {
     payload.response_format = getJsonSchemaPayload(opts.jsonSchema, 'openai', opts)
   }
 
@@ -91,6 +92,10 @@ export const handleOpenRouter: ModelAdapter = async function* (opts) {
     payload.messages = opts.messages
   } else {
     payload.prompt = opts.prompt
+  }
+
+  if (payload.messages) {
+    payload.messages = adjustMessageFormatting(opts.conn, payload.messages)
   }
 
   yield {
