@@ -21,15 +21,14 @@ export function runPresetParsers(parsers: PresetParser[], message: string) {
     if (!parser.text?.trim()) continue
     switch (parser.type) {
       case 'remove': {
-        current = current.split(parser.text.replaceAll('\\n', '\n')).join('')
+        current = current.split(parser.text.replace(/\\n/g, '\n')).join('')
         break
       }
 
       case 'replace': {
-        current = current.replaceAll(
-          parser.text.replaceAll('\\n', '\n'),
-          (parser.to || '').replaceAll('\\n', '\n')
-        )
+        const from = parser.text.replace(/\\n/g, '\n')
+        const to = (parser.to || '').replace(/\\n/g, '\n')
+        current = current.split(from).join(to)
         break
       }
     }
