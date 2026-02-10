@@ -468,6 +468,7 @@ export const msgStore = createStore<MsgState>(
 
       msgStore.swapMessage(msgId, position, onSuccess)
     },
+
     async *deleteMessages(
       { msgs, activeChatId, graph, deleting },
       fromId: string,
@@ -490,22 +491,20 @@ export const msgStore = createStore<MsgState>(
 
       yield { deleting: true }
 
-      const changes = getParentUpdates(graph.tree, fromId, !!deleteOne)
-      const removed = new Set(changes.deletes)
+      const changes = getDeletingIds(graph.tree, fromId, !!deleteOne)
 
-      const nextMsgs = msgs.filter((msg) => !removed.has(msg._id))
+      const leaf = msgs.slice(-1)[0]
+      const leafId = leaf._id
 
-      const leaf = nextMsgs.slice(-1)[0]
-      const leafId = leaf?._id || ''
-
-      const res = await msgsApi.deleteMessages(chatId, changes.deletes, leafId, changes.parents)
+      const res = await msgsApi.deleteMessages(chatId, changes.deletes, leafId)
 
       if (res.error) {
         yield { deleting: false }
         return toastStore.error(`Failed to delete messages: ${res.error}`)
       }
 
-      updateMsgParents(activeChatId, changes.parents, changes.deletes)
+      applyGraphUpdates({ updates: res.result?.messages, deletes: changes.deletes })
+
       yield { deleting: false }
     },
 
@@ -833,6 +832,17 @@ subscribe('messages-deleted', { ids: ['string'] }, (body) => {
   })
 })
 
+subscribe(
+  'messaged-deleted-v2',
+  {
+    updates: { chat: 'any?', messages: [{ _id: 'string', parent: 'string?' }] },
+    deletes: ['string?'],
+  },
+  (body) => {
+    applyGraphUpdates({ updates: body.updates.messages, deletes: body.deletes })
+  }
+)
+
 const updateMsgSub = (body: {
   type: string
   chatId: string
@@ -1004,6 +1014,42 @@ export async function hydrateMessageImages(messageId: string) {
   // Case 2.
 }
 
+function applyGraphUpdates(params: {
+  updates?: Array<{ _id: string } & Partial<AppSchema.ChatMessage>>
+  deletes?: string[]
+}) {
+  let {
+    graph: { tree, root },
+    messageHistory,
+    msgs,
+  } = msgStore.getState()
+
+  if (params.updates) {
+    for (const { _id, ...update } of params.updates) {
+      const prev = tree[_id]
+      if (!prev) continue
+      tree = updateChatTreeNode(tree, { ...prev.msg, ...update })
+    }
+  }
+
+  for (const deleteId of params.deletes || []) {
+    const { [deleteId]: removed, ...nextTree } = tree
+    tree = nextTree
+  }
+
+  const deletes = new Set(params.deletes || [])
+  const nextMsgs = msgs.filter((m) => !deletes.has(m._id)).map((m) => ({ ...tree[m._id].msg }))
+  const nextHistory = messageHistory
+    .filter((m) => !deletes.has(m._id))
+    .map((m) => ({ ...tree[m._id].msg }))
+
+  msgStore.setState({
+    graph: { tree, root },
+    messageHistory: nextHistory,
+    msgs: nextMsgs,
+  })
+}
+
 function updateGraphAndReload(messageId: string, updates: Partial<AppSchema.ChatMessage>) {
   const { graph, msgs } = msgStore.getState()
   const target = graph.tree[messageId]
@@ -1046,42 +1092,31 @@ function updateMessageInState(messageId: string, updates: Partial<AppSchema.Chat
   }
 }
 
-function getParentUpdates(graph: ChatTree, fromId: string, deleteOne: boolean) {
-  const realDeletes: string[] = [fromId]
+function getDeletingIds(graph: ChatTree, fromId: string, deleteOne: boolean) {
   const from = graph[fromId]
-  const nextParent = from?.msg.parent || ''
 
   if (!from) {
     throw new Error(`Could not locate message to delete`)
   }
 
-  const parents: Record<string, string> = {}
-  const current: Record<string, true> = { ...from.children }
-
   if (deleteOne) {
-    for (const childId in from.children) {
-      const msg = graph[childId]
-      if (!msg) continue
-
-      parents[childId] = nextParent
-    }
+    return { deletes: [fromId] }
   }
 
-  if (!deleteOne) {
-    do {
-      const count = Object.keys(current).length
-      if (count === 0) break
+  const deletes = [fromId].concat(getChildren(graph, fromId))
 
-      for (const childId in current) {
-        realDeletes.push(childId)
-        const child = graph[childId]
-        delete current[childId]
-        if (!child) continue
+  return { deletes }
+}
 
-        Object.assign(current, { ...child.children })
-      }
-    } while (true)
+function getChildren(graph: ChatTree, nodeId: string, prev: string[] = []) {
+  const target = graph[nodeId]
+  if (!target) return prev
+
+  for (const child in target.children) {
+    prev.push(child)
+
+    getChildren(graph, child, prev)
   }
 
-  return { parents, deletes: realDeletes, leafId: nextParent }
+  return prev
 }

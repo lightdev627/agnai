@@ -300,6 +300,17 @@ async function handleStreamTick(
       break
     }
 
+    case 'thought': {
+      if (opts.kind === 'chat-query') break
+      localEmit({
+        type: 'inference-thought',
+        chatId: active.chat._id,
+        thought: tick.response,
+        partialId: req.request.requestId,
+      })
+      break
+    }
+
     case 'done': {
       const trimmed = sanitize(prefix + tick.response)
       const hydrated = input.jsonCall ? req.schema?.hydrator?.(trimmed) : undefined
@@ -497,7 +508,6 @@ async function handlePostStreamResponse(input: {
   getStore('responses').setState({
     retrying: undefined,
     partial: undefined,
-    partialId: undefined,
   })
 }
 
@@ -663,7 +673,14 @@ async function createActiveChatPrompt(opts: GenerateOpts) {
 
   const realDefs: ResponseSchema | undefined =
     opts.kind === 'chat-query' && opts.schema?.length
-      ? { schema: opts.schema, history: '', response: '', imageCaption: '' }
+      ? {
+          schema: opts.schema,
+          history: '',
+          response: '',
+          imageCaption: '',
+          systemPrompt: '',
+          jailbreak: '',
+        }
       : presetDefs?.schema
 
   debug('request')(
