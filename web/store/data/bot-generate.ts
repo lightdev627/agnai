@@ -441,7 +441,7 @@ async function handlePostStreamResponse(input: {
         meta,
       }
 
-      await msgsApi.editMessageProps(replacing, payload)
+      await msgsApi.editMessageProps(replacing, { ...payload, assignTree: true })
       return
     }
 
@@ -454,7 +454,9 @@ async function handlePostStreamResponse(input: {
         msg: response,
         state: 'continued',
         meta,
+        assignTree: true,
       })
+
       return
     }
 
