@@ -114,6 +114,11 @@ async function addMessageImage(messageId: string, cacheId: string) {
 
   const next = prev.concat(cacheId)
   await storage.setItem(`message-images-${messageId}`, JSON.stringify(next))
+  debug('image-cache')(
+    'appended %s: %s',
+    `message-images-${messageId}`.slice(0, 20) + '...',
+    cacheId
+  )
   await hydrateMessageImages(messageId)
 }
 
@@ -370,7 +375,8 @@ export const msgStore = createStore<MsgState>(
       const retries = msg.retries.slice()
       retries[position - 1] = original
 
-      const res = await msgsApi.swapMessage(msg, replacement, retries)
+      const text = replacement
+      const res = await msgsApi.swapMessage(msg, text, retries)
       if (res.error) {
         toastStore.error(`Failed to swap message: ${res.error}`)
       }
@@ -378,7 +384,7 @@ export const msgStore = createStore<MsgState>(
       if (res.result) {
         const next = msgs.map((msg) => {
           if (msgId !== msg._id) return msg
-          return { ...msg, msg: replacement, retries }
+          return { ...msg, msg: text, retries }
         })
         yield { msgs: next }
         onSuccess?.()
@@ -399,7 +405,7 @@ export const msgStore = createStore<MsgState>(
         return toastStore.error(`Cannot discard swipe: Swipe not found`)
       }
 
-      const text = position === 0 ? retries[0] : msg.msg
+      const replacement = position === 0 ? retries[0] : msg.msg
       // Remove the message at the specified position from the retries array
       if (position !== 0) {
         retries.splice(position - 1, 1)
@@ -407,6 +413,7 @@ export const msgStore = createStore<MsgState>(
         retries.splice(0, 1)
       }
 
+      const text = replacement
       const res = await msgsApi.swapMessage(msg, text, retries)
       if (res.error) {
         toastStore.error(`Failed to discard message: ${res.error}`)
@@ -510,7 +517,14 @@ export const msgStore = createStore<MsgState>(
 
     async *createImage(
       { msgs, activeChatId, activeCharId, imgWaiting },
-      opts: { sourceMsgId?: string; append?: boolean; prompt?: string }
+      opts: {
+        sourceMsgId?: string
+        append?: boolean
+        prompt?: string
+        onImage?: (image: string) => void
+        onError?: (error: string) => void
+        onPrompt?: (prompt: string) => void
+      }
     ) {
       if (imgWaiting) return
 
@@ -546,22 +560,32 @@ export const msgStore = createStore<MsgState>(
             if (!opts.prompt) {
               await msgStore.editMessageProp(messageId, { imagePrompt: summary })
             }
+
+            opts.onPrompt?.(summary)
           },
         }
       )
 
       if (res.result?.content) {
-        handleImage({
+        await handleImage({
           chatId: activeChatId,
           image: res.result.content,
           messageId,
           requestId: res.result.requestId,
         })
+
+        opts.onImage?.(res.result.content)
       }
 
       if (res.error) {
-        console.log('[wait] create-img err')
         yield { imgWaiting: undefined }
+        console.log('[wait] create-img err')
+
+        if (opts.onError) {
+          opts.onError(res.error)
+          return
+        }
+
         toastStore.error(`[Image Generation]: ${res.error}`)
       }
     },

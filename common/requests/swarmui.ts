@@ -94,7 +94,7 @@ async function generateImageWS(
 ) {
   const payload = await getPayload(req)
 
-  let url = getUrl({ host: req.settings?.swarm?.url, path: 'GenerateText2ImageWS' })
+  let url = getUrl({ host: req.provider.url, path: 'GenerateText2ImageWS' })
   url = url.replace('http://', 'ws://').replace('https://', 'wss://')
 
   const ws = new WebSocket(url)
@@ -119,7 +119,7 @@ async function generateImageWS(
 
     if (json.image) {
       done = true
-      const image = await processImage(req.settings?.swarm?.url, json.image)
+      const image = await processImage(req.provider.url, json.image)
       ws.close()
       lazy.resolve(image)
       events?.onDone?.(image)
@@ -161,22 +161,19 @@ async function generateImageWS(
 async function generateImage(req: ImageRequestOpts, events?: { signal?: AbortController }) {
   const payload = await getPayload(req)
 
-  const result = await fetch(
-    getUrl({ host: req.settings?.swarm?.url, path: 'GenerateText2Image' }),
-    {
-      signal: events?.signal?.signal,
-      method: 'post',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    }
-  ).then((res) => res.json())
+  const result = await fetch(getUrl({ host: req.provider.url, path: 'GenerateText2Image' }), {
+    signal: events?.signal?.signal,
+    method: 'post',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then((res) => res.json())
 
   if (result.error) {
     throw new Error(`SwarmUI failed: ${result.error}`)
   }
 
   const imagePath = result.images[0]
-  const image = await processImage(req.settings?.swarm?.url, imagePath)
+  const image = await processImage(req.provider.url, imagePath)
   return image
 }
 
@@ -204,7 +201,7 @@ async function processBase64(base64: string) {
 }
 
 async function getPayload(req: ImageRequestOpts) {
-  const session_id = await getSessionId(req.settings?.swarm?.url)
+  const session_id = await getSessionId(req.provider.url)
   const payload: any = {
     session_id,
     prompt: req.prompt,
@@ -213,15 +210,15 @@ async function getPayload(req: ImageRequestOpts) {
     steps: `${req.settings?.steps || 20}`,
     width: `${req.settings?.width || 1024}`,
     height: `${req.settings?.height || 1024}`,
-    model: req.settings?.swarm?.model || '',
-    sampler: req.settings?.swarm?.sampler || 'euler_ancestral',
+    model: req.provider.model || '',
+    sampler: req.provider.sampler || 'euler_ancestral',
     images: `1`,
   }
 
-  if (req.settings?.swarm?.loras) {
+  if (req.provider.loras) {
     const loras: string[] = []
     const weights: number[] = []
-    for (const lora of req.settings?.swarm?.loras) {
+    for (const lora of req.provider.loras) {
       if (!lora.id || !lora.enabled) continue
       loras.push(lora.id)
       weights.push(lora.modelStrength)
@@ -243,171 +240,3 @@ function getUrl(opts: { host?: string; path: string; getter?: boolean }) {
 
   return `${host}${prefix}${opts.path}`
 }
-
-/**
- * aspectratio
-: 
-"1:1"
-automaticvae
-: 
-true
-batchsize
-: 
-"1"
-cfgscale
-: 
-"6"
-colorcorrectionbehavior
-: 
-"None"
-colordepth
-: 
-"8bit"
-controlnetpreviewonly
-: 
-false
-debugregionalprompting
-: 
-false
-donotsave
-: 
-false
-donotsaveintermediates
-: 
-false
-easycachemode
-: 
-"disabled"
-extra_metadata
-: 
-{}
-gligenmodel
-: 
-"None"
-height
-: 
-"1024"
-images
-: 
-"1"
-internalbackendtype
-: 
-"Any"
-loras
-: 
-""
-lorasectionconfinement
-: 
-""
-loratencweights
-: 
-""
-loraweights
-: 
-""
-maskcompositeunthresholded
-: 
-false
-model
-: 
-"JANKUV5NSFWTrainedNoobai_v50"
-modelspecificenhancements
-: 
-true
-negativeprompt
-: 
-""
-nopreviews
-: 
-false
-noseedincrement
-: 
-false
-outputintermediateimages
-: 
-false
-personalnote
-: 
-""
-placeholderparamgroupstarred
-: 
-false
-placeholderparamgroupuserone
-: 
-false
-placeholderparamgroupuserthree
-: 
-false
-placeholderparamgroupusertwo
-: 
-false
-presets
-: 
-[]
-prompt
-: 
-"blonde, petite, 1girl, 34dd breasts, modest clothing, beach, night, full_moon, starry sky, hand_in_pants, male POV, public nudity risk, embarrassed, flushed, looking down, handjob, outdoor, sand"
-regionalobjectcleanupfactor
-: 
-"0"
-removebackground
-: 
-false
-renormcfg
-: 
-"0"
-savesegmentmask
-: 
-false
-seamlesstileable
-: 
-"false"
-seed
-: 
-"-1"
-segmentsortorder
-: 
-"left-right"
-session_id
-: 
-"c3bc92f49250d2e1a79a1c38a9cd7470c8553f4d"
-shiftedlatentaverageinit
-: 
-false
-sidelength
-: 
-"1024"
-steps
-: 
-"30"
-torchcompile
-: 
-"Disabled"
-trimvideoendframes
-: 
-"0"
-trimvideostartframes
-: 
-"0"
-usecfgzerostar
-: 
-false
-usetcfg
-: 
-false
-videopreviewtype
-: 
-"animate"
-webhooks
-: 
-"Normal"
-width
-: 
-"1024"
-wildcardseedbehavior
-: 
-"Random"
-zeronegative
-: 
-false
- */

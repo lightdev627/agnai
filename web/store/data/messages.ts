@@ -30,7 +30,12 @@ export const msgsApi = {
 
 export type StreamCallback = (res: string, state: InferenceState) => any
 
-export async function swapMessage(msg: AppSchema.ChatMessage, text: string, retries: string[]) {
+export async function swapMessage(
+  msg: AppSchema.ChatMessage,
+  text: string,
+  retries: AppSchema.ChatMessage['retries'],
+  embed?: string
+) {
   return swapMessageProps(msg, { msg: text, retries })
 }
 
@@ -183,6 +188,7 @@ async function getActiveTemplateParts() {
   const { parts, entities, props, lines } = await botGen.getActivePromptOptions({
     signal,
     kind: 'summary',
+    text: '',
   })
   const toLine = messageToLine({
     chars: entities.characters,

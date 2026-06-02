@@ -19,6 +19,7 @@ import { textToSpeech } from './texttospeech'
 import { addCharacter, upsertTempCharacter, removeCharacter } from './characters'
 import { guidance, inference, inferenceApi, inferenceStream } from './inference'
 import { generateAppImage } from '../image-api'
+import { embedText } from './embedding'
 
 const router = Router()
 
@@ -29,6 +30,7 @@ router.post('/guidance', guidance)
 router.post('/reguidance', guidance)
 router.post('/sd-models', getSdModelList)
 router.post('/image-models', getImageModelList)
+router.post('/embed-texts', embedText)
 router.post('/:id/send', createMessage)
 router.post('/:id/generate', generateMessageV2)
 router.post('/:id/guest-message', guestGenerateMsg)

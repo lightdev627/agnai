@@ -1,7 +1,7 @@
 import type { AIAdapter, ChatAdapter, ThirdPartyFormat } from '../adapters'
 import * as Memory from './memory'
 import type { GenerationPreset } from '../presets'
-import type { ImageSettings } from './image-schema'
+import type { BaseImageSettings, ImageProviderSettings, ImageSettings } from './image-schema'
 import type { TTSSettings } from './texttospeech-schema'
 import type { UISettings } from './ui'
 import * as Saga from './saga'
@@ -60,6 +60,7 @@ export namespace AppSchema {
   export type AppConfig = Admin.AppConfig
   export type Configuration = Admin.Configuration
   export type ImageModel = Admin.ImageModel
+  export type ServerEmbedding = Admin.ServerEmbedding
   export type ImageSettingsSource = 'last-character' | 'main-character' | 'chat' | 'settings'
 
   export type ChatMode = 'standard' | 'adventure'
@@ -157,6 +158,9 @@ export namespace AppSchema {
     texttospeech?: TTSSettings
 
     images?: ImageSettings & {}
+
+    imageProviders?: ImageProviderSettings[]
+    imageProviderId?: string
 
     imageDefaults?: {
       size: boolean
@@ -297,7 +301,8 @@ export namespace AppSchema {
     treeLeafId?: string
 
     imageSource?: ImageSettingsSource
-    imageSettings?: ImageSettings
+    imageSettings?: BaseImageSettings
+    imageProviderId?: string
 
     background?: string
     localSettings?: { bgFormat?: 'contain' | 'cover' | 'auto' }
@@ -323,7 +328,9 @@ export namespace AppSchema {
     _id: string
     kind: 'chat-message'
     chatId: string
+
     msg: string
+
     retries?: string[]
     extras?: string[]
     characterId?: string

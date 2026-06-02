@@ -32,7 +32,9 @@ export async function toChatMessages(req: GenerateRequestV2, counter: TokenCount
   //   messages.push({ role: 'user', content: postSystem })
   // }
 
-  if (systemPrompt || postSystem) {
+  if (req.systemPrompt) {
+    messages.push({ role: 'system', content: req.systemPrompt })
+  } else if (systemPrompt || postSystem) {
     const joined = [systemPrompt || '', postSystem || ''].filter((m) => !!m.trim()).join('\n\n')
     messages.push({ role: 'system', content: joined.trim().replace(/\n\n+/g, '\n\n') })
   }
@@ -116,7 +118,8 @@ export async function toChatMessages(req: GenerateRequestV2, counter: TokenCount
   //   })
   // }
 
-  const role = req.settings?.postUserRole ? 'user' : 'assistant'
+  const ensureLastRoleIsUser = req.settings?.postUserRole || req.subscription?.preset?.postUserRole
+  const role = ensureLastRoleIsUser ? 'user' : 'assistant'
   if (postContent || prefill) {
     messages.push({ role, content: `${postContent}${prefill}` })
   }

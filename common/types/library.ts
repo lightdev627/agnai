@@ -56,7 +56,10 @@ export interface Character extends BaseCharacter {
   insert?: { depth: number; prompt: string }
   creator?: string
   characterVersion?: string
+  prefill?: string
+
   imageSettings?: ImageSettings
+  imageProviderId?: string
 }
 
 export interface LibraryCharacter extends Omit<Character, 'kind' | 'tags'> {

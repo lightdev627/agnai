@@ -27,6 +27,7 @@ export type EditorState = {
   scenario: string
   greeting: string
   sampleChat: string
+  prefill: string
   creator: string
   characterVersion: string
   postHistoryInstructions: string
@@ -71,6 +72,7 @@ const initState: EditorState = {
   creator: '',
   characterVersion: '',
   postHistoryInstructions: '',
+  prefill: '',
   voiceDisabled: false,
   insert: {
     prompt: '',
@@ -99,8 +101,12 @@ const initState: EditorState = {
     summariseChat: true,
     summaryPrompt: '',
     template: '',
+    imageProviderId: '',
+    openai: {} as any,
 
     agnai: {
+      _id: 'agnai',
+      name: 'Agnaistic',
       type: 'agnai',
       url: '',
       model: '',
@@ -109,6 +115,8 @@ const initState: EditorState = {
     },
 
     horde: {
+      _id: 'horde',
+      name: 'Horde',
       type: 'horde',
       url: '',
       model: '',
@@ -116,6 +124,8 @@ const initState: EditorState = {
     },
 
     novel: {
+      _id: 'novel',
+      name: 'NovelAI',
       type: 'novel',
       url: '',
       model: '',
@@ -125,6 +135,8 @@ const initState: EditorState = {
     },
 
     sd: {
+      _id: 'sd',
+      name: 'Stable Diffusion',
       type: 'sd',
       url: '',
       sampler: '',
@@ -132,6 +144,8 @@ const initState: EditorState = {
     },
 
     swarm: {
+      _id: 'swarm',
+      name: 'SwarmUI',
       type: 'swarm',
       url: '',
       sampler: '',
@@ -171,6 +185,7 @@ const [updateCache] = createDebounce(async (state: EditorState) => {
     creator: state.creator,
     characterVersion: state.characterVersion,
     insert: state.insert,
+    prefill: state.prefill,
   }
 
   await storage.setItem(EDITOR_CACHE_KEY, JSON.stringify(next))
@@ -442,6 +457,7 @@ function getPayload(state: EditorState, original?: NewCharacter) {
     // New fields start here
     systemPrompt: state.systemPrompt ?? '',
     postHistoryInstructions: state.postHistoryInstructions ?? '',
+    prefill: state.prefill,
     insert: { prompt: state.insert?.prompt || '', depth: state.insert?.depth ?? 3 },
     alternateGreetings: state.alternateGreetings ?? [],
     characterBook: state.book,

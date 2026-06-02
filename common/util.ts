@@ -1,5 +1,6 @@
 import { getSchemaAliases, parseVariableName, StructureEntities } from './guidance/json-schema'
-import { UserType } from './types/admin'
+import { Admin } from './types'
+import { FeatureAccess, UserType } from './types/admin'
 import type { AppSchema } from './types/schema'
 import type { GenerateRequestV2 } from '/srv/adapter/type'
 
@@ -684,10 +685,11 @@ const SAFE_NAME = /[_\/'"!@#$%^&*()\[\],\.:;=+-]+/g
 
 export function hydrateTemplate(
   def: Ensure<AppSchema.Character['json']>,
-  json: any,
+  values: any,
   opts: StructureEntities,
   aliases?: Record<string, string>
 ) {
+  const json = values || {}
   const map = new Map<string, string>()
   const allAliases = { ...aliases, ...getSchemaAliases(def.schema) }
 
@@ -922,4 +924,70 @@ export function lazySimplePromise<T = any>() {
   })
 
   return parts
+}
+
+export function sortAlpha<T extends {}>(opts: {
+  prop: keyof T
+
+  /** Descending order? */
+  desc?: boolean
+
+  /** Case insensitive */
+  ignoreCase?: boolean
+}) {
+  const sorter = (left: T, right: T) => {
+    let l = '' + (left[opts.prop] || '')
+    let r = '' + (right[opts.prop] || '')
+
+    if (opts.ignoreCase) {
+      l = l.toLowerCase()
+      r = r.toLowerCase()
+    }
+
+    return l.localeCompare(r) * (opts.desc ? -1 : 1)
+  }
+
+  return sorter
+}
+
+export function getUserFeatureAccess(
+  user: AppSchema.User | undefined,
+  tier: UserSub | undefined
+): Admin.UserType {
+  if (!user) return 'guests'
+  if (user.admin) return 'admins'
+  if (tier && tier.level > 0) return 'subscribers'
+  if (tier && tier.level === 0) return 'users'
+  if (user._id !== 'anon') return 'users'
+
+  return 'guests'
+}
+
+export function canUseFeature(requires: FeatureAccess, userType: UserType): boolean {
+  switch (requires) {
+    case 'off': {
+      return false
+    }
+
+    case 'admins': {
+      return userType === 'admins'
+    }
+
+    case 'subscribers': {
+      return userType === 'subscribers' || userType === 'moderators' || userType === 'admins'
+    }
+
+    case 'users': {
+      return (
+        userType === 'users' ||
+        userType === 'subscribers' ||
+        userType === 'moderators' ||
+        userType === 'admins'
+      )
+    }
+
+    case 'all': {
+      return true
+    }
+  }
 }
