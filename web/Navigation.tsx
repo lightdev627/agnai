@@ -184,10 +184,10 @@ const Navigation: Component = () => {
                 aria-label="Agnaistic main page"
               >
                 <div
-                  class="flex h-8 w-full items-center justify-center rounded-lg font-bold"
+                  class="flex h-8 w-full items-center justify-center rounded-lg text-lg font-bold tracking-wide"
                   aria-hidden="true"
                 >
-                  Agn<span class="text-[var(--hl-500)]">ai</span>
+                  Agn<span class="text-[var(--hl-400)]">ai</span>
                   {suffix()}
                 </div>
               </A>
@@ -745,13 +745,13 @@ export const UserProfile = () => {
           }}
         >
           <Switch>
+            Darkl
             <Match when={chars.impersonating}>
               <CharacterAvatar
                 char={chars.impersonating!}
                 format={{ corners: 'circle', size: 'xs' }}
               />
             </Match>
-
             <Match when>
               <AvatarIcon
                 avatarUrl={chars.impersonating?.avatar || user.profile?.avatar}

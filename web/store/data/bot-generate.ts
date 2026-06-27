@@ -37,7 +37,7 @@ import { getProvider } from '../preset-context'
 import { getLocalPayload, getStoppingStrings } from '/common/requests/payloads'
 import { sanitiseAndTrim } from '/common/requests/util'
 import { toastStore } from '../toasts'
-import { inline, LazyPromise, lazyPromise } from '/common/util'
+import { inline, LazyPromise, lazyPromise, round } from '/common/util'
 import type { ResponseState } from '../response'
 import { EVENTS, events } from '/web/emitter'
 import { debug } from '/common/debug'
@@ -142,9 +142,15 @@ async function streamResponse(opts: StreamOpts) {
   await handlePreStreamResponse(opts, req)
 
   const meta: any = {
+    start: Date.now(),
     ctx: req.entities.settings.maxContextLength,
     len: req.prompt.template.length,
   }
+
+  if (req.entities.settings.streamResponse) {
+    meta.wait = 0
+  }
+
   const provider = getProvider(req.entities.settings?.providerId)
   const conn = provider ? getProviderConnection(provider) : undefined
 
@@ -263,7 +269,7 @@ async function handleStreamTick(
   },
   tick: { state: InferenceState; response: string; json?: JsonOutput }
 ) {
-  const { opts, req, active, sanitize } = input
+  const { opts, req, active, sanitize, meta } = input
 
   let prefix = input.req.request.continuing?.msg || ''
   if (prefix) {
@@ -291,6 +297,7 @@ async function handleStreamTick(
     }
 
     case 'partial': {
+      if (meta.wait === 0) meta.wait = round((Date.now() - meta.start) / 1000)
       const trimmed = sanitize(prefix + tick.response)
       if (req.request.settings?.streamResponse) {
         const hydrated = input.jsonCall ? req.schema?.hydrator?.(trimmed) : undefined
@@ -313,6 +320,7 @@ async function handleStreamTick(
     }
 
     case 'thought': {
+      if (meta.wait === 0) meta.wait = round((Date.now() - meta.start) / 1000)
       if (opts.kind === 'chat-query') break
       localEmit({
         type: 'inference-thought',
@@ -435,8 +443,8 @@ async function handlePostStreamResponse(input: {
       retrying: undefined,
       partial: undefined,
     })
-    console.log('aborted -- ignoring post stream handler')
-    return
+    // console.log('aborted -- ignoring post stream handler')
+    // return
   }
 
   const { replacing, parent, replyAs, continuing } = req.request
@@ -506,6 +514,9 @@ async function handlePostStreamResponse(input: {
     case 'send-event:world':
     case 'send-event:character':
     case 'send-event:hidden': {
+      if (messageId) {
+        getStore('chat').forkChat(messageId)
+      }
       break
     }
   }
@@ -885,7 +896,7 @@ export type GenerateProps = {
 }
 
 async function getGenerateProps(opts: GenerateOpts, active: ChatDetail) {
-  const entities = await getPromptEntities()
+  const entities = await getPromptEntities('messageId' in opts ? { messageId: opts.messageId } : {})
 
   const json = entities.messages.reduce<Record<string, any>>(
     (prev, curr) => Object.assign(prev, curr.json?.values || {}),

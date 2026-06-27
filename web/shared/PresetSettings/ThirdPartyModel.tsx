@@ -547,6 +547,10 @@ type FLModel = {
 }
 
 const FeatherlessModels: Selector = (props) => {
+  const emitter = createEmitter('close')
+
+  const [customId, setCustomId] = createSignal('')
+  const [inputText, setInputText] = createSignal('')
   const [selectedClasses, setClasses] = createSignal<string[]>([])
   const [classesOpen, setClassesOpen] = createSignal(false)
 
@@ -579,7 +583,7 @@ const FeatherlessModels: Selector = (props) => {
       ? props.state.providerModels?.[props.state.providerId] || props.state.thirdPartyModel
       : props.state.featherlessModel
     const match = props.setters.context.data.find((s) => s.id === id)
-    if (!match) return 'Model - None selected'
+    if (!match) return `Model - ${id}`
 
     return (
       <span title={`${match.status}, ${(match.health || '...').toLowerCase()}`}>
@@ -666,6 +670,7 @@ const FeatherlessModels: Selector = (props) => {
 
   const availables = createMemo(() => {
     const map: Record<string, number> = {}
+
     for (const model of props.setters.context.data) {
       if (!map[model.model_class]) {
         map[model.model_class] = 0
@@ -676,7 +681,7 @@ const FeatherlessModels: Selector = (props) => {
         continue
       }
 
-      if (!model.status || model.status === 'active') {
+      if (!model.status || model.status === 'active' || model.status === '') {
         map[model.model_class]++
       }
     }
@@ -702,8 +707,24 @@ const FeatherlessModels: Selector = (props) => {
       set.add(cls)
     }
 
+    const searchText = inputText().trim()
+    const searchedClasses = new Set<string>()
+
+    for (const cat of options()) {
+      if (!searchText) {
+        searchedClasses.add(cat.name)
+        continue
+      }
+
+      for (const model of cat.options) {
+        if (!search(model.value, searchText)) continue
+        searchedClasses.add(cat.name)
+        break
+      }
+    }
+
     const pills = classes()
-      .filter((cls) => available[cls.value] > 0)
+      .filter((cls) => searchedClasses.has(cls.value) && available[cls.value] > 0)
       .map((cls) => {
         if (set.has(cls.value)) {
           return (
@@ -726,11 +747,38 @@ const FeatherlessModels: Selector = (props) => {
   return (
     <div class="flex items-center gap-1">
       <CustomSelect
+        closeSub={emitter.on}
         maxHeight
         size="sm"
-        modalTitle="Select a Model"
+        modalTitle={
+          <div class="flex flex-col gap-2">
+            <div>Select a Model</div>
+            <div class="flex gap-2">
+              <TextInput
+                prelabel="Manual Model ID"
+                parentClass="w-full !font-normal !text-sm !h-8"
+                class=""
+                value={customId()}
+                onChange={(ev) => {
+                  setCustomId(ev.currentTarget.value)
+                }}
+              />
+              <Button
+                size="sm"
+                schema="primary"
+                onClick={() => {
+                  setProviderModel(props, customId())
+                  emitter.emit.close()
+                }}
+              >
+                Confirm
+              </Button>
+            </div>
+          </div>
+        }
         categories={options()}
         search={search}
+        searchText={setInputText}
         header={
           <Accordian
             class="!bg-opacity-10 !p-1"

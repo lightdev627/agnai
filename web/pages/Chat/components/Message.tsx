@@ -245,7 +245,7 @@ const Message: Component<MessageProps> = (props) => {
       setEditSender(JSON.stringify({ characterId: message.characterId }))
     }
     if (editRef) {
-      editRef.innerText = message.msg
+      editRef.innerText = props.content
     }
     editRef?.focus()
   }
@@ -355,7 +355,7 @@ const Message: Component<MessageProps> = (props) => {
             >
               <Show when={ctx.flags.debug}>
                 <span class="text-600 flex w-full justify-center text-[0.5rem]">
-                  {msg().parent?.slice(0, 4) || 'root'}
+                  {msg().parent?.slice(0, 4) || 'root'} #{props.index}
                 </span>
               </Show>
               <Switch>
@@ -643,7 +643,7 @@ const Message: Component<MessageProps> = (props) => {
                 </Match>
                 <Match when={edit()}>
                   <div
-                    class="msg-edit-text-box"
+                    class="msg-edit-text-box p-1"
                     ref={editRef!}
                     contentEditable={true}
                     onKeyUp={(ev) => {
@@ -793,7 +793,10 @@ const MessageOptions: Component<{
         class: 'fork-btn',
         show: !props.last,
         outer: props.ui.msgOptsInline.fork,
-        onClick: () => !props.partial && msgStore.fork(props.msg._id),
+        onClick: () => {
+          if (props.partial) return
+          chatStore.forkChat(props.msg._id)
+        },
         icon: Split,
       },
 
@@ -1181,7 +1184,7 @@ function wrapWithQuoteElement(str: string) {
     Regex magic explained:
     <[\s\S]*?>      - skip all HTML tags   eg. <sumting>
     ```[\s\S]*?```  - skip all code blocks eg. <pre>/``` markdown transform <pre><code> to ```
-    ``[\s\S]*?``    - skip all inline code eg. <code>/`` markdown transform <code> to `` | this is a non standard markup 
+    ``[\s\S]*?``    - skip all inline code eg. <code>/`` markdown transform <code> to `` | this is a non standard markup
     `[\s\S]*?`      - skip all inline code eg. <code>/` markdown transform <code> to `
 
     (\".+?\")       - capture all regular double quotes, which are not part of HTML tags or code blocks
