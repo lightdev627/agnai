@@ -95,9 +95,12 @@ export type GenerateOpts = { signal: AbortController; hint?: string; systemPromp
 )
 
 type ChatRequest = Awaited<ReturnType<typeof buildChatRequest>>
-type StreamOpts = Exclude<GenerateOpts, { type: 'ooc' | 'send-noreply' | 'send-event:ooc' }> & {
-  onTick?: TickHandler
-}
+type StreamOpts = { done?: boolean } & Exclude<
+  GenerateOpts,
+  { type: 'ooc' | 'send-noreply' | 'send-event:ooc' }
+> & {
+    onTick?: TickHandler
+  }
 
 async function streamResponse(opts: StreamOpts) {
   const { details, lastChatId } = getStore('chat').getState()
@@ -332,6 +335,9 @@ async function handleStreamTick(
     }
 
     case 'done': {
+      if (opts.done) return
+
+      opts.done = true
       const trimmed = sanitize(prefix + tick.response)
       const hydrated = input.jsonCall ? req.schema?.hydrator?.(trimmed) : undefined
 
@@ -524,21 +530,29 @@ async function handlePostStreamResponse(input: {
 
   if (input.jsonCall) {
     await msgsApi.editMessageProps({ _id: messageId, chatId }, { json })
+    getStore('responses').setState({
+      retrying: undefined,
+      partial: undefined,
+    })
+    return
   }
 
+  const alreadyDone = !!req.request.response
   req.request.response = response
 
-  await msgsApi.createMessage({
-    kind: opts.kind.startsWith('send-event') ? opts.kind : 'send-noreply',
-    chatId,
-    messageId,
-    text: response,
-    parent,
-    character: replyAs,
-    bot: true,
-    meta,
-    json,
-  })
+  if (!alreadyDone) {
+    await msgsApi.createMessage({
+      kind: opts.kind.startsWith('send-event') ? opts.kind : 'send-noreply',
+      chatId,
+      messageId: messageId, // Consider removing deterministic ID creation
+      text: response,
+      parent,
+      character: replyAs,
+      bot: true,
+      meta,
+      json,
+    })
+  }
 
   getStore('responses').setState({
     retrying: undefined,
