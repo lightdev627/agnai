@@ -169,6 +169,7 @@ export const ImageSettingsModal = () => {
           </Accordian>
 
           <div class="flex gap-2">
+            <FormLabel label="Image Provider"></FormLabel>
             <SelectImageProvider ctx={ctx} />
           </div>
 

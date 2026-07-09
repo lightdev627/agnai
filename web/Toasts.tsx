@@ -10,6 +10,7 @@ import { announceStore, userStore } from './store'
 import { AppSchema } from '/common/types'
 import { markdown } from './shared/markdown'
 import { elapsedSince } from './shared/util'
+import { Copy } from './shared/Copy'
 
 const bgColor = {
   default: 'bg-500',
@@ -121,6 +122,18 @@ const Notifications: Component = () => {
                         <b>Message from Administrator</b>
                       </Show>
                       <p>{toast.message}</p>
+                      <Show when={toast.stack}>
+                        <TitleCard
+                          title=<>
+                            <div class="flex items-center">
+                              <Copy text={toast.stack} />
+                              &nbsp;Stacktrace
+                            </div>
+                          </>
+                        >
+                          <pre>{toast.stack}</pre>
+                        </TitleCard>
+                      </Show>
                     </TitleCard>
                   )}
                 </For>

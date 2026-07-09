@@ -62,10 +62,11 @@ export const CustomSelect: Component<{
   closeSub?: ComponentSubscriber<'close'>
   openSub?: ComponentSubscriber<'open'>
   actions?: OptionAction[]
+  searchInit?: string
   searchText?: (input: string) => void
 }> = (props) => {
   const [open, setOpen] = createSignal(false)
-  const [filter, setFilter] = createSignal('')
+  const [filter, setFilter] = createSignal(props.searchInit ?? '')
   const [unsubs, setUnsubs] = createSignal<Function[]>([])
   const [options, setOptions] = createSignal<CustomOption[]>([])
   const [cats, setCats] = createSignal<Array<{ name: string; options: CustomOption[] }>>([])
@@ -98,7 +99,7 @@ export const CustomSelect: Component<{
       () => {
         const isOpening = open()
         if (isOpening) {
-          setFilter('')
+          setFilter(props.searchInit ?? '')
         }
       }
     )
@@ -220,7 +221,6 @@ export const CustomSelect: Component<{
               size={props.size}
               alignLeft
               onClick={() => setOpen(true)}
-              class={props.buttonClass || ''}
               // class="w-fit max-w-fit"
               disabled={props.disabled}
             >

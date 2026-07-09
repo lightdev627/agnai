@@ -6,6 +6,7 @@ import { AppSchema } from '../types'
 import type { SubscriptionPreset } from '/srv/adapter/agnaistic'
 import { getPresetConnection } from '../providers'
 import { getJsonSchemaPayload } from '../guidance/json-schema'
+import { GenerateRequestV2 } from '/srv/adapter/type'
 
 type MinOpts = {
   user: AppSchema.User
@@ -16,7 +17,7 @@ type MinOpts = {
   prompt?: string
   messages?: any[]
   requestId?: string
-  jsonSchema?: JsonField[]
+  jsonSchema?: GenerateRequestV2['jsonSchema']
   characters?: Record<string, AppSchema.Character>
   members?: AppSchema.Profile[]
   impersonate?: AppSchema.Character
@@ -105,7 +106,7 @@ function getBasePayload(opts: MinOpts, stops: string[] = []) {
   const conn = getPresetConnection(gen, opts.user.providers)
   const format = opts.subscription?.preset?.thirdPartyFormat || conn.format
 
-  const json_schema = opts.jsonSchema ? toJsonSchema(opts.jsonSchema) : undefined
+  const json_schema = opts.jsonSchema ? toJsonSchema(opts.jsonSchema.fields) : undefined
 
   const characterNames = Object.values(opts.characters || {})
     .map((c) => c.name.split(' '))
@@ -127,19 +128,7 @@ function getBasePayload(opts: MinOpts, stops: string[] = []) {
     gen.temp = 0.75
   }
 
-  let reasoningEffort = gen.reasoning?.enabled ? gen.reasoning.effort : 'none'
-  if (reasoningEffort === 'custom') {
-    const percent = gen.reasoning?.maxTokens ?? 0
-    if (percent >= 0.8) {
-      reasoningEffort = 'high'
-    } else if (percent >= 0.5) {
-      reasoningEffort = 'medium'
-    } else if (percent > 0) {
-      reasoningEffort = 'low'
-    } else {
-      reasoningEffort = 'none'
-    }
-  }
+  const reasoning = getReasoningParams(gen)
 
   if (
     !format ||
@@ -226,8 +215,12 @@ function getBasePayload(opts: MinOpts, stops: string[] = []) {
     }
 
     if (opts.jsonSchema && opts.char) {
-      const char = opts.char! // TypeScript being stupid
-      const schema = getJsonSchemaPayload(opts.jsonSchema, 'guided_json', { ...opts, char })
+      // const char = opts.char! // TypeScript being stupid
+      const schema = getJsonSchemaPayload(
+        opts.jsonSchema.fields,
+        'guided_json',
+        opts.jsonSchema.entities
+      )
       body.guided_json = schema
       // body.guided_decoding_backend = 'outlines'
     }
@@ -374,16 +367,7 @@ function getBasePayload(opts: MinOpts, stops: string[] = []) {
   }
 
   if (format === 'llamacpp') {
-    const budget =
-      reasoningEffort === 'none'
-        ? 0
-        : reasoningEffort === 'low'
-        ? gen.maxTokens! * 0.2
-        : reasoningEffort === 'medium'
-        ? gen.maxTokens! * 0.5
-        : gen.maxTokens! * 0.75
-
-    const body = {
+    const body: any = {
       prompt: messages ? undefined : prompt,
       messages,
       temperature: gen.temp,
@@ -404,10 +388,26 @@ function getBasePayload(opts: MinOpts, stops: string[] = []) {
       repeat_penalty: gen.repetitionPenalty,
       repeat_last_n: gen.repetitionPenaltyRange,
       tfs_z: gen.tailFreeSampling,
-      json_schema,
-      reasoning_effort: reasoningEffort,
-      thinking_budget_tokens: budget,
-      chat_template_kwargs: { enable_thinking: reasoningEffort !== 'none' },
+      reasoning_effort: reasoning.effort,
+      thinking_budget_tokens: reasoning.budget,
+      chat_template_kwargs: { enable_thinking: reasoning.effort !== 'none' },
+    }
+
+    if (opts.jsonSchema) {
+      const schema = getJsonSchemaPayload(
+        opts.jsonSchema.fields,
+        'llamacpp',
+        opts.jsonSchema.entities
+      )
+
+      body.response_format = {
+        type: 'json_object',
+        schema: {
+          type: 'object',
+          properties: schema.schema.properties,
+          required: schema.schema.required,
+        },
+      }
     }
     return body
   }
@@ -556,10 +556,84 @@ function getBasePayload(opts: MinOpts, stops: string[] = []) {
       max_tokens: gen.maxTokens,
       include_stop_str_in_output: false,
       stream: gen.streamResponse,
+      chat_template_kwargs: {
+        enable_thinking: reasoning.effort !== 'none',
+        thinking_budget: reasoning.budget,
+      },
     }
 
     return payload
   }
+}
+
+function getReasoningParams(gen: Partial<AppSchema.GenSettings>) {
+  let effort = gen.reasoning?.effort || 'none'
+  let budget = 0
+
+  if (!gen.reasoning?.enabled) {
+    effort = 'none'
+  }
+
+  let percent = 0
+  switch (effort) {
+    // case 'x-high': {
+    //   percent = 0.9
+
+    //   break
+    // }
+
+    case 'custom':
+    case 'high': {
+      percent = 0.8
+      break
+    }
+
+    case 'medium': {
+      percent = 0.5
+      break
+    }
+
+    case 'low': {
+      percent = 0.2
+      break
+    }
+
+    case 'none':
+    default: {
+      percent = 0
+      break
+    }
+  }
+
+  const max = gen.maxTokens ?? 2048
+  if (effort === 'none') {
+    return { effort, budget }
+  }
+
+  if (effort !== 'custom') {
+    return { effort, budget: max * percent }
+  }
+
+  const custom = gen.reasoning?.maxTokens ?? 0
+
+  if (isNaN(custom) || custom <= 0) {
+    return { effort: 'none', budget: 0 }
+  }
+
+  if (custom > max) {
+    return { effort: 'high', budget: max * 0.8 }
+  }
+
+  const ratio = custom / max
+  if (ratio >= 0.8) {
+    return { effort: 'high', budget: custom }
+  }
+
+  if (ratio >= 0.5) {
+    return { effort: 'medium', budget: custom }
+  }
+
+  return { effort: 'low', budget: custom }
 }
 
 export function getStoppingStrings(

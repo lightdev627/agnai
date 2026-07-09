@@ -56,6 +56,7 @@ const tokenizers = [
   { label: 'Yi', value: 'yi' },
   { label: 'Cohere', value: 'cohere' },
   { label: 'Qwen2', value: 'qwen2' },
+  { label: 'Qwen3', value: 'qwen3' },
   { label: 'Gemma', value: 'gemma' },
 ]
 
@@ -361,6 +362,7 @@ export const SubscriptionModel: Component = () => {
                   setters={setters}
                   disabled={params.id === 'default'}
                   noSave
+                  noModel
                 />
                 <div class="flex flex-row justify-end">
                   <Show when={state.current._id}>

@@ -54,7 +54,7 @@ registerTemplateLocator((id: string) => {
 })
 
 export const botGen = {
-  stream: streamResponse,
+  streamResponse: streamResponse,
   getActivePromptOptions,
   getMessageParent,
 }
@@ -95,7 +95,7 @@ export type GenerateOpts = { signal: AbortController; hint?: string; systemPromp
 )
 
 type ChatRequest = Awaited<ReturnType<typeof buildChatRequest>>
-type StreamOpts = { done?: boolean } & Exclude<
+type StreamOpts = { state?: 'error' | 'done' | 'complete' } & Exclude<
   GenerateOpts,
   { type: 'ooc' | 'send-noreply' | 'send-event:ooc' }
 > & {
@@ -103,6 +103,7 @@ type StreamOpts = { done?: boolean } & Exclude<
   }
 
 async function streamResponse(opts: StreamOpts) {
+  debug('bot-gen')('request type: %s', opts.kind)
   const { details, lastChatId } = getStore('chat').getState()
   const active = details[lastChatId]
   if (!active) {
@@ -157,9 +158,17 @@ async function streamResponse(opts: StreamOpts) {
   const provider = getProvider(req.entities.settings?.providerId)
   const conn = provider ? getProviderConnection(provider) : undefined
 
+  const jsonSchema =
+    opts.kind === 'summary' ||
+    opts.kind === 'chat-query' ||
+    req.entities.settings.jsonEnabled === 'standard'
+      ? req.request.jsonSchema
+      : undefined
+
   const payload = conn?.local
     ? getLocalPayload({
         ...req.request,
+        jsonSchema,
         messages: messages,
         prompt: assembled.prompt,
       })
@@ -188,6 +197,7 @@ async function streamResponse(opts: StreamOpts) {
   }
 
   const messageId = req.request.replacing?._id || req.request.requestId
+  console.log('WAITING SET', lazy.state)
   waiting({
     mode: opts.kind,
     characterId: req.request.replyAs._id,
@@ -204,11 +214,6 @@ async function streamResponse(opts: StreamOpts) {
     id: messageId,
     prompt: JSON.stringify(stripImageContent(messages), null, 2),
   })
-
-  const jsonSchema =
-    opts.kind === 'chat-query' || req.entities.settings.jsonEnabled === 'standard'
-      ? req.schema?.schema
-      : undefined
 
   await genApi.inferenceStream(
     {
@@ -229,20 +234,19 @@ async function streamResponse(opts: StreamOpts) {
     }
   )
 
+  console.log('INFERENCE CALLED', lazy.state)
+
   /** In development: Performing JSON output in a separate call if specified by the schema */
 
-  if (
-    opts.kind !== 'chat-query' &&
-    req.entities.settings.jsonEnabled === 'separate' &&
-    req.schema
-  ) {
+  const isInseparableKind = opts.kind === 'chat-query' || opts.kind === 'summary'
+  if (!isInseparableKind && req.entities.settings.jsonEnabled === 'separate' && req.schema) {
     await genApi.inferenceStream(
       {
         settings: req.entities.presets.json || req.request.settings,
-        jsonSchema: req.schema.schema,
-        messages: messages,
+        jsonSchema: req.request.jsonSchema,
+        messages: messages.concat({ role: 'user', content: 'Chat Summary Query' }),
         prompt: assembled.prompt,
-        payload,
+        // payload,
         signal: opts.signal,
         stop: stops,
         chatId: req.request.chat._id,
@@ -281,8 +285,10 @@ async function handleStreamTick(
 
   switch (tick.state) {
     case 'error':
-      input.lazy.reject(tick.response)
-      toastStore.error(tick.response)
+      if (opts.state) return
+
+      opts.state = 'error'
+      input.lazy.reject(new Error(tick.response))
       // waiting(undefined)
       break
 
@@ -335,9 +341,9 @@ async function handleStreamTick(
     }
 
     case 'done': {
-      if (opts.done) return
+      if (!!opts.state) return
 
-      opts.done = true
+      opts.state = 'done'
       const trimmed = sanitize(prefix + tick.response)
       const hydrated = input.jsonCall ? req.schema?.hydrator?.(trimmed) : undefined
 
@@ -537,10 +543,11 @@ async function handlePostStreamResponse(input: {
     return
   }
 
-  const alreadyDone = !!req.request.response
+  const canCreate = opts.state === 'done'
   req.request.response = response
 
-  if (!alreadyDone) {
+  if (canCreate) {
+    opts.state = 'complete'
     await msgsApi.createMessage({
       kind: opts.kind.startsWith('send-event') ? opts.kind : 'send-noreply',
       chatId,
@@ -603,7 +610,7 @@ async function buildChatRequest(opts: GenerateOpts) {
     jsonValues: props.json,
     reschemaPrompt: props.reschemaPrompt,
     eventStream: true,
-    jsonSchema: schema?.schema,
+    jsonSchema: schema ? { fields: schema.schema, entities: schema.entities } : undefined,
   }
 
   const stops = getStoppingStrings(request, request.settings)
@@ -686,6 +693,10 @@ type EventKind =
   | 'send-event:ooc'
 
 async function createActiveChatPrompt(opts: GenerateOpts) {
+  if (localStorage.error_test === 'gen-prompt') {
+    throw new Error(`Prompt error test`)
+  }
+
   const { details, lastChatId } = getStore('chat').getState()
   const active = details[lastChatId]
 
@@ -793,7 +804,7 @@ async function createActiveChatPrompt(opts: GenerateOpts) {
     jsonValues: props.json,
     contextBuffer: entities.settings.maxTokens,
     props: entities.props,
-    schema: schema?.schema,
+    schema: schema ? { fields: schema.schema, entities: schema.entities } : undefined,
   }
 
   const lines = await getPromptHistory(promptOpts, encoder)

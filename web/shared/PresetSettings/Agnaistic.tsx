@@ -169,11 +169,17 @@ export const ModelList: Component<{ show: boolean; close: () => void }> = (props
   )
 }
 
-function isFoundModel(value: string, search: string) {
-  const name = MODEL_NAMES.get(value)?.toLowerCase()
+function isFoundModel(compare: string, input: string) {
+  const name = MODEL_NAMES.get(compare)?.toLowerCase()
   if (!name) return true
-  if (name.includes(search.toLowerCase())) return true
-  return false
+
+  const words = input.split(' ').map((w) => w.toLocaleLowerCase())
+
+  for (const word of words) {
+    if (!name.includes(word)) return false
+  }
+
+  return true
 }
 
 type ModelOption = {
@@ -336,7 +342,7 @@ const ModelLabel: Component<{
       if (!required && props.sub.preset.subLevel > -1) {
         pills.push(
           <Pill small class="text-xs" inverse>
-            All {Math.floor(level.maxContextLength / 1000)}K
+            All {Math.round(level.maxContextLength / 1000)}K
           </Pill>
         )
         continue
@@ -345,7 +351,7 @@ const ModelLabel: Component<{
 
       pills.push(
         <Pill small class="text-xs" inverse>
-          {name} {Math.floor(level.maxContextLength / 1000)}K
+          {name} {Math.round(level.maxContextLength / 1000)}K
         </Pill>
       )
     }
@@ -360,7 +366,7 @@ const ModelLabel: Component<{
         <div class="text-700 flex flex-wrap gap-1 text-xs">
           <Show
             when={maxes().length && !props.page}
-            fallback={<>{Math.floor(context() / 1000)}K</>}
+            fallback={<>{Math.round(context() / 1000)}K</>}
           >
             <For each={maxes()}>{(max) => <>{max}</>}</For>
           </Show>

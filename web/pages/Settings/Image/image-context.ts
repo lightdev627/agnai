@@ -1,5 +1,5 @@
 import { createStore } from 'solid-js/store'
-import { SD_SAMPLER } from '/common/image'
+import { SD_SAMPLER, SWARM_SCHEDULER } from '/common/image'
 import { characterStore, chatStore, imageStore, settingStore, userStore } from '/web/store'
 import { createEffect, on } from 'solid-js'
 import { ImageDefaults, ImageSettings } from '/common/types/image-schema'
@@ -9,6 +9,15 @@ import { ImageModel } from '/common/types/admin'
 import { AppSchema } from '/common/types'
 
 type SettingSource = 'Shared' | 'Character' | 'Chat'
+
+const PROVIDER_TYPES = [
+  { label: 'Agnaistic', value: 'agnai' },
+  { label: 'Horde', value: 'horde' },
+  { label: 'NovelAI', value: 'novel' },
+  { label: 'SD WebUI', value: 'sd' },
+  { label: 'Swarm UI', value: 'swarm' },
+  { label: 'OpenAI-Compat', value: 'openai' },
+]
 
 const init = (): ImageSettings => ({
   summaryPresetId: '',
@@ -33,6 +42,7 @@ const init = (): ImageSettings => ({
     model: '',
     sampler: SD_SAMPLER['Euler a'],
     draftMode: false,
+    scheduler: '',
   },
   horde: {
     _id: 'horde',
@@ -40,6 +50,7 @@ const init = (): ImageSettings => ({
     name: 'Horde',
     url: '',
     sampler: SD_SAMPLER['Euler a'],
+    scheduler: '',
     model: '',
   },
   sd: {
@@ -49,6 +60,7 @@ const init = (): ImageSettings => ({
     model: '',
     url: '',
     sampler: SD_SAMPLER['Euler a'],
+    scheduler: '',
   },
   novel: {
     _id: 'novel',
@@ -57,6 +69,7 @@ const init = (): ImageSettings => ({
     url: '',
     model: '',
     sampler: SD_SAMPLER['Euler a'],
+    scheduler: '',
     ucPreset: '0',
     qualityTags: true,
   },
@@ -66,6 +79,7 @@ const init = (): ImageSettings => ({
     name: 'SwarmUI',
     model: '',
     sampler: SD_SAMPLER['Euler a'],
+    scheduler: SWARM_SCHEDULER['Normal'],
     url: 'http://localhost:7801',
     local: true,
   },
@@ -159,9 +173,6 @@ export function useImageContext() {
         ? 'Character'
         : 'Shared'
 
-    if (current) {
-      console.log('CURRENT!', currentTarget)
-    }
     const view = current ? currentTarget : tab.current()
     const setter = current ? setCurrentCfg : setCfg
 
@@ -231,7 +242,7 @@ export function useImageContext() {
   )
 
   const receiveUpdate = () => {
-    if (!page.open) return
+    // if (!page.open) return
 
     const hostingImages =
       !!settings.config.serverConfig?.imagesEnabled &&
@@ -240,10 +251,12 @@ export function useImageContext() {
     const hosts = [
       { label: 'Horde', value: 'horde' },
       { label: 'NovelAI', value: 'novel' },
-      { label: 'Stable Diffusion', value: 'sd' },
+      { label: 'SD WebUI', value: 'sd' },
       { label: 'Swarm UI', value: 'swarm' },
-      { label: 'OpenAI Compatible', value: 'openai' },
-    ].map((item) => ({ label: `${item.label}`, value: item.value }))
+      { label: 'OpenAI-Compat', value: 'openai' },
+    ]
+      .map((item) => ({ label: `${item.label}`, value: item.value }))
+      .filter((i) => i.value !== 'agnai')
 
     if (hostingImages) {
       hosts.unshift({ label: 'Agnaistic', value: 'agnai' })
@@ -269,6 +282,11 @@ export function useImageContext() {
       save,
     },
   ]
+}
+
+export function getImageProviderName(type: string) {
+  const opt = PROVIDER_TYPES.find((t) => t.value === type)
+  return opt?.label || 'None'
 }
 
 async function saveImageSettings(

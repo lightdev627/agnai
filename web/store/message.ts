@@ -383,7 +383,7 @@ export const msgStore = createStore<MsgState>(
         const nextMsgs = msgs.map((m) => (m._id === msgId ? { ...m, msg: text, retries } : m))
         yield { msgs: nextMsgs }
         onSuccess?.()
-        toastStore.success(`Swipe deleted`, 2)
+        toastStore.success(`Swipe deleted`, { ttl: 2 })
       }
     },
 
@@ -722,6 +722,17 @@ async function onMessageReceived(body: {
 
   onCharacterMessageReceived(msg)
 }
+
+msgStore.subscribe((curr, prev) => {
+  if (prev.activeChatId === curr.activeChatId) return
+  const from = prev.activeChatId || 'none'
+  const to = curr.activeChatId || 'none'
+  if (from === 'none') {
+    const error = new Error()
+    console.log(error.stack)
+  }
+  debug('chat-id')('changed %s --> %s', from, to)
+})
 
 function onCharacterMessageReceived(msg: AppSchema.ChatMessage) {
   if (!msg.characterId || msg.event || msg.ooc) return

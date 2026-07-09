@@ -2,7 +2,7 @@ import { v4 } from 'uuid'
 import { getStore } from '../create'
 import { getInferencePreset, replaceUniversalTags } from './common'
 import { localApi } from './storage'
-import { JsonField, TickHandler } from '/common/prompt'
+import { TickHandler } from '/common/prompt'
 import { AppSchema } from '/common/types'
 import { api, getAuthHeaders } from '../api'
 import { toastStore } from '../toasts'
@@ -18,6 +18,7 @@ import { getProvider } from '../preset-context'
 import { getProviderConnection } from '/common/providers'
 import { getLocalPayload } from '/common/requests/payloads'
 import { lazyPromise } from '/common/util'
+import { GenerateRequestV2 } from '/srv/adapter/type'
 
 const inferenceCallbacks = new Map<string, TickHandler>()
 
@@ -39,7 +40,7 @@ type InferenceOpts = {
   overrides?: Partial<AppSchema.GenSettings>
   maxTokens?: number
   chatId?: string
-  jsonSchema?: JsonField[]
+  jsonSchema?: GenerateRequestV2['jsonSchema']
   stop?: string[]
 
   broadcast?: { type: string; id: string; payload: any }
@@ -56,7 +57,7 @@ type InferenceState = {
   response: string
   error: string
   preset?: Partial<AppSchema.GenSettings>
-  schema?: JsonField[]
+  schema?: GenerateRequestV2['jsonSchema']
   maxContext: number
   thoughts: string[]
   signal: AbortController | null
@@ -64,7 +65,7 @@ type InferenceState = {
 
 const initState = (init?: {
   preset?: Partial<AppSchema.GenSettings>
-  schema?: JsonField[]
+  schema?: GenerateRequestV2['jsonSchema']
   maxContext?: number
 }): InferenceState => ({
   status: 'idle',
@@ -80,7 +81,7 @@ const initState = (init?: {
 export function inferenceHelper(init: {
   chatId?: string
   preset?: Partial<AppSchema.GenSettings>
-  schema?: JsonField[]
+  schema?: GenerateRequestV2['jsonSchema']
   onTick?: TickHandler
   onState?: (next: InferenceState) => void
   maxContext?: number
@@ -135,7 +136,7 @@ export function inferenceHelper(init: {
     image?: string
     chatId?: string
     preset?: Partial<AppSchema.GenSettings>
-    schema?: JsonField[]
+    schema?: GenerateRequestV2['jsonSchema']
     maxContext?: number
   }) => {
     if (opts.preset) setState({ preset: opts.preset })
@@ -185,7 +186,7 @@ export function inferenceHelper(init: {
 
 export function inferenceSignal(init: {
   preset?: AppSchema.GenSettings
-  schema?: JsonField[]
+  schema?: GenerateRequestV2['jsonSchema']
   onTick?: TickHandler
   maxContext?: number
 }) {
@@ -202,7 +203,7 @@ export function inferenceSignal(init: {
     send: helper.send,
     update: (next: {
       preset?: AppSchema.GenSettings
-      schema?: JsonField[]
+      schema?: GenerateRequestV2['jsonSchema']
       maxContext?: number
     }) => {
       helper.setState(next)
@@ -333,17 +334,24 @@ export async function inferenceStream(opts: InferenceOpts, onTick?: TickHandler)
   const conn = provider ? getProviderConnection(provider) : undefined
 
   const tickWrapper: TickHandler = (res, state, json) => {
-    if (state === 'partial') {
-      lastResponse = res
-    }
+    if (localStorage.error_test === 'gen-tick' && lazy.state === 'pending' && state !== 'error') {
+      lazy.reject(new Error(`Error test -- ${state}`))
+      opts.signal?.abort()
+      getStore('responses').setState({ waiting: undefined, partial: undefined })
+    } else {
+      if (state === 'partial') {
+        lastResponse = res
+      }
 
-    if (state === 'done') {
-      if (typeof res !== 'string') lazy.resolve(res)
-      else lazy.resolve({ response: res })
-    }
+      if (state === 'done') {
+        if (typeof res !== 'string') lazy.resolve(res)
+        else lazy.resolve({ response: res })
+      }
 
-    if (state === 'error') {
-      lazy.reject(res)
+      if (state === 'error') {
+        lazy.reject(res)
+        getStore('responses').setState({ waiting: undefined, partial: undefined })
+      }
     }
 
     onTick?.(res, state, json)
@@ -353,7 +361,6 @@ export async function inferenceStream(opts: InferenceOpts, onTick?: TickHandler)
     opts.signal.signal.onabort = () => {
       inferenceCallbacks.delete(requestId)
       tickWrapper(lastResponse, 'done')
-      // lazy.resolve({ response: lastResponse })
     }
   }
   if (conn?.local) {
@@ -372,6 +379,7 @@ export async function inferenceStream(opts: InferenceOpts, onTick?: TickHandler)
       messages: opts.messages,
       prompt: opts.prompt,
       settings: preset,
+      jsonSchema: opts.jsonSchema,
     })
     api.localSSE({
       host: conn?.url,
@@ -389,6 +397,11 @@ export async function inferenceStream(opts: InferenceOpts, onTick?: TickHandler)
       signal: opts.signal,
       onTick: tickWrapper,
     })
+  }
+
+  if (localStorage.error_test === 'gen-cancel') {
+    setTimeout(() => opts.signal?.abort(), 0)
+    toastStore.error('Gen cancelled test', { stack: new Error('Test').stack })
   }
 
   return lazy.promise

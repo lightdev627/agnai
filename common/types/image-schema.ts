@@ -22,6 +22,15 @@ export type BaseImageSettings = {
   seed?: number
 }
 
+export type ImagePresetSettings = {
+  clipSkip?: number
+  width: number
+  height: number
+  steps: number
+  cfg: number
+  seed?: number
+}
+
 export type ImageDefaults = {
   size: boolean
   affixes: boolean
@@ -58,6 +67,7 @@ export type ImageProviderSettings = {
   type: ImageProviderType
   url: string
   sampler: string
+  scheduler: string
   model: string
 
   // Inherit auth from Text Provider
