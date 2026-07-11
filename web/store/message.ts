@@ -274,8 +274,7 @@ export const msgStore = createStore<MsgState>(
 
       if (res.result) {
         const next = { ...prev, ...update, voiceUrl: undefined }
-        updateMessageInState(msgId, next)
-
+        applyGraphUpdates({ updates: [{ ...next, _id: msgId }] })
         onSuccess?.()
       }
     },
@@ -343,11 +342,7 @@ export const msgStore = createStore<MsgState>(
       }
 
       if (res.result) {
-        const next = msgs.map((msg) => {
-          if (msgId !== msg._id) return msg
-          return { ...msg, msg: text, retries }
-        })
-        yield { msgs: next }
+        applyGraphUpdates({ updates: [{ _id: msgId, msg: text, retries }] })
         onSuccess?.()
       }
     },
@@ -380,8 +375,7 @@ export const msgStore = createStore<MsgState>(
         toastStore.error(`Failed to discard message: ${res.error}`)
       }
       if (res.result) {
-        const nextMsgs = msgs.map((m) => (m._id === msgId ? { ...m, msg: text, retries } : m))
-        yield { msgs: nextMsgs }
+        applyGraphUpdates({ updates: [{ _id: msgId, msg: text, retries }] })
         onSuccess?.()
         toastStore.success(`Swipe deleted`, { ttl: 2 })
       }
@@ -623,8 +617,7 @@ async function handleImage(body: {
   if (!msg) return
 
   const extras = (msg.extras || []).slice().concat(cacheId ? cacheId : image)
-
-  updateMessageInState(messageId, { extras })
+  applyGraphUpdates({ updates: [{ _id: messageId, extras }] })
 
   if (chatId === activeChatId) {
     console.log('[wait] handle-img')
@@ -973,7 +966,7 @@ export async function hydrateMessageImages(messageId: string) {
   if (!curr) return
 
   const cached = await getMessageImages(messageId)
-  updateMessageInState(messageId, { extras: cached })
+  applyGraphUpdates({ updates: [{ _id: messageId, extras: cached }] })
 
   // Case 1. Initial load or first image
   // if (!curr.extras?.length) {
@@ -1009,20 +1002,6 @@ function applyGraphUpdates(params: {
     graph: newGraph,
     msgs: nextMsgs,
   })
-}
-
-function updateMessageInState(messageId: string, updates: Partial<AppSchema.ChatMessage>) {
-  const { msgs } = msgStore.getState()
-
-  const main = findOne(messageId, msgs)
-
-  if (!main) return
-
-  const nextMsg = { ...main, ...updates }
-  const next = replace(messageId, msgs, nextMsg)
-  const newGraph = toChatGraph(next)
-
-  msgStore.setState({ msgs: next, graph: { tree: newGraph.tree, root: newGraph.root } })
 }
 
 function getDeletingIds(fromId: string, deleteOne: boolean) {
