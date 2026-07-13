@@ -15,14 +15,13 @@ import { AppLog } from '../middleware'
 import { getTokenCounter } from '../tokenize'
 import { toChatCompletionPayload } from './chat-completion'
 import { sendOne } from '../api/ws'
-import { joinUrl, sanitiseAndTrim } from '/common/requests/util'
+import { joinUrl } from '/common/requests/util'
 import { GenSettings } from '/common/types/presets'
 import { OPENAI_MODELS } from '/common/presets/openai'
 import { CLAUDE_MODELS, CLAUDE_TEXT_MODELS } from '/common/presets/claude'
 import { fetchStream } from '/common/requests/stream'
 import { remapMessages } from './template-chat-payload'
 import { getMimeTypeBase64 } from '/common/util'
-import { getStoppingStrings } from '/common/requests/payloads'
 import { stripImageContent, toChatMessages } from '/common/template-messages'
 
 const CHAT_URL = `https://api.anthropic.com/v1/messages`
@@ -63,7 +62,7 @@ const TEMP_TOPP_EXCLUSIVE: Record<string, boolean> = {
 const encoder = () => getTokenCounter('claude', '')
 
 export const handleClaude: ModelAdapter = async function* (opts) {
-  let { members, user, log, guest, gen, isThirdParty } = opts
+  let { user, log, guest, gen, isThirdParty } = opts
   if (gen.providerId) {
     isThirdParty = true
   }
@@ -92,7 +91,6 @@ export const handleClaude: ModelAdapter = async function* (opts) {
     ? 'v2'
     : 'v1'
   const stops = new Set([`\n\nHuman:`, `\n\nAssistant:`])
-  const userStops = getStoppingStrings(opts, opts.gen)
 
   const payload: any = {
     model: claudeModel,
@@ -264,15 +262,7 @@ export const handleClaude: ModelAdapter = async function* (opts) {
 
     if ('token' in generated.value) {
       acc += generated.value.token
-      yield {
-        partial: sanitiseAndTrim({
-          text: acc,
-          char: opts.replyAs,
-          members,
-          gen: opts.gen,
-          stops: userStops,
-        }),
-      }
+      yield { partial: acc }
     }
 
     if ('thoughts' in generated.value) {
@@ -291,12 +281,7 @@ export const handleClaude: ModelAdapter = async function* (opts) {
       log.error({ body: resp }, 'Claude request failed: Empty response')
       yield { error: `Claude request failed: Received empty response. Try again.` }
     } else {
-      yield sanitiseAndTrim({
-        text: completion,
-        char: opts.replyAs,
-        members,
-        gen: opts.gen,
-      })
+      yield completion
     }
   } catch (ex: any) {
     log.error({ err: ex }, 'Claude failed to parse')

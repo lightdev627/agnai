@@ -1,4 +1,4 @@
-import { getOaiCompatibleUrl, joinUrl, sanitiseAndTrim } from '/common/requests/util'
+import { getOaiCompatibleUrl, joinUrl } from '/common/requests/util'
 import { AdapterProps, ChatRole, CompletionItem, ModelAdapter } from './type'
 import { defaultPresets } from '../../common/presets'
 import { AppLog } from '../middleware'
@@ -57,7 +57,7 @@ const REASONING_MODELS: Record<string, boolean> = {
 }
 
 export const handleOAI: ModelAdapter = async function* (opts) {
-  const { char, members, user, prompt, log, gen, guest, kind, isThirdParty } = opts
+  const { user, prompt, log, gen, guest, kind, isThirdParty } = opts
   const base = getOaiCompatibleUrl(gen, isThirdParty)
 
   let oaiKey = gen.providerId ? gen.thirdPartyKey : gen.thirdPartyKey || user.oaiKey
@@ -70,7 +70,6 @@ export const handleOAI: ModelAdapter = async function* (opts) {
   const maxResponseLength = gen.maxTokens ?? defaultPresets.openai.maxTokens
 
   const stops = getStoppingStrings(opts, opts.gen)
-  const allStops = stops.slice()
 
   if (!base.changed) {
     stops.splice(4, stops.length - 4)
@@ -102,8 +101,6 @@ export const handleOAI: ModelAdapter = async function* (opts) {
   //   body.presence_penalty = gen.presencePenalty ?? defaultPresets.openai.presencePenalty
   //   body.frequency_penalty = gen.frequencyPenalty ?? defaultPresets.openai.frequencyPenalty
   // }
-
-  applyReasoningPayload(opts, body)
 
   if (opts.jsonSchema) {
     const base: any = {}
@@ -275,15 +272,7 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     // Only the streaming generator yields individual tokens.
     if ('token' in generated.value) {
       accum.tokens += generated.value.token
-      yield {
-        partial: sanitiseAndTrim({
-          text: accum.tokens,
-          char,
-          members,
-          gen: opts.gen,
-          stops: allStops,
-        }),
-      }
+      yield { partial: accum.tokens }
     }
 
     if ('meta' in generated.value) {
@@ -310,29 +299,11 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     }
 
     if (gen.swipesPerGeneration! > 1) {
-      yield sanitiseAndTrim({
-        text: accum.tokens,
-        char,
-        members,
-        gen: opts.gen,
-        stops: allStops,
-      })
+      yield accum.tokens
     } else if (text?.length) {
-      yield sanitiseAndTrim({
-        text,
-        char: opts.replyAs,
-        members,
-        gen: opts.gen,
-        stops: allStops,
-      })
+      yield text
     } else if (accum.thoughts) {
-      sanitiseAndTrim({
-        text: accum.thoughts,
-        char: opts.replyAs,
-        members,
-        gen: opts.gen,
-        stops: allStops,
-      })
+      // ??? This was a function call with no side-effects?
     }
   } catch (ex: any) {
     log.error({ err: ex }, 'OpenAI failed to parse')
@@ -374,6 +345,8 @@ export function getCompletionContent(
 }
 
 function patchPayload(opts: AdapterProps, body: any, messages: CompletionItem<string>[]) {
+  applyReasoningPayload(opts, body)
+
   const { conn } = opts
   if (!conn.provider) return
 
@@ -413,9 +386,18 @@ function patchPayload(opts: AdapterProps, body: any, messages: CompletionItem<st
 
 function applyReasoningPayload(opts: AdapterProps, body: any) {
   const provider = opts.conn.provider?.provider
-  if (provider === 'known-zai' || provider === 'known-deepseek') {
-    body.thinking = { type: opts.gen.reasoning?.enabled ? 'enabled' : 'disabled' }
-    return
+
+  switch (provider) {
+    case 'known-zai':
+    case 'known-deepseek': {
+      body.thinking = { type: opts.gen.reasoning?.enabled ? 'enabled' : 'disabled' }
+      return
+    }
+
+    case 'known-nvidia': {
+      delete body.reasoning
+      return
+    }
   }
 
   if (!opts.gen.reasoning?.enabled) return
