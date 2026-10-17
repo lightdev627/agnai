@@ -2,7 +2,24 @@ import { ChubItem as ChubEntity } from '../pages/Chub/ChubItem'
 import { getStoredValue, setStoredValue } from '../shared/hooks'
 import { createStore } from './create'
 
+export const CHUB_SORTS = {
+  default: 'Default',
+  trending: 'Trending',
+  n_favorites: '# Favorites',
+  random: 'Random',
+  rating: 'Rating',
+  last_activity_at: 'Updated',
+  star_count: 'Popularity',
+  created_at: 'Created',
+  name: 'Name',
+  n_tokens: '# Tokens',
+  rating_count: '# Ratings',
+}
+
 export type ChubEntity = {
+  id: number
+  avatar_url?: string
+
   name: string
   description: string
   fullPath: string
@@ -17,6 +34,7 @@ export type ChubEntity = {
 }
 
 type ChubState = {
+  view: 'chars' | 'books'
   nsfw: boolean
   tags: string
   excludeTags: string
@@ -27,7 +45,7 @@ type ChubState = {
   page: number
   booksLoading: boolean
   charsLoading: boolean
-  officialTags: ChubTag[]
+  officialTags: { ttl: number; tags: ChubTag[] }
 }
 
 type ChubTag = {
@@ -38,35 +56,56 @@ type ChubTag = {
   title: string
 }
 
-export const CHUB_URL = `https://api.chub.ai/api`
+export const CHUB_URL = `https://api.chub.ai`
 
 const initState: ChubState = {
+  view: 'chars',
   nsfw: getStoredValue('chub-nsfw', false),
   tags: '',
   excludeTags: '',
-  sort: getStoredValue('chub-sort', 'Creation Date'),
+  sort: getStoredValue('chub-sort', 'Download Count'),
   search: '',
   chars: [],
   books: [],
   page: 1,
   booksLoading: false,
   charsLoading: false,
-  officialTags: getStoredValue('chub-tags', []),
+  officialTags: getStoredValue('chub-tags', { ttl: 0, tags: [] }),
 }
 
 export const chubStore = createStore<ChubState>(
   'chub',
   initState
 )((_, setState) => {
-  fetch('https://api.chub.ai/tags')
-    .then((res) => res.json())
-    .then((result) => {
-      setStoredValue('chub-tags', result.tags)
-      setState({ officialTags: result.tags })
-    })
-    .catch(() => null)
-
   return {
+    async initTags({ officialTags: prev }) {
+      if ('ttl' in prev && 'tags' in prev && prev.tags.length > 0) {
+        if (Date.now() < prev.ttl) return
+      }
+
+      const ttl = Date.now() + 60000 * 60 * 24
+
+      const result = await fetch('https://api.chub.ai/tags', {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          nsfl: false,
+          nsfw: true,
+          order_by: null,
+          sort: null,
+          offset: 0,
+          search: '',
+        }),
+      })
+        .then((res) => res.json())
+        .catch(() => null)
+
+      if (!result) return
+
+      setStoredValue('chub-tags', { ttl, tags: result.tags })
+      return { officialTags: { ttl, tags: result.tags } }
+    },
+
     setSearch(_, query: string) {
       return { search: query }
     },
@@ -87,20 +126,29 @@ export const chubStore = createStore<ChubState>(
     setPage(_, page: number) {
       return { page }
     },
+    async *getEntities({ view }, type?: 'books' | 'chars') {
+      if (type) {
+        yield { view: type }
+      }
+
+      let curr = type ?? view
+      if (curr === 'books') chubStore.getBooks()
+      else chubStore.getChars()
+    },
     async *getBooks(state) {
       if (state.booksLoading) return
 
       const { nsfw, tags, sort, excludeTags, search, page } = state
       yield { booksLoading: true }
       const res = await fetch(
-        `${CHUB_URL}/lorebooks/search?&search=${search}&first=${
-          48 * page
-        }&nsfw=${nsfw}&tags=${tags}&exclude_tags=${excludeTags}&sort=${getSort(sort)}`
+        `${CHUB_URL}/search?&search=${search}&first=48&page=${page}&nsfw=${nsfw}&tags=${tags}&exclude_tags=${excludeTags}&sort=${getSort(
+          sort
+        )}&namespace=lorebooks`
       )
       yield { booksLoading: false }
 
       const json = await res.json()
-      yield { books: json.nodes }
+      yield { books: json.data?.nodes }
     },
     async *getChars(state) {
       if (state.charsLoading) return
@@ -108,35 +156,28 @@ export const chubStore = createStore<ChubState>(
       const { search, page, tags, excludeTags, nsfw, sort } = state
       yield { charsLoading: true }
       const res = await fetch(
-        `${CHUB_URL}/characters/search?&search=${search}&first=${
-          48 * page
-        }&nsfw=${nsfw}&tags=${tags}&exclude_tags=${excludeTags}&sort=${getSort(sort)}`
+        `${CHUB_URL}/search?&search=${search}&first=48&page=${page}&nsfw=${nsfw}&tags=${tags}&exclude_tags=${excludeTags}&sort=${getSort(
+          sort
+        )}`
       )
       yield { charsLoading: false }
 
       const json = await res.json()
-      yield { chars: json.nodes }
+      yield { chars: json.data?.nodes }
     },
   }
 })
 
-function getSort(sort: string) {
-  switch (sort) {
-    case 'Download Count':
-      return 'download_count'
-    case 'ID':
-      return 'id'
-    case 'Rating':
-      return 'rating'
-    case 'Rating Count':
-      return 'rating_count'
-    case 'Last Activity':
-      return 'last_activity_at'
-    case 'Creation Date':
-      return 'created_at'
-    case 'Name':
-      return 'name'
-    case 'Token Count':
-      return 'n_tokens'
+export function createOnEnter(callback: Function) {
+  return (ev: KeyboardEvent) => {
+    ev.preventDefault?.()
+    if (ev.key !== 'Enter') return
+    callback()
   }
+}
+
+function getSort(sort: string): keyof typeof CHUB_SORTS {
+  const key = sort as keyof typeof CHUB_SORTS
+  if (!key || !CHUB_SORTS[key]) return 'default'
+  return key
 }

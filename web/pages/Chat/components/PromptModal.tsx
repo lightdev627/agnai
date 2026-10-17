@@ -1,15 +1,26 @@
-import { Component, createEffect, createSignal, onMount } from 'solid-js'
+import { Component, createEffect, createMemo, createSignal, onMount } from 'solid-js'
 import { getEncoder } from '../../../../common/tokenize'
 import Modal from '../../../shared/Modal'
 import TextInput from '../../../shared/TextInput'
 import { chatStore, userStore } from '../../../store'
-import { TokenCounter } from '/common/types'
+import { AppSchema, TokenCounter } from '/common/types'
+import { useParticipantList } from '../util'
+import CharacterSelect from '/web/shared/CharacterSelect'
+import { useAppContext } from '/web/store/context'
 
 const PromptModal: Component = () => {
-  const user = userStore()
-  const state = chatStore((s) => ({ prompt: s.prompt, chat: s.active?.chat }))
+  const user = userStore((s) => ({ user: s.user }))
+  const state = chatStore((s) => ({ prompt: s.prompt, chat: s.details[s.lastChatId]?.chat }))
   const [encoder, setEncoder] = createSignal<TokenCounter>()
   const [tokens, setTokens] = createSignal(0)
+  const lists = useParticipantList(true)
+  const [ctx] = useAppContext()
+
+  const options = createMemo(() => {
+    const all = lists()
+
+    return all.chars.concat(all.tempsActive).concat(all.tempsInactive)
+  })
 
   onMount(async () => {
     const enc = await getEncoder()
@@ -24,6 +35,11 @@ const PromptModal: Component = () => {
     const count = await encoder()!(state.prompt?.template.parsed || '')
     setTokens(count)
   })
+
+  const setPerspective = (char?: AppSchema.Character) => {
+    if (!char) return
+    chatStore.computePrompt(ctx.messages.path, state.prompt?.msg!, char)
+  }
 
   return (
     <Modal
@@ -50,6 +66,14 @@ const PromptModal: Component = () => {
               drastically alters token counts.
             </div>
             <div class="font-bold">Est. tokens: {tokens()}</div>
+            <div class="mb-1">
+              <CharacterSelect
+                horz="right"
+                items={options()}
+                fieldName="prompt-perspective"
+                onChange={setPerspective}
+              />
+            </div>
           </div>
         }
         value={state.prompt?.template.parsed}

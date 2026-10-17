@@ -1,10 +1,10 @@
 import needle from 'needle'
-import { ThirdPartyFormat } from '../adapters'
-import { requestStream } from './stream'
+import { streamGenerator } from './stream'
 import { PayloadOpts } from './types'
-import { toChatCompletionPayload } from '/srv/adapter/chat-completion'
-import { notify, sanitiseAndTrim } from './util'
+import { joinUrl } from './util'
 import { countTokens } from '../tokenize'
+import { toImageJinjaTemplate } from './payloads'
+import { stripImageContent, toChatMessages } from '../template-messages'
 
 type Role = 'user' | 'assistant' | 'system'
 export type CompletionItem = { role: Role; content: string; name?: string }
@@ -22,72 +22,70 @@ type Completion<T = Inference> = {
   error?: { message: string }
 }
 
-type LocalGenerator = (
-  url: string,
-  headers: Record<string, string | string[] | number>,
-  body: any,
-  format?: ThirdPartyFormat | 'openrouter'
-) => AsyncGenerator<
-  { error: string } | { error?: undefined; token: string } | Completion,
-  Completion | undefined
->
-
-export async function* handleOAI(opts: PayloadOpts, payload: any) {
+export async function* handleOAI(opts: PayloadOpts, signal: AbortController, payload: any) {
   const gen = opts.settings!
   const options = { ...opts, gen }
 
-  const messages = await toChatCompletionPayload(
-    options as any,
-    countTokens,
-    opts.settings?.maxTokens!
-  )
+  const { messages } = await toChatMessages(options, countTokens)
 
-  payload.messages = messages
-  payload.prompt = opts.prompt
+  if (gen.jinjaEnabled) {
+    payload.chat_template = toImageJinjaTemplate({
+      format: gen.modelFormat,
+      jinja: gen.jinjaTemplate,
+    })
+  }
+
+  if (opts.jsonSchema) {
+    payload.response_format = {
+      type: 'json_schema',
+      json_schema: opts.jsonSchema,
+    }
+  }
 
   const headers: any = {
     'Content-Type': 'application/json',
   }
 
-  if (gen.thirdPartyKey) {
-    headers.Authorization = `Bearer ${gen.thirdPartyKey}`
+  const provider = gen.providerId
+    ? opts.user.providers?.find((p) => p._id === gen.providerId)
+    : null
+  const key = provider?.userKey || gen.userThirdPartyKey
+
+  if (key) {
+    headers.Authorization = `Bearer ${key}`
+    headers['x-api-key'] = `${key}`
   }
 
-  const suffix = gen.thirdPartyUrl?.endsWith('/') ? '' : '/'
-  const urlPath = gen.thirdPartyFormat?.startsWith('openai-chat')
-    ? `${suffix}chat/completions`
-    : `${suffix}completions`
-  const fullUrl = `${gen.thirdPartyUrl}${urlPath}`
+  const urlPath = gen.thirdPartyFormat === 'openai' ? `/completions` : `/chat/completions`
 
-  if (!gen.streamResponse) {
-    const result = await requestFullCompletion(fullUrl, headers, payload)
-    if ('error' in result) {
-      yield result
-      return
-    }
+  // await validateModel(gen.thirdPartyUrl || '', payload, headers)
 
-    const text = getCompletionContent(result)
-    if (text instanceof Error) {
-      yield { error: `request returned an error: ${text.message}` }
-      return
-    }
-
-    if (!text?.length) {
-      yield { error: `request failed: Received empty response. Try again.` }
-      return
-    }
-
-    yield sanitiseAndTrim(text, opts.prompt, opts.replyAs, opts.characters, opts.members)
-    return
+  if (gen.thirdPartyFormat === 'openai') {
+    payload.prompt = opts.prompt
+    console.log(`Prompt:${opts.prompt}`)
+  } else {
+    payload.messages = messages
   }
 
-  const iter = streamCompletion(fullUrl, headers, payload, gen.thirdPartyFormat!)
+  console.log(`Prompt:\n`, JSON.stringify(stripImageContent(messages as any), null, 2))
+  const fullUrl = joinUrl(gen.thirdPartyUrl || '', urlPath)
+
+  const stream = streamGenerator({
+    userId: opts.user._id,
+    body: payload,
+    headers,
+    service: 'kobold',
+    signal,
+    url: fullUrl,
+    log: undefined,
+    format: gen.thirdPartyFormat,
+  })
 
   let accumulated = ''
   let response: Completion<Inference> | undefined
 
   while (true) {
-    let generated = await iter.next()
+    let generated = await stream.next()
 
     // Both the streaming and non-streaming generators return a full completion and yield errors.
     if (generated.done) {
@@ -103,140 +101,64 @@ export async function* handleOAI(opts: PayloadOpts, payload: any) {
     // Only the streaming generator yields individual tokens.
     if ('token' in generated.value) {
       accumulated += generated.value.token
-      yield {
-        partial: sanitiseAndTrim(
-          accumulated,
-          opts.prompt,
-          opts.char,
-          opts.characters,
-          opts.members
-        ),
+
+      if (gen.streamResponse) {
+        yield { partial: accumulated }
       }
     }
-  }
 
-  try {
-    let text = getCompletionContent(response)
-    if (text instanceof Error) {
-      yield { error: `request returned an error: ${text.message}` }
-      return
+    if ('gens' in generated.value) {
+      yield { gens: generated.value.gens }
     }
 
-    if (!text?.length) {
-      yield { error: `request failed: Received empty response. Try again.` }
-      return
+    if ('tokens' in generated.value && generated.value.tokens) {
+      yield { tokens: generated.value.tokens }
+      accumulated = generated.value.tokens
     }
 
-    yield sanitiseAndTrim(text, opts.prompt, opts.replyAs, opts.characters, opts.members)
-  } catch (ex: any) {
-    yield { error: `request failed: ${ex.message}` }
-    return
+    if ('meta' in generated.value) {
+      yield { meta: generated.value.meta }
+    }
+
+    if ('error' in generated.value) {
+      yield { error: generated.value.error }
+      return
+    }
   }
-}
 
-/**
- * Yields individual tokens as OpenAI sends them, and ultimately returns a full completion object
- * once the stream is finished.
- */
-export const streamCompletion: LocalGenerator = async function* (url, headers, body, format) {
-  const resp = needle.post(url, JSON.stringify(body), {
-    parse: false,
-    headers: {
-      ...headers,
-      Accept: 'text/event-stream',
-    },
-  })
-
-  const tokens = []
-  let meta = { id: '', created: 0, model: '', object: '', finish_reason: '', index: 0 }
-
-  try {
-    const events = requestStream(resp, format)
-    let prev = ''
-    for await (const event of events) {
-      if (event.error) {
-        yield { error: event.error }
+  if (!accumulated) {
+    try {
+      let text = getCompletionContent(response)
+      if (text instanceof Error) {
+        yield { error: `Request returned an error: ${text.message}` }
         return
       }
 
-      if (!event.data) {
-        continue
+      if (!text?.length) {
+        yield { error: `[local] Received empty response. Try again.` }
+        return
       }
 
-      if (event.type === 'ping') {
-        continue
-      }
-
-      if (event.data === '[DONE]') {
-        break
-      }
-
-      prev += event.data
-
-      // If we fail to parse we might need to parse with this bad data and the next event's data...
-      // So we'll keep it and try again next iteration
-      // tryParse() will attempt to parse with the current .data payload _before_ prepending with the previous attempt (if present)
-      const parsed = tryParse<Completion<AsyncDelta>>(event.data, prev)
-      if (!parsed) continue
-
-      // If we successfully parsed, ensure 'prev' is cleared so subsequent tryParse attempts don'ttoastStoredangling data
-      prev = ''
-
-      const { choices, ...evt } = parsed
-      if (!choices || !choices[0]) {
-        notify().warn(`[local] Received invalid SSE during stream`)
-
-        const message = evt.error?.message
-          ? `local interrupted the response: ${evt.error.message}`
-          : `local interrupted the response`
-
-        if (!tokens.length) {
-          yield { error: message }
-          return
-        }
-
-        break
-      }
-
-      const { finish_reason, index, ...choice } = choices[0]
-
-      meta = { ...evt, finish_reason, index }
-
-      if ('text' in choice) {
-        const token = choice.text
-        tokens.push(token)
-        yield { token }
-      } else if ('delta' in choice && choice.delta.content) {
-        const token = choice.delta.content
-        tokens.push(token)
-        yield { token }
-      }
+      accumulated = text
+    } catch (ex: any) {
+      yield { error: `Request failed: ${ex.message}` }
+      return
     }
-  } catch (err: any) {
-    notify().error(`local streaming request failed`)
-    yield { error: `local streaming request failed: ${err.message}` }
-    return
   }
 
-  return {
-    id: meta.id,
-    created: meta.created,
-    model: meta.model,
-    object: meta.object,
-    choices: [
-      {
-        finish_reason: meta.finish_reason,
-        index: meta.index,
-        text: tokens.join(''),
-      },
-    ],
-  }
+  yield accumulated
 }
 
-export async function requestFullCompletion(url: string, headers: any, body: any) {
+export async function requestFullCompletion(
+  url: string,
+  headers: any,
+  body: any,
+  signal: AbortController
+) {
   try {
     const resp = await needle('post', url, JSON.stringify(body), {
       json: true,
+      signal: signal.signal,
       response_timeout: 0,
       read_timeout: 0,
       open_timeout: 90000,
@@ -260,20 +182,6 @@ export async function requestFullCompletion(url: string, headers: any, body: any
   }
 }
 
-function tryParse<T = any>(value: string, prev?: string): T | undefined {
-  try {
-    const parsed = JSON.parse(value)
-    return parsed
-  } catch (ex) {}
-
-  try {
-    const parsed = JSON.parse(prev + value)
-    return parsed
-  } catch (ex) {}
-
-  return
-}
-
 function getCompletionContent(completion: Completion<Inference> | undefined) {
   if (!completion) {
     return ''
@@ -283,9 +191,32 @@ function getCompletionContent(completion: Completion<Inference> | undefined) {
     return new Error(completion.error.message)
   }
 
-  if ('text' in completion.choices[0]) {
-    return completion.choices[0].text
+  const choice = completion?.choices?.[0] || {}
+
+  if ('text' in choice) {
+    return choice.text
   } else {
-    return completion.choices[0].message.content
+    return choice.message?.content
   }
 }
+
+// async function validateModel(baseURL: string, payload: any, headers: any) {
+//   const res = await needle('get', joinUrl(baseURL, '/models'), {
+//     headers,
+//     json: true,
+//   }).catch(() => null)
+
+//   if (!res) return
+
+//   const code = res.statusCode ?? 400
+//   if (code >= 400) {
+//     return
+//   }
+
+//   if (!Array.isArray(res.body.data)) return
+//   const names = res.body.data.map((data: any) => data.id) as string[]
+
+//   if (!payload.model || !names.includes(payload.model)) {
+//     payload.model = names[0]
+//   }
+// }

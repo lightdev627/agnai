@@ -16,16 +16,17 @@ export const ChubItem: Component<{
   loading?: () => void
   book?: boolean
   description: string
-  setBook?: (book: AppSchema.MemoryBook, fullPath: string) => void
-  setChar?: (char: NewCharacter, fullPath: string) => void
+  setBook?: (book: AppSchema.MemoryBook, fullPath: string, entity: ChubEntity) => void
+  setChar?: (char: NewCharacter, fullPath: string, entity: ChubEntity) => void
 }> = (props) => {
   const [memorybook, setMemoryBook] = createSignal<any>({})
 
   const loadEntity = async () => {
     props.loading?.()
     if (props.book) {
-      const book = await processBook(props.fullPath)
+      const book = await processBook(props.entity)
       setMemoryBook(book)
+
       props.setBook?.(
         {
           _id: '',
@@ -33,19 +34,24 @@ export const ChubItem: Component<{
           name: memorybook().name == 'Exported' ? props.name : memorybook().name,
           description: memorybook().description,
           userId: '',
-          entries: memorybook().entries,
+          entries: convertEntries(book),
         },
-        props.fullPath
+        props.fullPath,
+        props.entity
       )
       return
     }
 
-    const file = await processChar(props.fullPath)
+    const file = await processChar(props.fullPath, props.entity)
     const json = await extractCardData(file)
     if (!json) {
       throw new Error('Invalid tavern image')
     }
-    props.setChar?.(Object.assign(jsonToCharacter(json), { avatar: file }), props.fullPath)
+    props.setChar?.(
+      Object.assign(jsonToCharacter(json), { avatar: file }),
+      props.fullPath,
+      props.entity
+    )
   }
 
   return (
@@ -73,16 +79,27 @@ export const ChubItem: Component<{
           </div>
         </div>
         <div class="w-full text-sm">
-          <div class="w-full overflow-hidden text-ellipsis whitespace-nowrap px-1 text-sm font-bold">
+          <div
+            class="w-full overflow-hidden text-ellipsis whitespace-nowrap px-1 text-sm font-bold"
+            title={props.name}
+          >
             {props.name}
           </div>
-          <div class="text-600 line-clamp-3 h-[3rem] text-ellipsis px-1 text-center text-xs font-normal">
+          <div
+            class="text-600 line-clamp-3 h-[3rem] text-ellipsis px-1 text-center text-xs font-normal"
+            title={props.description}
+          >
             {props.description}
           </div>
-          <div class="flex h-10 flex-wrap justify-center gap-1 overflow-hidden px-1">
+          <div class="flex max-h-12 flex-wrap justify-center gap-1 overflow-hidden px-1 pb-1">
             <For each={props.entity?.topics || []}>
               {(tag) => (
-                <Pill inverse small type="hl" class="h-[16px] max-w-[80px] text-[10px]">
+                <Pill
+                  inverse
+                  small
+                  type="hl"
+                  class="h-[16px] max-w-[80px] px-1 py-0.5 text-[10px] leading-[16px]"
+                >
                   <span class="ellipsis">{tag}</span>
                 </Pill>
               )}
@@ -99,3 +116,20 @@ const TinyPill: Component<{ children: any }> = (props) => (
     {props.children}
   </Pill>
 )
+
+function convertEntries(book: any) {
+  const original: any[] = Array.isArray(book.entries)
+    ? book.entries
+    : Array.from(Object.values(book.entries))
+
+  const entries = original.map((o) => {
+    return {
+      ...o,
+      keywords: o.keys,
+      weight: o.insertion_order ?? 0,
+      entry: o.content || '',
+    }
+  })
+
+  return entries
+}

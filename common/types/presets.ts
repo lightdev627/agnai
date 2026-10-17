@@ -1,7 +1,30 @@
 import { AIAdapter, OpenRouterModel, ThirdPartyFormat } from '../adapters'
 import { ModelFormat } from '../presets/templates'
-import { BaseImageSettings, ImageSettings } from './image-schema'
+import { ProviderFormat } from '../providers'
+import { BaseImageSettings } from './image-schema'
 import { ResponseSchema } from './library'
+
+export interface Provider {
+  _id: string
+  /** 'custom-* | self-* | known-*' */
+  provider: string
+
+  /** For providers that have multiple formats (Claude, OpenAI, ...) */
+  format?: ProviderFormat
+
+  /** For annoying providers like OpenAI and Mistral that don't version their APIs correctly */
+  subFormat?: string
+
+  /** User-provided name */
+  name: string
+  url: string
+
+  disableAutoUrl: boolean
+
+  key: string
+  keySet?: boolean
+  userKey?: string
+}
 
 export interface SubscriptionTier {
   kind: 'subscription-tier'
@@ -37,7 +60,14 @@ export interface SubscriptionModelOption {
   preset: GenSettings &
     Pick<
       SubscriptionModel,
-      'allowGuestUsage' | 'isDefaultSub' | '_id' | 'service' | 'levels' | 'subLevel' | 'subDisabled'
+      | 'allowGuestUsage'
+      | 'isDefaultSub'
+      | '_id'
+      | 'service'
+      | 'levels'
+      | 'subLevel'
+      | 'subDisabled'
+      | 'subVisionModel'
     > & {
       kind: 'submodel'
     }
@@ -57,11 +87,11 @@ export interface SubscriptionModel extends GenSettings {
   subApiKey: string
   subApiKeySet?: boolean
   subServiceUrl?: string
+  subVisionModel?: boolean
   subDisabled: boolean
   allowGuestUsage?: boolean
   isDefaultSub?: boolean
   deletedAt?: string
-  tokenizer?: string
   guidanceCapable?: boolean
   jsonSchemaCapable?: boolean
   levels: SubscriptionModelLevel[]
@@ -73,12 +103,36 @@ export interface UserGenPreset extends GenSettings {
   userId: string
 }
 
+export type PresetParser = {
+  type: 'replace' | 'remove' | 'remove-prompt' | 'replace-prompt'
+  text: string
+  to?: string
+}
+
+export type Sampler =
+  | 'topK'
+  | 'typicalP'
+  | 'topP'
+  | 'topA'
+  | 'repetitionPenalty'
+  | 'frequencyPenalty'
+  | 'minP'
+  | 'tailFreeSampling'
+  | 'temperature'
+
+export type SamplerState = 'on' | 'off' | 'auto' | string
+
+export type ReasoningEffort = 'custom' | 'high' | 'medium' | 'low' | 'none'
+
 export interface GenSettings {
   name: string
+  userId?: string
   description?: string
   presetMode?: 'simple' | 'advanced' | undefined
 
   service?: AIAdapter
+  providerId?: string
+  tokenizer?: string
 
   temp: number
   tempLast?: boolean
@@ -118,10 +172,14 @@ export interface GenSettings {
   numBeams?: number
 
   localRequests?: boolean
+  userThirdPartyKey?: string
+
   addBosToken?: boolean
   banEosToken?: boolean
   tokenHealing?: boolean
 
+  skipRoleMerging?: boolean
+  postUserRole?: boolean
   disableNameStops?: boolean
   earlyStopping?: boolean
   stopSequences?: string[]
@@ -141,6 +199,8 @@ export interface GenSettings {
   cfgScale?: number
   cfgOppose?: string
 
+  jinjaTemplate?: string
+  jinjaEnabled?: boolean
   systemPrompt?: string
   ignoreCharacterSystemPrompt?: boolean
   gaslight?: string
@@ -154,9 +214,21 @@ export interface GenSettings {
   prefill?: string
   ignoreCharacterUjb?: boolean
   antiBond?: boolean
+  reasoning?: {
+    start: string
+    end: string
+    effort: ReasoningEffort
+    enabled: boolean
+    exclude: boolean
+    maxTokens: number
+  }
 
   frequencyPenalty?: number
   presencePenalty?: number
+
+  providerModels?: Record<string, string>
+  providerSettings?: Record<string, any>
+
   oaiModel?: string
   novelModel?: string
   claudeModel?: string
@@ -171,6 +243,9 @@ export interface GenSettings {
   thirdPartyUrlNoSuffix?: boolean
   thirdPartyModel?: string
   thirdPartyKey?: string
+
+  /** API-controlled property */
+  thirdPartyKeySet?: boolean
 
   replicateModelName?: string
   replicateModelType?: string
@@ -189,15 +264,17 @@ export interface GenSettings {
   imageSettings?: BaseImageSettings
 
   json?: ResponseSchema
-  jsonEnabled?: boolean
-  jsonSource?: 'preset' | 'character'
-
-  useCharacterSchema?: boolean
+  jsonEnabled?: boolean | 'off' | 'standard' | 'separate'
+  jsonSource?: 'preset' | 'character' | 'json-preset'
 
   temporary?: Record<string, any>
   registered?: { [key in AIAdapter]?: Record<string, any> }
 
   updatedAt?: string
+
+  parsers?: PresetParser[]
+
+  samplers?: { [key in Sampler]?: SamplerState }
 }
 
 export interface PromptTemplate {
@@ -211,10 +288,44 @@ export interface PromptTemplate {
   updatedAt: string
 }
 
-export interface ImagePreset extends ImageSettings {
-  kind: 'image-preset'
+export interface ImageSamplers {
+  sampler: string
+  steps: number
+  clipSkip: number
+  width: number
+  height: number
+  cfg: number
+  seed?: number
+
+  /** Agnaistic specific */
+  draftMode: boolean
+  loras?: Array<{ id: string; clipStrength: boolean; modelStrength: number; enabled: boolean }>
+
+  /** NovelAI specific */
+  ucPreset: string
+  qualityTags: boolean
+}
+export interface ImagePreset extends ImageSamplers {
   _id: string
   userId: string
+  kind: 'image-preset'
+
   name: string
   description: string
+
+  providerId: string
+  providerModels?: Record<string, { id: string }>
+}
+
+export type ImageHost = 'agnaistic' | 'novel' | 'sdapi' | 'horde'
+
+export type ImageProvider = {
+  type: ImageHost
+  name: string
+
+  url: string
+
+  key: string
+  userKey?: string //
+  keySet?: boolean
 }

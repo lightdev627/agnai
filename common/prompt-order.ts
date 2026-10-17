@@ -1,3 +1,4 @@
+import { defaultSystemPrompt } from './presets/templates'
 import { AppSchema } from './types'
 import { neat } from './util'
 
@@ -86,53 +87,7 @@ export const SIMPLE_ORDER: NonNullable<AppSchema.GenSettings['promptOrder']> = [
 
 export const formatHolders: Record<string, Record<string, string>> = {
   Universal: {
-    system_prompt: neat`<system>{{#if system_prompt}}{{value}}{{#else}}Write "{{char}}'s" next reply in a fictional roleplay chat between "{{char}}" and "{{user}}"{{/else}}{{/if}}`,
-    scenario: neat`{{#if scenario}}The scenario of the conversation:\n{{scenario}}\n{{/if}}`,
-    memory: neat`{{#if memory}}"{{char}}'s" memories:\n{{memory}}\n{{/if}}`,
-    personality: neat`{{#if personality}}{{char}}'s personality:\n{{personality}}\n{{/if}}`,
-    impersonating: neat`{{#if impersonating}}{{user}}'s personality:\n{{impersonating}}\n{{/if}}`,
-    chat_embed: neat`{{#if chat_embed}}Relevant past conversation history:\n{{chat_embed}}\n{{/if}}`,
-    example_dialogue: neat`{{#if example_dialogue}}How "{{char}}" speaks:\n{{example_dialogue}}\n{{/if}}`,
-    history: neat`Then the roleplay chat between {{user}} and {{char}} begins.</system>
-    
-    {{#each msg}}{{#if .isbot}}<bot>{{/if}}{{#if .isuser}}<user>{{/if}}{{.name}}: {{.msg}}{{#if .isbot}}</bot>{{/if}}{{#if .isuser}}</user>{{/if}}{{/each}}`,
-    post: neat`<bot>{{#if ujb}}({{value}}) {{/if}}{{post}}`,
-  },
-  Alpaca: {
-    system_prompt: `### System:\n{{#if system_prompt}}{{value}}{{#else}}Write "{{char}}'s" next reply in a fictional roleplay chat between "{{char}}" and "{{user}}"{{/else}}{{/if}}`,
-    history: neat`Then the roleplay chat between "{{user}}" and "{{char}}" begins.
-    
-    {{#each msg}}{{#if .isbot}}### Response:\n{{.name}}: {{.msg}}{{/if}}{{#if .isuser}}### Instruction:\n{{.name}}: {{.msg}}{{/if}}
-    {{/each}}`,
-    post: `### Response:\n{{#if ujb}}({{value}}) {{/if}}{{post}}`,
-  },
-  Vicuna: {
-    system_prompt: neat`{{#if system_prompt}}{{value}}{{#else}}Write "{{char}}'s" next reply in a fictional roleplay chat between "{{char}}" and "{{user}}"{{/else}}{{/if}}`,
-    history: neat`Then the roleplay chat between "{{user}}" and "{{char}}" begins.
-    
-    {{#each msg}}{{#if .isbot}}ASSISTANT:\n{{.name}}: {{.msg}}{{/if}}{{#if .isuser}}USER:\n{{.name}}: {{.msg}}{{/if}}
-    {{/each}}`,
-    post: `ASSISTANT: {{#if ujb}}({{value}}) {{/if}}{{post}}`,
-  },
-  Mistral: {
-    system_prompt: neat`[INST] {{#if system_prompt}}{{value}}{{#else}}Write "{{char}}'s" next reply in a fictional roleplay chat between "{{char}}" and "{{user}}"{{/else}}{{/if}} [/INST]`,
-    history: neat`Then the roleplay chat between "{{user}}" and "{{char}}" begins.
-    
-    {{#each msg}}{{#if .isbot}}\n{{.name}}: {{.msg}}{{/if}}{{#if .isuser}}[INST] {{.name}}: {{.msg}} [/INST]{{/if}}
-    {{/each}}`,
-    post: `{{#if ujb}}({{value}}) {{/if}}{{post}}`,
-  },
-  Metharme: {
-    system_prompt: `<|system|>{{#if system_prompt}}{{value}}{{#else}}Write "{{char}}'s" next reply in a fictional roleplay chat between "{{char}}" and "{{user}}"{{/else}}{{/if}}`,
-    history: neat`Then the roleplay chat between "{{user}}" and "{{char}}" begins.
-    
-    {{#each msg}}{{#if .isbot}}<|model|>{{/if}}{{#if .isuser}}<|user|>{{/if}}{{.name}}: {{.msg}}
-    {{/each}}`,
-    post: `<|model|>{{#if ujb}}({{value}}) {{/if}}{{post}}`,
-  },
-  ChatML: {
-    system_prompt: neat`<|im_start|>system
-    {{#if system_prompt}}{{value}}{{#else}}Write "{{char}}'s" next reply in a fictional roleplay chat between "{{char}}" and "{{user}}"{{/else}}{{/if}}<|im_end|>`,
+    system_prompt: neat`<system>{{#if system_prompt}}{{value}}{{#else}}${defaultSystemPrompt}{{/else}}{{/if}}</system>`,
     scenario: neat`{{#if scenario}}The scenario of the conversation:\n{{scenario}}\n{{/if}}`,
     memory: neat`{{#if memory}}"{{char}}'s" memories:\n{{memory}}\n{{/if}}`,
     personality: neat`{{#if personality}}{{char}}'s personality:\n{{personality}}\n{{/if}}`,
@@ -141,13 +96,71 @@ export const formatHolders: Record<string, Record<string, string>> = {
     example_dialogue: neat`{{#if example_dialogue}}How "{{char}}" speaks:\n{{example_dialogue}}\n{{/if}}`,
     history: neat`Then the roleplay chat between {{user}} and {{char}} begins.
     
-    {{#each msg}}<|im_start|>{{#if .isbot}}assistant{{/if}}{{#if .isuser}}user{{/if}}\n{{.name}}: {{.msg}}<|im_end|>{{/each}}`,
+    {{#each msg}}{{#if .isbot}}<bot>{{/if}}{{#if .isuser}}<user>{{/if}}{{.name}}: {{.msg}}{{#if .isbot}}</bot>{{/if}}{{#if .isuser}}</user>{{/if}}{{/each}}`,
+    post: neat`{{#if vars.hint}}(Hint: {{vars.hint}}){{/if}}
+    
+    <bot>{{#if ujb}}({{value}}) {{/if}}{{post}}`,
+  },
+  Alpaca: {
+    system_prompt: `### System:\n{{#if system_prompt}}{{value}}{{#else}}${defaultSystemPrompt}{{/else}}{{/if}}`,
+    history: neat`Then the roleplay chat between "{{user}}" and "{{char}}" begins.
+    
+    {{#each msg}}{{#if .isbot}}### Response:\n{{.name}}: {{.msg}}{{/if}}{{#if .isuser}}### Instruction:\n{{.name}}: {{.msg}}{{/if}}
+    {{/each}}
+
+    {{#if vars.hint}}(Hint: {{vars.hint}}){{/if}}`,
+    post: `### Response:\n{{#if ujb}}({{value}}) {{/if}}{{post}}`,
+  },
+  Vicuna: {
+    system_prompt: neat`{{#if system_prompt}}{{value}}{{#else}}${defaultSystemPrompt}{{/else}}{{/if}}`,
+    history: neat`Then the roleplay chat between "{{user}}" and "{{char}}" begins.
+    
+    {{#each msg}}{{#if .isbot}}ASSISTANT:\n{{.name}}: {{.msg}}{{/if}}{{#if .isuser}}USER:\n{{.name}}: {{.msg}}{{/if}}
+    {{/each}}
+    
+    {{#if vars.hint}}(Hint: {{vars.hint}}){{/if}}`,
+    post: `ASSISTANT: {{#if ujb}}({{value}}) {{/if}}{{post}}`,
+  },
+  Mistral: {
+    system_prompt: neat`[SYSTEM_PROMPT] {{#if system_prompt}}{{value}}[/SYSTEM_PROMPT]{{#else}}${defaultSystemPrompt}[/SYSTEM_PROMPT]{{/else}}{{/if}}`,
+    history: neat`Then the roleplay chat between "{{user}}" and "{{char}}" begins.
+    
+    {{#each msg}}{{#if .isbot}}\n{{.name}}: {{.msg}}{{/if}}{{#if .isuser}}[INST] {{.name}}: {{.msg}} [/INST]{{/if}}
+    {{/each}}
+    
+    {{#if vars.hint}}(Hint: {{vars.hint}}){{/if}}`,
+    post: `{{#if ujb}}({{value}}) {{/if}}{{post}}`,
+  },
+  Metharme: {
+    system_prompt: `<|system|>{{#if system_prompt}}{{value}}{{#else}}${defaultSystemPrompt}{{/else}}{{/if}}`,
+    history: neat`Then the roleplay chat between "{{user}}" and "{{char}}" begins.
+    
+    {{#each msg}}{{#if .isbot}}<|model|>{{/if}}{{#if .isuser}}<|user|>{{/if}}{{.name}}: {{.msg}}
+    {{/each}}
+    
+    {{#if vars.hint}}(Hint: {{vars.hint}}){{/if}}`,
+    post: `<|model|>{{#if ujb}}({{value}}) {{/if}}{{post}}`,
+  },
+  ChatML: {
+    system_prompt: neat`<|im_start|>system
+    {{#if system_prompt}}{{value}}<|im_end|>{{#else}}${defaultSystemPrompt}<|im_end|>{{/else}}{{/if}}`,
+    scenario: neat`{{#if scenario}}The scenario of the conversation:\n{{scenario}}\n{{/if}}`,
+    memory: neat`{{#if memory}}"{{char}}'s" memories:\n{{memory}}\n{{/if}}`,
+    personality: neat`{{#if personality}}{{char}}'s personality:\n{{personality}}\n{{/if}}`,
+    impersonating: neat`{{#if impersonating}}{{user}}'s personality:\n{{impersonating}}\n{{/if}}`,
+    chat_embed: neat`{{#if chat_embed}}Relevant past conversation history:\n{{chat_embed}}\n{{/if}}`,
+    example_dialogue: neat`{{#if example_dialogue}}How "{{char}}" speaks:\n{{example_dialogue}}\n{{/if}}`,
+    history: neat`Then the roleplay chat between {{user}} and {{char}} begins.
+    
+    {{#each msg}}<|im_start|>{{#if .isbot}}assistant{{/if}}{{#if .isuser}}user{{/if}}\n{{.name}}: {{.msg}}<|im_end|>{{/each}}
+    
+    {{#if vars.hint}}(Hint: {{vars.hint}}){{/if}}`,
     post: neat`<|im_start|>assistant
     {{#if ujb}}({{value}}) {{/if}}{{post}}`,
   },
   Llama3: {
     system_prompt: neat`<|begin_of_text|><|start_header_id|>system
-    {{#if system_prompt}}{{value}}{{#else}}Write "{{char}}'s" next reply in a fictional roleplay chat between "{{char}}" and "{{user}}"{{/else}}{{/if}}<|eot_id|>`,
+    {{#if system_prompt}}{{value}}<|eot_id|>{{#else}}${defaultSystemPrompt}<|eot_id|>{{/else}}{{/if}}`,
     scenario: neat`{{#if scenario}}The scenario of the conversation:\n{{scenario}}\n{{/if}}`,
     memory: neat`{{#if memory}}"{{char}}'s" memories:\n{{memory}}\n{{/if}}`,
     personality: neat`{{#if personality}}"{{char}}'s" personality:\n{{personality}}\n{{/if}}`,
@@ -156,7 +169,9 @@ export const formatHolders: Record<string, Record<string, string>> = {
     example_dialogue: neat`{{#if example_dialogue}}How "{{char}}" speaks:\n{{example_dialogue}}\n{{/if}}`,
     history: neat`Then the roleplay chat between "{{user}}" and "{{char}}" begins.
     
-    {{#each msg}}<|start_header_id|>{{#if .isbot}}assistant{{/if}}{{#if .isuser}}user{{/if}}{{.name}}: {{.msg}}<|eot_id|>{{/each}}`,
+    {{#each msg}}<|start_header_id|>{{#if .isbot}}assistant{{/if}}{{#if .isuser}}user{{/if}}{{.name}}: {{.msg}}<|eot_id|>{{/each}}
+    
+    {{#if vars.hint}}(Hint: {{vars.hint}}){{/if}}`,
     post: neat`<|start_header_id|>assistant
     {{#if ujb}}({{value}}) {{/if}}{{post}}`,
   },

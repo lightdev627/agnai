@@ -1,11 +1,12 @@
 import { api, isLoggedIn } from '../api'
 import { AppSchema } from '../../../common/types/schema'
 import { localApi } from './storage'
-import { toArray } from '/common/util'
+import { exclude, replace, toArray } from '/common/util'
 import { UI } from '/common/types'
 import { storage } from '/web/shared/util'
 import { HORDE_SEED } from '/common/horde-gen'
 import { AIAdapter } from '/common/adapters'
+import { v4 } from 'uuid'
 
 export type InitEntities = {
   profile: AppSchema.Profile
@@ -15,6 +16,11 @@ export type InitEntities = {
   books: AppSchema.MemoryBook[]
   replicate: any
   scenarios: AppSchema.ScenarioBook[]
+
+  allChars?: any
+  allChats?: any
+  cachedPresets?: boolean
+  cachedBooks?: boolean
 }
 
 export const usersApi = {
@@ -31,16 +37,81 @@ export const usersApi = {
   updateUI,
   updateServiceConfig,
   novelLogin,
+  saveProvider,
+  deleteProvider,
+  deleteProviderKey,
 }
 
-export async function getInit() {
+export async function getInit(caches?: { presets?: any[]; books?: any[]; templates?: any[] }) {
   if (isLoggedIn()) {
-    const res = await api.get<InitEntities>(`/user/init?seed=${HORDE_SEED}&ts=${Date.now()}`)
+    const query: any = {}
+    if (caches?.books?.length) {
+      query['omit-books'] = 'true'
+    }
+
+    if (caches?.presets?.length) {
+      query['omit-presets'] = 'true'
+    }
+
+    if (caches?.templates?.length) {
+      query['omit-templates'] = 'true'
+    }
+
+    const res = await api.get<InitEntities>(`/user/init?seed=${HORDE_SEED}&ts=${Date.now()}`, query)
     return res
   }
 
   const init = await localApi.handleGuestInit()
   return init
+}
+
+async function deleteProviderKey(providerId: string) {
+  if (isLoggedIn()) {
+    const res = await api.method('delete', '/user/provider-key', { id: providerId, providerId })
+    return res
+  }
+
+  const user = await localApi.loadItem('config')
+  const providers = user.providers || []
+
+  const next = providers.map((p) => {
+    if (p._id !== providerId) return p
+    return { ...p, key: '', keySet: false }
+  })
+  user.providers = next
+  await localApi.saveConfig(user)
+  return { result: user, error: undefined }
+}
+
+async function saveProvider(provider: AppSchema.Provider) {
+  if (isLoggedIn()) {
+    const res = await api.post('/user/provider', provider)
+    return res
+  }
+
+  const user = await localApi.loadItem('config')
+  const providers = user.providers || []
+
+  const upsert = { ...provider, keySet: !!provider.key, _id: provider._id ? provider._id : v4() }
+  const exists = providers.some((p) => p._id === upsert._id)
+
+  user.providers = exists ? replace(provider._id, providers, upsert) : providers.concat(upsert)
+  await localApi.saveConfig(user)
+  return { result: user, error: undefined }
+}
+
+async function deleteProvider(providerId: string) {
+  if (isLoggedIn()) {
+    const res = await api.method('delete', '/user/provider', { providerId })
+    return res
+  }
+
+  const user = await localApi.loadItem('config')
+  const providers = exclude(user.providers || [], [providerId])
+
+  user.providers = providers
+  await localApi.saveConfig(user)
+  return { result: user, error: undefined }
 }
 
 export async function getSubscriptions() {

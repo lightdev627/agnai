@@ -1,4 +1,4 @@
-import { Plus, Trash, WandSparkles } from 'lucide-solid'
+import { Plus, Sparkles, Trash } from 'lucide-solid'
 import {
   Component,
   createEffect,
@@ -15,7 +15,6 @@ import TextInput from './TextInput'
 import { getEncoder } from '/common/tokenize'
 import { formatCharacter } from '/common/characters'
 import { AppSchema } from '/common/types'
-import { CharEditor } from '../pages/Character/editor'
 import { SetStoreFunction } from 'solid-js/store'
 import { createDebounce } from './util'
 
@@ -39,7 +38,7 @@ const PersonaAttributes: Component<{
   tokenCount?: boolean | ((count: number) => void)
   form?: any
   disabled?: boolean
-  editor?: CharEditor
+  generate?: (prop: string, trait?: string) => void
 }> = (props) => {
   const [tokens, setTokens] = createSignal(0)
 
@@ -197,7 +196,7 @@ const PersonaAttributes: Component<{
                 remove={remove}
                 disabled={props.disabled}
                 update={update}
-                editor={props.editor}
+                generate={props?.generate}
                 // onKey={onKey}
               />
             )}
@@ -214,7 +213,8 @@ const Attribute: Component<{
   remove: (i: number) => void
   update: (attr: Attr, index: number, prop: 'key' | 'values', value: string) => void
   disabled?: boolean
-  editor?: CharEditor
+  generate?: (prop: string, trait?: string) => void
+  // editor?: CharEditor
   // onKey: (key: string, i: number) => void
 }> = (props) => {
   return (
@@ -227,12 +227,13 @@ const Attribute: Component<{
           disabled={props.disabled}
           onChange={(ev) => props.update(props.attr, props.index, 'key', ev.currentTarget.value)}
         />
-        <Show when={props.editor}>
+        <Show when={props.generate}>
           <Button
             schema="secondary"
-            onClick={() => props.editor?.generateField('persona', props.attr.key)}
+            onClick={() => props.generate?.('persona', props.attr.key)}
+            disabled={props.disabled}
           >
-            <WandSparkles size={20} />
+            <Sparkles size={20} />
           </Button>
         </Show>
         <Button schema="red" onClick={() => props.remove(props.index)}>

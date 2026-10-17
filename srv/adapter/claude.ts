@@ -1,5 +1,4 @@
 import needle from 'needle'
-import { requestStream } from './stream'
 import { ModelAdapter, AdapterProps, CompletionItem } from './type'
 import { decryptText } from '../db/util'
 import { defaultPresets } from '../../common/presets'
@@ -12,14 +11,16 @@ import {
   SAMPLE_CHAT_MARKER,
   insertsDeeperThanConvoHistory,
 } from '../../common/prompt'
-import { AppSchema } from '../../common/types/schema'
 import { AppLog } from '../middleware'
 import { getTokenCounter } from '../tokenize'
-import { CLAUDE_CHAT_MODELS, OPENAI_MODELS } from '/common/adapters'
-import { toChatCompletionPayload } from './chat-completion'
 import { sendOne } from '../api/ws'
-import { sanitiseAndTrim } from '/common/requests/util'
+import { joinUrl } from '/common/requests/util'
 import { GenSettings } from '/common/types/presets'
+import { CLAUDE_MODELS, CLAUDE_TEXT_MODELS } from '/common/presets/claude'
+import { fetchStream } from '/common/requests/stream'
+import { remapMessages } from './template-chat-payload'
+import { getMimeTypeBase64 } from '/common/util'
+import { stripImageContent } from '/common/template-messages'
 
 const CHAT_URL = `https://api.anthropic.com/v1/messages`
 const TEXT_URL = `https://api.anthropic.com/v1/complete`
@@ -37,32 +38,56 @@ type ClaudeCompletion = {
   log_id: string
 }
 
-type CompletionGenerator = (
-  url: string,
-  body: Record<string, any>,
-  headers: Record<string, string | string[] | number>,
-  userId: string,
+type CompletionGenerator = (opts: {
+  url: string
+  body: Record<string, any>
+  headers: Record<string, any>
+  signal: AbortController
+  userId: string
   log: AppLog
-) => AsyncGenerator<{ error: string } | { token: string }, ClaudeCompletion | undefined>
+}) => AsyncGenerator<{ error?: string; token?: string; meta?: any }, ClaudeCompletion | undefined>
+
+const TEMP_TOPP_EXCLUSIVE: Record<string, boolean> = {
+  'claude-haiku-4-5-20251001': false,
+  'claude-sonnet-4-5-20250929': false,
+  'claude-opus-4-1-20250805': false,
+  'claude-opus-4-20250514': false,
+  'claude-sonnet-4-20250514': false,
+  'claude-3-haiku-20240307': false,
+}
 
 // There's no tokenizer for Claude, we use OpenAI's as an estimation
 const encoder = () => getTokenCounter('claude', '')
 
 export const handleClaude: ModelAdapter = async function* (opts) {
-  const { members, user, log, guest, gen, isThirdParty } = opts
-  const claudeModel = gen.claudeModel ?? defaultPresets.claude.claudeModel
-  const base = getBaseUrl(user, gen, claudeModel, isThirdParty)
+  let { user, log, guest, gen, isThirdParty } = opts
+  if (gen.providerId) {
+    isThirdParty = true
+  }
 
-  const hasKey = isThirdParty
-    ? !!(gen.thirdPartyKey || user.thirdPartyPassword)
-    : !!user.claudeApiKey
+  const claudeModel =
+    gen.service === 'kobold'
+      ? gen.thirdPartyModel || gen.claudeModel!
+      : gen.thirdPartyModel || gen.claudeModel || CLAUDE_MODELS.ClaudeV37_Sonnet_Latest
 
-  if (!hasKey && !base.changed) {
+  const base = getBaseUrl(gen, claudeModel || defaultPresets.claude.claudeModel, isThirdParty)
+
+  if (!base.url) {
+    yield { error: `Claude request failed: Your 'Third Party URL' is not set in your preset` }
+    return
+  }
+
+  const apiKey = gen.providerId ? gen.thirdPartyKey : gen.thirdPartyKey || user.claudeApiKey
+  if (!apiKey && !base.changed) {
     yield { error: `Claude request failed: Claude API key not set. Check your settings.` }
     return
   }
 
-  const useChat = !!CLAUDE_CHAT_MODELS[claudeModel]
+  const formatting = CLAUDE_TEXT_MODELS[claudeModel || '']
+    ? 'text'
+    : gen.service === 'claude-v2'
+    ? 'v2'
+    : 'v1'
   const stops = new Set([`\n\nHuman:`, `\n\nAssistant:`])
 
   const payload: any = {
@@ -74,14 +99,106 @@ export const handleClaude: ModelAdapter = async function* (opts) {
     stream: gen.streamResponse ?? defaultPresets.claude.streamResponse,
   }
 
-  if (useChat) {
+  if (formatting === 'v1') {
+    // Original Claude service
     payload.max_tokens = gen.maxTokens
     const { messages, system } = await createClaudeChatCompletion(opts)
     payload.system = system
     payload.messages = messages
+  } else if (formatting === 'v2') {
+    // Using similar to openai-chatv2
+    payload.max_tokens = gen.maxTokens
+    const messages = opts.messages || []
+
+    const system = messages
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content)
+      .join('\n')
+
+    payload.system = system
+    payload.messages = messages.filter((m) => m.role !== 'system')
   } else {
     payload.max_tokens_to_sample = gen.maxTokens
     payload.prompt = await createClaudePrompt(opts)
+  }
+
+  if (payload.messages) {
+    remapMessages(payload.messages, {
+      text: (text) => {
+        return { type: 'text', text }
+      },
+      image: (image) => {
+        const mime = getMimeTypeBase64(image)
+        return {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: mime.mimeType,
+            data: mime.data,
+          },
+        }
+      },
+    })
+  }
+
+  /**
+   * Claude specifies that the budget must be GTE 1024, but less than MAX_TOKENS
+   * Reasoning is not supported in any text (old) models
+   */
+  const exclusive = TEMP_TOPP_EXCLUSIVE[claudeModel] ?? true
+  if (formatting === 'v2' && exclusive) {
+    delete payload.top_p
+  }
+
+  if (formatting === 'v2' && gen.reasoning?.enabled) {
+    const effort = gen.reasoning.effort || 'low'
+    const max = opts.gen.maxTokens ?? 1024
+
+    let budget = 0
+    switch (effort) {
+      case 'custom': {
+        budget = gen.reasoning.maxTokens ?? 0
+        break
+      }
+
+      case 'high': {
+        budget = max * 0.8
+        break
+      }
+
+      case 'medium': {
+        budget = max * 0.5
+        break
+      }
+
+      case 'low':
+      default: {
+        budget = max * 0.2
+        break
+      }
+    }
+
+    // Claude specifies that the thinking budget must be at least 1024 tokens
+    if (budget < 1024) {
+      budget = 1024
+    }
+
+    payload.max_tokens = budget + max
+    payload.thinking = {
+      type: 'enabled',
+      budget_tokens: Math.floor(budget),
+    }
+
+    // Temperature must be 1 when thinking is enabled
+    // Top K must be unset when thinking is enabled
+    payload.temperature = 1
+    payload.top_k = undefined
+
+    // Last message must be 'thinking' block or role 'user'
+    const lastMsg = payload.messages?.slice(-1)?.[0]
+    if (lastMsg?.role === 'assistant') {
+      lastMsg.role = 'user'
+    }
   }
 
   if (opts.kind === 'plain') {
@@ -93,26 +210,33 @@ export const handleClaude: ModelAdapter = async function* (opts) {
     'anthropic-version': apiVersion,
   }
 
-  const useThirdPartyPassword =
-    base.changed && isThirdParty && (gen.thirdPartyKey || user.thirdPartyPassword)
-  const apiKey = useThirdPartyPassword
-    ? gen.thirdPartyKey || user.thirdPartyPassword
-    : !isThirdParty
-    ? user.claudeApiKey
-    : null
-
-  const key = !!guest ? apiKey : apiKey ? decryptText(apiKey!) : null
+  const key = !!guest ? apiKey : apiKey ? decryptText(apiKey!) : ''
   if (key) {
     headers['x-api-key'] = key
+    headers.Authorization = `Bearer ${key}`
   }
 
-  log.debug({ ...payload, prompt: null }, 'Claude payload')
+  log.debug({ ...payload, prompt: null, messages: null }, 'Claude payload')
   log.debug(`Prompt:\n${payload.prompt}`)
-  yield { prompt: payload.prompt }
+  yield { prompt: payload.messages?.length ? stripImageContent(payload.messages) : payload.prompt }
 
   const iterator = payload.stream
-    ? streamCompletion(base.url, payload, headers, opts.user._id, log)
-    : requestFullCompletion(base.url, payload, headers, opts.user._id, log)
+    ? streamCompletion({
+        url: base.url,
+        body: payload,
+        headers,
+        signal: opts.signal,
+        log,
+        userId: opts.user._id,
+      })
+    : requestFullCompletion({
+        url: base.url,
+        body: payload,
+        headers,
+        signal: opts.signal,
+        log,
+        userId: opts.user._id,
+      })
 
   let acc = ''
   let resp: ClaudeCompletion | undefined
@@ -126,25 +250,36 @@ export const handleClaude: ModelAdapter = async function* (opts) {
     }
 
     if ('error' in generated.value) {
-      yield generated.value
+      yield { error: generated.value.error }
       return
+    }
+
+    if ('meta' in generated.value) {
+      yield { meta: generated.value.meta }
     }
 
     if ('token' in generated.value) {
       acc += generated.value.token
-      yield {
-        partial: sanitiseAndTrim(acc, payload.prompt, opts.replyAs, opts.characters, members),
-      }
+      yield { partial: acc }
+    }
+
+    if ('thoughts' in generated.value) {
+      yield { thoughts: generated.value.thoughts! as string }
+    }
+
+    if ('tokens' in generated.value) {
+      acc = generated.value.tokens! as string
+      break
     }
   }
 
   try {
-    const completion = resp?.completion || resp?.content?.[0]?.text || ''
+    const completion = resp?.completion || resp?.content?.[0]?.text || acc || ''
     if (!completion) {
       log.error({ body: resp }, 'Claude request failed: Empty response')
       yield { error: `Claude request failed: Received empty response. Try again.` }
     } else {
-      yield sanitiseAndTrim(completion, payload.prompt, opts.replyAs, opts.characters, members)
+      yield completion
     }
   } catch (ex: any) {
     log.error({ err: ex }, 'Claude failed to parse')
@@ -153,44 +288,44 @@ export const handleClaude: ModelAdapter = async function* (opts) {
   }
 }
 
-function getBaseUrl(
-  user: AppSchema.User,
-  gen: Partial<GenSettings>,
-  model: string,
-  isThirdParty?: boolean
-) {
-  if (isThirdParty && user.thirdPartyFormat === 'claude') {
-    const url = gen.thirdPartyUrl || user.koboldUrl
+function getBaseUrl(gen: Partial<GenSettings>, model: string, isThirdParty?: boolean) {
+  const isChatModel = !CLAUDE_TEXT_MODELS[model]
+  if (gen.providerId && (gen.service === 'claude' || gen.service === 'claude-v2')) {
+    switch (isChatModel) {
+      case true:
+        return { url: joinUrl(gen.thirdPartyUrl!, 'messages'), changed: false }
+      case false:
+        return { url: joinUrl(gen.thirdPartyUrl!, 'complete'), changed: false }
+    }
+  }
+
+  if (isThirdParty) {
+    const url = gen.thirdPartyUrl
     return { url, changed: true }
   }
 
-  if (CLAUDE_CHAT_MODELS[model]) {
-    return { url: CHAT_URL, changed: false }
+  if (CLAUDE_TEXT_MODELS[model]) {
+    return { url: TEXT_URL, changed: false }
   }
 
-  return { url: TEXT_URL, changed: false }
+  return { url: CHAT_URL, changed: false }
 }
 
-const requestFullCompletion: CompletionGenerator = async function* (
-  url,
-  body,
-  headers,
-  _userId,
-  log
-) {
-  const resp = await needle('post', url, JSON.stringify(body), {
+const requestFullCompletion: CompletionGenerator = async function* (params) {
+  const resp = await needle('post', params.url, JSON.stringify(params.body), {
     json: true,
-    headers,
+    signal: params.signal.signal,
+    headers: params.headers,
   }).catch((err) => ({ error: err }))
 
   if ('error' in resp) {
-    log.error({ error: resp.error }, 'Claude request failed to send')
+    params.log.error({ error: resp.error }, 'Claude request failed to send')
     yield { error: `Claude request failed: ${resp.error?.message || resp.error}` }
     return
   }
 
   if (resp.statusCode && resp.statusCode >= 400) {
-    log.error({ body: resp.body }, `Claude request failed (${resp.statusCode})`)
+    params.log.error({ body: resp.body }, `Claude request failed (${resp.statusCode})`)
     yield { error: `Claude request failed: ${resp.statusMessage}` }
     return
   }
@@ -198,56 +333,93 @@ const requestFullCompletion: CompletionGenerator = async function* (
   return resp.body
 }
 
-const streamCompletion: CompletionGenerator = async function* (url, body, headers, userId, log) {
-  const resp = needle.post(url, JSON.stringify(body), {
-    parse: false,
+const streamCompletion: CompletionGenerator = async function* (opts) {
+  const response = await fetch(opts.url, {
+    body: JSON.stringify(opts.body),
+    signal: opts.signal.signal,
+    method: 'POST',
     headers: {
-      ...headers,
+      ...opts.headers,
       Accept: 'text/event-stream',
     },
   })
 
   const tokens = []
-  let meta: Omit<ClaudeCompletion, 'completion'> = {
-    stop_reason: null,
-    model: '',
-    stop: null,
-    log_id: '',
-  }
+  let meta: any = {}
 
   try {
-    const events = requestStream(resp)
+    const local = opts.url !== TEXT_URL && opts.url !== CHAT_URL
+    const events = fetchStream(response, {
+      format: 'raw',
+    })
 
     // https://docs.anthropic.com/claude/reference/streaming
     for await (const event of events) {
+      const info = event?.delta || event?.message || {}
+      if (info.stop_reason) {
+        meta.stop_reason = info.stop_reason
+      }
+
+      if (info.model) {
+        meta.model = info.model
+      }
+
+      if (info.usage?.tokens) {
+        meta.output = info.usage.tokens
+      }
+
       if (event.error !== undefined) {
-        log.warn({ error: event.error }, '[Claude] Received SSE error event')
+        opts.log.warn(
+          { error: event.error, errorObj: event.errorObj, url: opts.url },
+          '[Claude] Received SSE error event'
+        )
         const message = event.error
-          ? `Anthropic interrupted the response: ${event.error}`
+          ? `Anthropic interrupted the response: ${event.error?.message || event.error}`
           : `Anthropic interrupted the response.`
         if (!tokens.length) {
-          yield { error: message }
+          yield { error: message, errorObj: event.errorObj }
           return
         }
-        sendOne(userId, { type: 'notification', level: 'warn', message })
+        sendOne(opts.userId, { type: 'notification', level: 'warn', message })
         break
+      }
+
+      if (local) {
+        const choice = event.choices?.[0]
+        const delta: any = event.delta || choice || {}
+        const token =
+          delta.completion ||
+          delta.delta?.text ||
+          delta.text ||
+          delta.delta?.content ||
+          delta.content ||
+          ''
+
+        if (token) {
+          tokens.push(token)
+          yield { token }
+        }
+
+        if (delta.finish_reason) {
+          meta.stop_reason = delta.finish_reason
+        }
+
+        continue
       }
 
       switch (event.type) {
         case 'completion':
         case 'content_block_delta':
-          const delta: Partial<ClaudeCompletion> = JSON.parse(event.data)
+          const delta: Partial<ClaudeCompletion> = event.delta
           const token = delta.completion || delta.delta?.text || delta.text || ''
-          meta = { ...meta, ...delta }
           tokens.push(token)
           yield { token }
           break
 
         case 'error':
-          const parsedError = JSON.parse(event.data)
-          log.warn({ error: parsedError }, '[Claude] Received SSE error event')
-          const message = parsedError?.error?.message
-            ? `Anthropic interrupted the response: ${parsedError.error.message}`
+          opts.log.warn({ error: event }, '[Claude] Received SSE error event')
+          const message = event.error?.message
+            ? `Anthropic interrupted the response: ${event.error.message}`
             : `Anthropic interrupted the response.`
 
           if (!tokens.length) {
@@ -255,35 +427,38 @@ const streamCompletion: CompletionGenerator = async function* (url, body, header
             return
           }
 
-          sendOne(userId, { type: 'notification', level: 'warn', message })
+          sendOne(opts.userId, { type: 'notification', level: 'warn', message })
           break
+
+        case 'content_block_start':
+        case 'content_block_stop':
+        case 'message_delta':
         case 'message_start':
+        case 'message_stop':
         case 'ping':
           break
 
         default:
-          log.warn({ event }, '[Claude] Received unrecognized SSE event')
+          opts.log.warn({ event }, '[Claude] Received unrecognized SSE event')
           break
       }
     }
   } catch (err: any) {
-    log.error({ err }, '[Claude] SSE stream failed')
+    opts.log.error({ err }, '[Claude] SSE stream failed')
     yield { error: `Claude streaming request failed: ${err.message}` }
-    return
+    return undefined
   }
 
-  return { ...meta, completion: tokens.join('') }
+  yield { meta }
+  return
 }
 
 export async function createClaudeChatCompletion(opts: AdapterProps) {
   const result = {
     system: '',
-    messages: await toChatCompletionPayload(
-      opts,
-      getTokenCounter('openai', OPENAI_MODELS.Turbo),
-      opts.gen.maxTokens!
-    ),
+    messages: opts.messages!,
   }
+
   // Claude doesn't have a system role, so we extract the first message to put it in the system
   // field (https://docs.anthropic.com/claude/docs/system-prompts)
   if (result.messages[0].role === 'system') {
@@ -299,7 +474,7 @@ export async function createClaudeChatCompletion(opts: AdapterProps) {
     }
   }
 
-  let last: CompletionItem
+  let last: CompletionItem<string>
 
   // We need to ensure each role alternates so we will naively merge consecutive messages :/
   result.messages = result.messages.reduce((msgs, msg) => {
@@ -315,9 +490,13 @@ export async function createClaudeChatCompletion(opts: AdapterProps) {
       return msgs
     }
 
-    last.content += '\n\n' + msg.content
+    if (last.content === '...') {
+      last.content = ''
+    }
+
+    last.content += ('\n\n' + msg.content).trim()
     return msgs
-  }, [] as CompletionItem[])
+  }, [] as CompletionItem<string>[])
 
   return result
 }
@@ -367,7 +546,7 @@ async function createClaudePrompt(opts: AdapterProps) {
 
   const ujb = parsed ? processLine('system', parsed) : ''
 
-  const prefill = opts.gen.prefill ? opts.gen.prefill + '\n' : ''
+  const prefill = opts.parts.prefill ? opts.parts.prefill + '\n' : ''
   const prefillCost = await enc(prefill)
 
   const maxBudget =
@@ -398,11 +577,11 @@ async function createClaudePrompt(opts: AdapterProps) {
 
   for (const line of all) {
     const distanceFromBottom = all.length - 1 - i
-    const lineType: LineType = line.startsWith(sender)
+    const lineType: LineType = line?.startsWith(sender)
       ? 'user'
-      : line.startsWith('System:')
+      : line?.startsWith('System:')
       ? 'system'
-      : line.startsWith(sampleAmble)
+      : line?.startsWith(sampleAmble)
       ? 'example'
       : 'char'
     if (distanceFromBottom === examplePos) {

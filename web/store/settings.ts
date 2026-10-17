@@ -2,20 +2,18 @@ import { HordeModel, HordeWorker } from '../../common/adapters'
 import { AppSchema } from '../../common/types/schema'
 import { EVENTS, events } from '../emitter'
 import { setAssetPrefix, storage } from '../shared/util'
-import { api } from './api'
+import { api, getUserId } from './api'
 import { createStore, getStore } from './create'
 import { InitEntities, usersApi } from './data/user'
 import { toastStore } from './toasts'
 import { subscribe } from './socket'
-import { FeatureFlags, defaultFlags } from './flags'
 import { ReplicateModel } from '/common/types/replicate'
-import { getSubscriptionModelLimits, tryParse, wait } from '/common/util'
-import { ButtonSchema } from '../shared/Button'
-import { canUsePane, isMobile } from '../shared/hooks'
+import { getSubscriptionModelLimits, getUserType, tryParse, wait } from '/common/util'
 import { setContextLimitStrategy } from '/common/prompt'
 import { filterImageModels } from '/common/image-util'
 import type { FeatherlessModel } from '/srv/adapter/featherless'
 import type { ArliModel } from '/srv/adapter/arli'
+import { debug } from '/common/debug'
 
 export type SettingState = {
   guestAccessAllowed: boolean
@@ -25,8 +23,6 @@ export type SettingState = {
     ttl: number
   }
 
-  showMenu: boolean
-  showImpersonate: boolean
   config: AppSchema.AppConfig
 
   allImageModels: AppSchema.ImageModel[]
@@ -42,38 +38,31 @@ export type SettingState = {
     config: AppSchema.AppConfig
     books: AppSchema.MemoryBook[]
   }
-  showImage?: {
-    url: string
-    options: Array<{ schema: ButtonSchema; text: string; onClick: () => void }>
-  }
 
-  flags: FeatureFlags
+  loras: Array<{ id: string; name: string; tags: Record<string, number> }>
+  embeddings: Array<{ id: string; name: string; tags: string[] }>
+
   replicate: Record<string, ReplicateModel>
   featherless: { models: FeatherlessModel[]; classes: Record<string, { ctx: number; res: number }> }
   arliai: { models: ArliModel[]; classes: Record<string, { ctx: number; res: number }> }
-  showSettings: boolean
-  showImgSettings: boolean
 
   slotsLoaded: boolean
   slots: { publisherId: string; provider?: 'google' | 'ez' | 'fuse' } & Record<string, any>
-  overlay: boolean
 }
 
 const HORDE_URL = `https://aihorde.net/api/v2`
-
-const FLAG_KEY = 'agnai-flags'
 
 const initState: SettingState = {
   anonymize: JSON.parse(storage.localGetItem('agnai-anonymize') || 'false'),
   guestAccessAllowed: canUseStorage(),
   initLoading: true,
   cfg: { loading: false, ttl: 0 },
-  showMenu: isMobile() || location.search.includes('callback=') ? false : true,
-  showImpersonate: false,
   models: [],
   workers: [],
   imageWorkers: [],
   allImageModels: [],
+  loras: [],
+  embeddings: [],
   config: {
     serverConfig: {} as any,
     registered: [],
@@ -92,18 +81,15 @@ const initState: SettingState = {
   replicate: {},
   featherless: { models: [], classes: {} },
   arliai: { models: [], classes: {} },
-  flags: getFlags(),
-  showSettings: false,
-  showImgSettings: false,
+
   slotsLoaded: false,
   slots: { publisherId: '' },
-  overlay: false,
 }
 
 export const settingStore = createStore<SettingState>(
   'settings',
   initState
-)((get) => {
+)((get, setter) => {
   events.on(EVENTS.loggedOut, () => {
     const prev = get()
     settingStore.setState({ ...initState, slots: prev.slots, slotsLoaded: prev.slotsLoaded })
@@ -126,23 +112,62 @@ export const settingStore = createStore<SettingState>(
   })
 
   return {
-    modal({ showSettings }, show?: boolean) {
-      const next = show ?? !showSettings
-      return { showSettings: next }
-    },
-    imageSettings({ showImgSettings }, next?: boolean) {
-      if (next === undefined) {
-        return { showImgSettings: !showImgSettings }
-      }
-
-      return { showImgSettings: next }
-    },
     async *init({ config: prev }) {
       yield { initLoading: true }
-      const res = await usersApi.getInit()
+
+      const caches = await loadUserCachedEntities()
+      const res = await usersApi.getInit(caches)
 
       if (res.result) {
         const init = res.result as InitEntities
+        const userId = getUserId()
+
+        if (caches?.books) {
+          getStore('memory').setState({
+            books: { list: caches.books.filter((item) => item.userId === userId), loaded: true },
+          })
+        }
+
+        if (caches?.presets) {
+          getStore('presets').setState({
+            presets: caches.presets
+              .filter((item) => item.userId === userId)
+              .map((preset) => {
+                if (!preset.thirdPartyKey) return preset
+                preset.userThirdPartyKey = preset.thirdPartyKey
+                preset.thirdPartyKey = ''
+                return preset
+              }),
+            presetsLoaded: true,
+          })
+        }
+
+        if (caches?.allChars) {
+          const allChars = Array.isArray(caches.allChars)
+            ? caches.allChars
+            : Array.isArray((caches.allChars as any)?.list)
+            ? (caches.allChars as any).list
+            : []
+
+          getStore('character').receiveCharacterList(allChars)
+        }
+
+        if (caches?.allChats) {
+          getStore('chat').setState({
+            allChats: caches.allChats.filter((item) => item.userId === userId).sort(sortDesc),
+          })
+        }
+
+        if (init.user) {
+          init.user.userHordeKey = init.user.hordeKey
+          init.user.hordeKey = ''
+          getStore('user').setState({
+            user: init.user,
+            profile: init.profile,
+            userType: getUserType(init.user),
+          })
+        }
+
         setAssetPrefix(init.config.assetPrefix)
         loadSlotConfig(init.config?.serverConfig?.slots)
 
@@ -151,15 +176,11 @@ export const settingStore = createStore<SettingState>(
         if (init.config.serverConfig) {
           yield { allImageModels: init.config.serverConfig.imagesModels || [] }
 
-          if (!init.config.tier?.imagesAccess && !init.user?.admin) {
-            init.config.serverConfig.imagesModels = []
-          } else {
-            init.config.serverConfig.imagesModels = filterImageModels(
-              init.user,
-              init.config.serverConfig.imagesModels,
-              init.config.tier
-            )
-          }
+          init.config.serverConfig.imagesModels = filterImageModels(
+            init.user,
+            init.config.serverConfig.imagesModels,
+            init.config.tier
+          )
         }
 
         if (!isMaint) {
@@ -173,47 +194,50 @@ export const settingStore = createStore<SettingState>(
           initLoading: false,
         }
 
+        if (!isMaint) {
+          handlePostInit(init, caches, userId === 'anon')
+        }
+
         const maint = init.config?.maintenance
 
         if (!maint && prev.maintenance) {
-          toastStore.success(`Agnaistic is no longer in maintenance mode`, 10)
+          toastStore.success(`Agnaistic is no longer in maintenance mode`, { ttl: 10 })
         }
 
         if (maint && !prev.maintenance) {
-          toastStore.warn(`Agnaistic is in maintenance mode`, 20)
+          toastStore.warn(`Agnaistic is in maintenance mode`, { ttl: 20 })
         }
       }
 
       if (res.error) {
-        if (res.status === 500) {
+        if (res.status === 401) {
+          toastStore.info(`Your session has expired. Please login again.`)
+          getStore('user').logout()
+          return
+        }
+
+        if (res.status >= 400) {
           toastStore.error(`Could not get settings from server.`)
           yield { initLoading: false }
           return
         }
+
         setTimeout(() => settingStore.init(), 2500)
       }
     },
-    toggleOverlay({ overlay }, next?: boolean) {
-      return { overlay: next === undefined ? !overlay : next }
-    },
-    menu({ showMenu }, next?: boolean) {
-      return { showMenu: next ?? !showMenu, overlay: next ?? !showMenu }
-    },
-    closeMenu: () => {
-      if (canUsePane()) return
-      return { showMenu: false, overlay: false }
-    },
-    toggleImpersonate: ({ showImpersonate }, show?: boolean) => {
-      return { showImpersonate: show ?? !showImpersonate }
-    },
-    async getFeatherless() {
+
+    async getFeatherless(state) {
+      if (state.featherless.models.length) return
+
       const res = await api.get('/settings/featherless')
 
       if (res.result?.models?.length) {
         return { featherless: res.result }
       }
     },
-    async getArliAI() {
+    async getArliAI(state) {
+      if (state.arliai.models.length) return
+
       const res = await api.get('/settings/arli')
 
       if (res.result?.models?.length) {
@@ -235,6 +259,15 @@ export const settingStore = createStore<SettingState>(
           res.result?.tier
         )
         return { config: { ...config, serverConfig } }
+      }
+    },
+    async *getImageLoras() {
+      const res = await api.get('/settings/image-loras')
+      if (res.result) {
+        return {
+          loras: res.result.loras,
+          embeddings: res.result.embeddings,
+        }
       }
     },
     async *getConfig({ cfg }) {
@@ -283,22 +316,6 @@ export const settingStore = createStore<SettingState>(
       storage.localSetItem('agnai-anonymize', JSON.stringify(!anonymize))
       return { anonymize: !anonymize }
     },
-    showImage(
-      _,
-      image: string,
-      options: Array<{ schema: ButtonSchema; text: string; onClick: () => void }> = []
-    ) {
-      return { showImage: { url: image, options } }
-    },
-    clearImage() {
-      return { showImage: undefined }
-    },
-    flag({ flags }, flag: keyof FeatureFlags, value: boolean) {
-      const nextFlags = { ...flags, [flag]: value }
-      window.flags = nextFlags
-      saveFlags(nextFlags)
-      return { flags: nextFlags }
-    },
   }
 })
 
@@ -309,10 +326,11 @@ setContextLimitStrategy((user, gen) => {
   const { sub } = getStore('user').getState()
   if (!gen || gen.service !== 'agnaistic') return
 
-  const tier = subs.find((sub) => sub._id === gen.registered?.agnaistic?.subscriptionId || '')
+  const modelId = gen.providerModels?.agnaistic ?? gen.registered?.agnaistic?.subscriptionId ?? ''
+  const tier = subs.find((sub) => sub._id === modelId)
   if (!tier) return
 
-  const level = sub?.level ?? -1
+  const level = user.admin ? Infinity : sub?.level ?? -1
 
   const limits = getSubscriptionModelLimits(tier.preset, level)
   if (!limits) return
@@ -332,80 +350,6 @@ subscribe('connected', { uid: 'string' }, (body) => {
 
   settingStore.getConfig()
 })
-
-window.flag = function (flag: keyof FeatureFlags, value) {
-  if (!flag) {
-    const state = settingStore((s) => s.flags)
-    console.log('Available flags:')
-    for (const [key] of Object.entries(defaultFlags)) console.log(key, (state as any)[key])
-    return
-  }
-
-  if (value === undefined) {
-    const { flags } = settingStore.getState()
-    value = !flags[flag]
-  }
-
-  console.log(`Toggled ${flag} --> ${value}`)
-  settingStore.flag(flag as any, value)
-}
-
-for (const key of Object.keys(defaultFlags)) {
-  Object.defineProperty(window.flag, key, {
-    get() {
-      window.flag(key)
-      return
-    },
-  })
-}
-
-Object.freeze(window.flag)
-
-type FlagCache = { user: FeatureFlags; default: FeatureFlags }
-
-function getFlags(): FeatureFlags {
-  try {
-    const cache = localStorage.getItem(FLAG_KEY)
-    if (!cache) {
-      saveFlags(defaultFlags)
-      return defaultFlags
-    }
-
-    const parsed = JSON.parse(cache) as FlagCache
-
-    const flags: any = parsed.user
-    const pastDefaults: any = parsed.default
-
-    for (const [key, value] of Object.entries(defaultFlags)) {
-      // If the user does not have the key, set it no matter what
-      if (key in flags === false) {
-        flags[key] = value
-        continue
-      }
-
-      // If the 'default' value for the flag has changed, change it for the user
-      const prev = pastDefaults[key]
-      if (prev !== value) {
-        flags[key] = value
-        continue
-      }
-    }
-
-    saveFlags(flags)
-    return flags
-  } catch (ex) {
-    saveFlags(defaultFlags)
-    return defaultFlags
-  }
-}
-
-function saveFlags(flags: {}) {
-  try {
-    window.flags = flags
-    const cache: FlagCache = { user: flags as any, default: defaultFlags }
-    localStorage.setItem(FLAG_KEY, JSON.stringify(cache))
-  } catch (ex) {}
-}
 
 function canUseStorage(noThrow?: boolean) {
   const TEST_KEY = '___TEST'
@@ -487,12 +431,21 @@ subscribe('submodel-updated', { model: 'any' }, (body) => {
     return { ...reg, settings }
   })
 
+  /** TODO: Check if:
+   * - Model already exists
+   * - User tier was ineligible
+   * - User tier is now eligible
+   */
+
+  const { user, userLevel } = getStore('user').getState()
+  const wasIneligible = exists && exists.level > userLevel && incoming.level <= userLevel
   if (!exists) {
-    const { user, userLevel } = getStore('user').getState()
     const isEligible = incoming.level <= userLevel || !!user?.admin
     if (isEligible) {
-      toastStore.success(`A new model has been added: "${incoming.name}"`, 30)
+      toastStore.success(`A new model has been added: "${incoming.name}"`, { ttl: 30 })
     }
+  } else if (wasIneligible) {
+    toastStore.success(`A new model is now available to you: "${incoming.name}"`, { ttl: 30 })
   }
 
   settingStore.setState({ config: { ...config, subs: next, registered } })
@@ -508,3 +461,48 @@ subscribe(
     settingStore.setState({ config: { ...config, subs: next } })
   }
 )
+
+async function loadUserCachedEntities() {
+  const userId = getUserId()
+  if (!userId) return
+
+  const books = await storage.userCacheGet<AppSchema.MemoryBook[]>('books')
+  const presets = await storage.userCacheGet<AppSchema.UserGenPreset[]>('presets')
+  const templates = await storage.userCacheGet<AppSchema.PromptTemplate[]>('templates')
+  const allChats = await storage.userCacheGet<AppSchema.Chat[]>('all-chats')
+  const allChars = await storage.userCacheGet<AppSchema.Character[]>('all-chars')
+
+  debug('init')(`%j`, {
+    books: !!books,
+    presets: !!presets,
+    templates: !!templates,
+    allChats: !!allChats,
+    allChars: !!allChars,
+  })
+
+  return { books, templates, presets, allChats, allChars }
+}
+
+async function handlePostInit(
+  init: InitEntities,
+  caches: Awaited<ReturnType<typeof loadUserCachedEntities>>,
+  guest: boolean
+) {
+  if (init.allChars) {
+    getStore('character').loadImpersonate()
+  }
+
+  await Promise.all([
+    caches?.presets || guest ? getStore('presets').getPresets() : Promise.resolve(),
+    caches?.books || guest ? await getStore('memory').getAll() : Promise.resolve(),
+    getStore('character').getAllChats(true),
+  ])
+
+  if (!init.allChars || guest) {
+    getStore('character').loadImpersonate()
+  }
+}
+
+function sortDesc(left: { updatedAt: string }, right: { updatedAt: string }): number {
+  return left.updatedAt > right.updatedAt ? -1 : left.updatedAt === right.updatedAt ? 0 : 1
+}

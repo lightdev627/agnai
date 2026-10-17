@@ -1,93 +1,65 @@
-import { GenerateRequestV2 } from './type'
-import { replaceTags } from '/common/presets/templates'
-import { AssembledPrompt } from '/common/prompt'
-import { parseTemplate } from '/common/template-parser'
-import { AppSchema, TokenCounter } from '/common/types'
+import { AppLog } from '../middleware'
 
-export function renderMessagesToPrompt(
-  preset: AppSchema.GenSettings,
-  messages: Array<{ role: string; content: string }>
+/**
+ * @destructive
+ * mutates the messages list: adds the image data (base64) to the last user message
+ */
+export function remapMessages(
+  messages: Array<{ role: string; content: any }>,
+  maps: { image?: (image: string) => any; text?: (text: string) => any }
 ) {
-  const output: string[] = []
+  if (!messages) return messages
 
-  const systems: string[] = []
-  let lastTag: 'system' | 'user' | 'bot' = messages[0]?.role as any
-
-  for (let i = 0; i < messages.length; ++i) {
-    const msg = messages[i]
-    const tag = msg.role === 'system' ? 'system' : msg.role === 'user' ? 'user' : 'bot'
-
-    if (tag === 'system') {
-      systems.push(msg.content)
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) {
+      continue
     }
 
-    if (systems.length && tag !== 'system') {
-      output.push(`<system>${systems.join('\n\n')}</system>`)
-      systems.length = 0
-    }
+    for (let i = 0; i < msg.content.length; i++) {
+      const item = msg.content[i]
+      if (item.type === 'text') {
+        msg.content[i] = maps.text?.(item.text) || item
+        continue
+      }
 
-    if (tag !== 'system') {
-      output.push(`<${tag}>${msg.content}</${tag}>`)
+      if (!item.image_url?.url) continue
+      msg.content[i] = maps.image?.(item.image_url.url) || item
+      continue
     }
   }
 
-  if (systems.length) {
-    output.push(`<system>${systems.join('\n\n')}</system>`)
-  }
-
-  if (lastTag !== 'bot') {
-    output.push(`<bot>`)
-  }
-
-  const template = output.join('\n\n')
-  const prompt = replaceTags(template, preset.modelFormat || 'ChatML')
-  return { prompt, stop: replaceTags('</bot>', preset.modelFormat || 'ChatML') }
-}
-
-export async function toChatMessages(
-  opts: GenerateRequestV2,
-  assembled: AssembledPrompt,
-  counter: TokenCounter
-) {
-  // const sections = promptOrderToSections({
-  //   format: opts.gen.modelFormat,
-  //   order: opts.gen.promptOrder,
-  // })
-
-  const { sections } = assembled
-  const { system, post, history } = sections.sections
-
-  const prefill = await parse(opts, counter, opts.settings?.prefill || '')
-  const messages = [{ role: 'system', content: system.join('') }]
-
-  const sender = (opts.impersonate?.name || opts.sender.handle) + ':'
-  for (let i = 0; i < history.length; i++) {
-    const line = history[i]
-    const original = opts.lines[i]
-    const role = original?.startsWith(sender) ? 'user' : 'assistant'
-    messages.push({ role, content: line })
-  }
-
-  messages.push({
-    role: 'assistant',
-    content: (post.join('') + (prefill.parsed.length ? ` ${prefill.parsed}` : '')).trim(),
-  })
   return messages
 }
 
-async function parse(opts: GenerateRequestV2, counter: TokenCounter, text: string, limit?: number) {
-  const template = replaceTags(text, 'None')
-  const { parsed, sections } = await parseTemplate(template, {
-    char: opts.char,
-    chat: opts.chat,
-    jsonValues: {},
-    sender: opts.sender,
-    impersonate: opts.impersonate,
-    lines: opts.lines,
-    limit: limit ? { context: limit, encoder: counter } : undefined,
-  })
+/**
+ * @destructive
+ * mutates the messages list: adds the image data (base64) to the last user message
+ */
+export function remapImageContent(
+  messages: Array<{ role: string; content: any }>,
+  block: (image: string) => any
+) {
+  if (!messages) return messages
 
-  const count = await counter(parsed)
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue
 
-  return { parsed, count, sections }
+    for (let i = 0; i < msg.content.length; i++) {
+      const item = msg.content[i]
+      if (item.type === 'text') continue
+      if (item.image_url?.url) continue
+      msg.content[i] = block(item.image_url.url)
+    }
+  }
+
+  return messages
+}
+
+export function logPayload(logger: AppLog, payload: any) {
+  if (!payload.messages) {
+    logger.debug({ ...payload, prompt: null }, 'Payload')
+    return
+  }
+
+  logger.debug({ ...payload, messages: null }, 'Payload')
 }

@@ -3,7 +3,7 @@ import { AlertTriangle, Save } from 'lucide-solid'
 import Button from '../../shared/Button'
 import PageHeader from '../../shared/PageHeader'
 import { setComponentPageTitle } from '../../shared/util'
-import { settingStore, userStore } from '../../store'
+import { pageStore, userStore } from '../../store'
 import UISettings from './UISettings'
 import Tabs from '../../shared/Tabs'
 import AISettings from './AISettings'
@@ -14,11 +14,12 @@ import { RootModal } from '/web/shared/Modal'
 import { SubscriptionPage } from '../Profile/SubscriptionPage'
 import { Page } from '/web/Layout'
 import { createStore } from 'solid-js/store'
+import { toUserStoreObject } from './util'
 
 const settingTabs: Record<Tab, string> = {
-  ai: 'AI Settings',
-  ui: 'UI Settings',
-  voice: 'Voice Settings',
+  ai: 'AI',
+  ui: 'UI',
+  voice: 'Voice',
   guest: 'Guest Data',
   subscription: 'Subscription',
 }
@@ -34,17 +35,18 @@ enum MainTab {
 type Tab = keyof typeof MainTab
 
 export const SettingsModal = () => {
-  const state = settingStore()
+  const state = pageStore((s) => ({ showSettings: s.showSettings }))
   const [footer, setFooter] = createSignal<any>()
   return (
     <RootModal
+      title="Settings"
       show={state.showSettings}
-      close={() => settingStore.modal(false)}
+      close={() => pageStore.settings(false)}
       fixedHeight
       maxWidth="half"
       footer={
         <>
-          <Button schema="secondary" onClick={() => settingStore.modal(false)}>
+          <Button schema="secondary" onClick={() => pageStore.settings(false)}>
             Close
           </Button>
           {footer()}
@@ -56,21 +58,30 @@ export const SettingsModal = () => {
   )
 }
 
+export const SettingsPage = () => {
+  return (
+    <Page>
+      <PageHeader noDivider />
+      <Settings />
+    </Page>
+  )
+}
+
 const Settings: Component<{ footer?: (children: any) => void }> = (props) => {
   setComponentPageTitle('Settings')
-  const user = userStore()
+  const user = userStore((s) => ({ user: s.user, tiers: s.tiers, loggedIn: s.loggedIn }))
 
   const [query, setQuery] = useSearchParams()
   const [tab, setTab] = createSignal<number>(+(query.tab ?? '0'))
 
-  const [store, setStore] = createStore(user.user!)
+  const [store, setStore] = createStore(toUserStoreObject(user.user! || {}))
 
   createEffect(
     on(
       () => user.user,
       (next) => {
         if (!next) return
-        setStore(next)
+        setStore(toUserStoreObject(next))
       }
     )
   )
@@ -114,18 +125,8 @@ const Settings: Component<{ footer?: (children: any) => void }> = (props) => {
   )
 
   return (
-    <Page>
-      <PageHeader
-        title="Settings"
-        subtitle={
-          <Show when={!!version}>
-            <em>v.{version}</em>
-          </Show>
-        }
-        noDivider
-      />
-
-      <div class="my-2">
+    <>
+      <div class="my-2 flex flex-col gap-0.5">
         <Tabs
           tabs={tabs.map((t) => settingTabs[t])}
           selected={tab}
@@ -134,6 +135,11 @@ const Settings: Component<{ footer?: (children: any) => void }> = (props) => {
             setQuery({ tab: id })
           }}
         />
+        <Show when={!!version}>
+          <div>
+            <em>v.{version}</em>
+          </div>
+        </Show>
       </div>
       <form autocomplete="off">
         <div class="flex flex-col gap-4">
@@ -167,7 +173,7 @@ const Settings: Component<{ footer?: (children: any) => void }> = (props) => {
           <div class="flex justify-end gap-2 pt-4">{footer}</div>
         </Show>
       </form>
-    </Page>
+    </>
   )
 }
 

@@ -10,10 +10,10 @@ import { usersApi } from './data/user'
 import { publish, subscribe } from './socket'
 import { toastStore } from './toasts'
 import { UI } from '/common/types'
-import { UISettings, defaultUIsettings } from '/common/types/ui'
+import { FONT_FACES, UISettings, defaultUIsettings } from '/common/types/ui'
 import type { FindUserResponse } from '/common/horde-gen'
 import { AIAdapter } from '/common/adapters'
-import { getUserSubscriptionTier } from '/common/util'
+import { getUserSubscriptionTier, getUserType } from '/common/util'
 import {
   getColorShades,
   getRootVariable,
@@ -22,23 +22,19 @@ import {
   setRootVariable,
 } from '../shared/colors'
 import { UserType } from '/common/types/admin'
-import { embedApi } from './embeddings'
+import { EMBED_MODELS, embedApi } from './embeddings'
+import { ImageProviderSettings } from '/common/types/image-schema'
 
 const BACKGROUND_KEY = 'ui-bg'
 export const ACCOUNT_KEY = 'agnai-username'
 
 type ConfigUpdate = Partial<AppSchema.User & { hordeModels?: string[] }>
 
-const fontFaces: { [key in UI.FontSetting]: string } = {
-  lato: 'Lato, sans-serif',
-  default: 'unset',
-}
-
 const [debouceUI] = createDebounce((update: UI.UISettings) => {
   updateTheme(update)
 }, 50)
 
-type SubscriberInfo = {
+export type SubscriberInfo = {
   level: number
   type: AppSchema.SubscriptionType
   tier: AppSchema.SubscriptionTier
@@ -97,31 +93,36 @@ export const userStore = createStore<UserState>(
     userStore.setState({ banned: reason })
   })
 
-  events.on(EVENTS.init, (init) => {
-    userStore.setState({ user: init.user, profile: init.profile, userType: getUserType(init.user) })
+  events.on(EVENTS.init, async (init) => {
+    const canCheckSub =
+      (init.user?.patreonUserId ||
+        init.user?.billing ||
+        init.user?.manualSub ||
+        init.user?.stripeSessions?.length) &&
+      init.user?._id !== 'anon'
 
-    if (
-      init.user?.patreonUserId ||
-      init.user?.billing ||
-      init.user?.manualSub ||
-      init.user?.stripeSessions?.length
-    ) {
+    if (canCheckSub) {
       userStore.retrieveSubscription(true)
     }
 
     if (init.user?._id !== 'anon') {
-      userStore.getTiers()
+      await userStore.getTiers()
     }
 
-    window.usePipeline = init.user.useLocalPipeline
+    await autoSwitchImageService(init)
 
     /**
      * While introducing persisted UI settings, we'll automatically persist settings that the user has in local storage
      */
-    if (!init.user || !init.user.ui) {
-      userStore.saveUI(defaultUIsettings)
+
+    if (!init.user?.ui) {
+      // Disabled as we should be long past having users without persisted UI settings
+      // userStore.saveUI(defaultUIsettings)
     } else {
+      const embeddingsModel = getInitialEmbeddingsModel(init.user)
+      init.user.ui.embeddingsModel = embeddingsModel
       userStore.receiveUI(init.user.ui)
+      embedApi.initSimiliary(embeddingsModel)
     }
   })
 
@@ -133,6 +134,18 @@ export const userStore = createStore<UserState>(
   return {
     modal({ showProfile }, show?: boolean) {
       return { showProfile: show ?? !showProfile }
+    },
+    async updateEmbeddingModel(_, model: string) {
+      userStore.saveUI({ embeddingModel: model })
+      if (model) {
+        embedApi.initSimiliary(model)
+      }
+    },
+    async updateCaptionModel(_, model: string) {
+      userStore.saveUI({ captionModel: model })
+      if (model) {
+        embedApi.initCaption(model)
+      }
     },
     async revealApiKey(_, cb: (key: string) => void) {
       const res = await api.post('/user/config/reveal-key')
@@ -185,6 +198,24 @@ export const userStore = createStore<UserState>(
       }
 
       toastStore.error(`Could not unlinked Google: ${res.error}`)
+    },
+
+    async *resetPassword(
+      _,
+      code: string,
+      username: string,
+      password: string,
+      confirm: string,
+      onSuccess: () => void
+    ) {
+      const res = await api.post(`/user/reset-password`, { code, username, password, confirm })
+
+      if (res.result) {
+        toastStore.success('Your password has been changed. You can now login.')
+        onSuccess()
+      } else {
+        toastStore.error(`Could not reset password: ${res.error}`)
+      }
     },
 
     async *handleGoogleCallback(
@@ -273,6 +304,44 @@ export const userStore = createStore<UserState>(
 
       if (res.error) {
         toastStore.error(`Could not complete checkout: ${res.error}`)
+      }
+    },
+
+    async *deleteProviderKey({ user }, providerId: string) {
+      if (!providerId || providerId === 'agnaistic') return
+
+      const res = await usersApi.deleteProviderKey(providerId)
+      if (res.result) {
+        return { user: { ...user!, providers: res.result.providers } }
+      }
+    },
+
+    async *saveProvider(
+      { user },
+      provider: AppSchema.Provider,
+      onDone?: (success: boolean, result?: AppSchema.Provider) => void
+    ) {
+      const res = await usersApi.saveProvider(provider)
+
+      if (res.result) {
+        const update = provider._id
+          ? res.result.providers.find((p: AppSchema.Provider) => p._id === provider._id)
+          : res.result.providers.slice(-1)[0]
+
+        yield { user: { ...user!, providers: res.result.providers } }
+        onDone?.(!!res.result, update)
+        toastStore.success(provider._id ? 'Provider updated' : 'Provider created')
+        return
+      }
+
+      onDone?.(false)
+    },
+    async *deleteProvider({ user }, providerId: string, onDone?: (success: boolean) => void) {
+      const res = await usersApi.deleteProvider(providerId)
+      onDone?.(!!res.result)
+      if (res.result) {
+        toastStore.success('Provider removed')
+        return { user: { ...user!, providers: res.result.providers } }
       }
     },
     async *stopSubscription({ billingLoading }) {
@@ -399,18 +468,13 @@ export const userStore = createStore<UserState>(
       }
     },
 
-    async updateConfig({ user: prev }, config: ConfigUpdate) {
+    async updateConfig(_, config: ConfigUpdate, quiet?: boolean) {
       const res = await usersApi.updateConfig(config)
       if (res.error) toastStore.error(`Failed to update config: ${res.error}`)
       if (res.result) {
         window.usePipeline = res.result.useLocalPipeline
 
-        const prevLTM = prev?.disableLTM ?? true
-        if (prevLTM && config.disableLTM === false) {
-          embedApi.initSimiliary()
-        }
-
-        toastStore.success(`Updated settings`)
+        if (!quiet) toastStore.success(`Updated settings`)
         return { user: res.result }
       }
     },
@@ -500,19 +564,18 @@ export const userStore = createStore<UserState>(
       }
     },
 
-    async *syncPatreonAccount({ sub: previous, tiers }, quiet?: boolean) {
+    async *syncPatreonAccount({ sub: previous, tiers, userLevel }, quiet?: boolean) {
       const res = await api.post('/user/resync/patreon')
 
       if (res.result) {
         yield { user: res.result }
       }
-
       if (quiet) return
 
       if (res.result) {
         toastStore.success('Successfully updated Patreon information')
         const sub = getUserSubscriptionTier(res.result, tiers, previous)
-        return { user: res.result, sub }
+        return { user: res.result, sub, userLevel: sub?.level ?? userLevel }
       }
 
       if (res.error) {
@@ -521,6 +584,20 @@ export const userStore = createStore<UserState>(
       }
 
       userStore.getConfig()
+    },
+
+    async *upsertImageProvider(_, provider: ImageProviderSettings, onSuccess?: () => void) {
+      const res = await api.post('/user/image-provider', provider)
+      if (res.result) {
+        const op = provider._id ? 'updated' : 'created'
+        toastStore.success(`Image provider ${op}`)
+        onSuccess?.()
+        return { user: res.result }
+      }
+
+      if (res.error) {
+        toastStore.error(res.error)
+      }
     },
 
     async *login(_, username: string, password: string, onSuccess?: (token: string) => void) {
@@ -822,9 +899,13 @@ export const userStore = createStore<UserState>(
   }
 })
 
-userStore.subscribe((nextState) => {
+userStore.subscribe(async (nextState, prevState) => {
   if (!nextState.sub) {
     return
+  }
+
+  if (nextState.user !== prevState.user) {
+    await storage.userCacheSet('user', nextState.user)
   }
 
   storage.localSetItem(CACHED_SUB_KEY, JSON.stringify(nextState.sub))
@@ -863,10 +944,11 @@ function init(): UserState {
   }
 
   const cachedSub = storage.localGetItem(CACHED_SUB_KEY)
+  const parsedSub = cachedSub ? (JSON.parse(cachedSub) as SubscriberInfo) : undefined
 
   return {
     userType: undefined,
-    userLevel: 0,
+    userLevel: parsedSub?.level || 0,
     loggedIn: true,
     loading: false,
     jwt: existing,
@@ -889,6 +971,13 @@ async function updateTheme(ui: UI.UISettings) {
   const root = document.documentElement
 
   const mode = ui[ui.mode]
+
+  if (ui.fontSize) {
+    root.style.setProperty(`--sitewide-font-size`, `${ui.fontSize}px`)
+  }
+
+  setRootVariable(`--avatar-user-width`, `${ui.customAvatarWidth || 32}px`)
+  setRootVariable(`--avatar-user-height`, `${ui.customAvatarHeight || 32}px`)
 
   const hex = mode.bgCustom || getSettingColor('--bg-800')
   const colors = mode.bgCustom
@@ -946,8 +1035,20 @@ async function updateTheme(ui: UI.UISettings) {
   setRootVariable('text-chatcolor', getSettingColor(mode.chatTextColor || 'text-800'))
   setRootVariable('text-emphasis-color', getSettingColor(mode.chatEmphasisColor || 'text-600'))
   setRootVariable('text-quote-color', getSettingColor(mode.chatQuoteColor || 'text-800'))
+  setRootVariable(
+    'text-quote-emphasis-color',
+    getSettingColor(mode.chatQuoteEmphasisColor || 'text-800')
+  )
   setRootVariable('bot-background', getSettingColor(mode.botBackground || 'bg-800'))
-  root.style.setProperty(`--sitewide-font`, fontFaces[ui.font])
+
+  setRootVariable(
+    'text-quote-emphasis-weight',
+    mode.chatQuoteEmphasisWeight
+  ) /*Controls the thickness of the font. default: 'unset'*/
+
+  const font = FONT_FACES[ui.font]
+  root.style.setProperty(`--sitewide-font`, font?.face)
+  root.style.setProperty(`--sitewide-fontstyle`, font?.style)
 }
 
 function getUIsettings(guest = false) {
@@ -974,6 +1075,13 @@ function getUIsettings(guest = false) {
 
   if (!ui.msgOptsInline) {
     ui.msgOptsInline = UI.defaultUIsettings.msgOptsInline
+  }
+
+  // When new message options are added, we must make sure they're populated
+  for (const [key, initial] of Object.entries(UI.defaultUIsettings.msgOptsInline)) {
+    const prop = key as UI.MessageOption
+    if (prop in ui.msgOptsInline) continue
+    ui.msgOptsInline[prop] = initial
   }
 
   return ui
@@ -1044,11 +1152,65 @@ async function checkout(sessionUrl: string) {
   }, 3000)
 }
 
-function getUserType(user: AppSchema.User): UserType {
-  if (user.admin) return 'admins'
-  if (user.role === 'admin') return 'admins'
-  if (user.role === 'moderator') return 'moderators'
-  if (user.sub?.level && user.sub.level > 0) return 'subscribers'
-  if (user._id === 'anon') return 'guests'
-  return 'users'
+function getInitialEmbeddingsModel(user: AppSchema.User) {
+  if (!user?.ui) return EMBED_MODELS.Small
+  if (user.ui?.embeddingModel !== undefined) return user.ui.embeddingModel
+
+  if (user.disableLTM) return EMBED_MODELS.Disabled
+  return EMBED_MODELS.Small
 }
+
+async function autoSwitchImageService(init: { config: AppSchema.AppConfig; user: AppSchema.User }) {
+  // If it's already set, ignore
+  if (!init.user || !init.config) return
+
+  const config = init.config.serverConfig
+  if (init.user.images?.type === 'agnai') return
+
+  // If we've changed from the default, ignore
+  if (init.user.images?.type !== 'horde') return
+
+  if (!config?.imagesEnabled) return
+  if (!config?.imagesModels?.length) return
+
+  const { tiers } = userStore.getState()
+
+  const sub = getUserSubscriptionTier(init.user, tiers)
+  if (!sub?.tier?.imagesAccess) return
+
+  const next = { ...init.user.images }
+  next.type = 'agnai'
+
+  if (config?.defaultImageModel) {
+    if (next.agnai) {
+      next.agnai.model = config.defaultImageModel
+    } else {
+      next.agnai = {
+        _id: 'agnai',
+        name: 'Agnaistic',
+        type: 'agnai',
+        url: '',
+        model: config.defaultImageModel,
+        sampler: 'k_euler_a',
+        scheduler: '',
+        draftMode: false,
+      }
+    }
+  }
+
+  userStore.updateConfig({ images: next })
+}
+
+userStore.subscribe((next, prev) => {
+  if (next.user?.hordeKey || next.user?.userHordeKey) return
+
+  if ((next && prev.user?.hordeKey) || prev.user?.userHordeKey) {
+    const nextUser: AppSchema.User = {
+      ...next.user,
+      hordeKey: prev.user.hordeKey,
+      userHordeKey: prev.user.userHordeKey,
+    } as any
+    console.log('Kept UHK')
+    userStore.setState({ user: nextUser })
+  }
+})

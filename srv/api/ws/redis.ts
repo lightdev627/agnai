@@ -3,7 +3,8 @@ import * as redis from 'redis'
 import { config } from '../../config'
 import { logger } from '../../middleware'
 import { AppSocket } from './types'
-import { PING_INTERVAL_MS } from '/common/util'
+import { lazySimplePromise, PING_INTERVAL_MS } from '/common/util'
+import { v4 } from 'uuid'
 
 export const allSockets = new Map<string, AppSocket>()
 export const userSockets = new Map<string, AppSocket[]>()
@@ -43,11 +44,8 @@ const MESSAGE_EVENT = 'agnaistic-message'
 const COUNT_EVENT = 'agnaistic-users'
 
 export const clients = {
-  pub: redis.createClient({ url: getUri() }),
-  sub: redis.createClient({ url: getUri() }),
-
-  bpub: redis.createClient({ url: getBroadcastUri() }),
-  bsub: redis.createClient({ url: getBroadcastUri() }),
+  pub: redis.createClient({ url: getUri(), socket: { reconnectStrategy: 250 } }),
+  sub: redis.createClient({ url: getUri(), socket: { reconnectStrategy: 250 } }),
 }
 
 let nonBusMaxCount = 0
@@ -98,11 +96,18 @@ export function isConnected() {
   return CONNECTED
 }
 
+let CLIENT_INTERVAL: NodeJS.Timeout | null = null
+
 export async function initMessageBus() {
   if (!config.redis.host) {
     logger.info(
       `No Redis host provided - Running in non-distributed mode. If you are self-hosting you can ignore this warning.`
     )
+    return
+  }
+
+  if (CONNECTED) {
+    logger.info(`Redis already connected - Ignoring`)
     return
   }
 
@@ -113,7 +118,13 @@ export async function initMessageBus() {
     logger.info('Connected to message bus')
     handleErrors()
 
-    setInterval(() => {
+    if (CLIENT_INTERVAL) {
+      clearInterval(CLIENT_INTERVAL)
+    }
+
+    CLIENT_INTERVAL = setInterval(() => {
+      if (!CONNECTED) return
+
       const count = getAllCount()
       clients.pub.publish(
         COUNT_EVENT,
@@ -139,8 +150,14 @@ export async function initMessageBus() {
     })
 
     CONNECTED = true
+
+    setInterval(pingClients, 30000)
   } catch (ex) {
-    setInterval(() => {
+    if (CLIENT_INTERVAL) {
+      clearInterval(CLIENT_INTERVAL)
+    }
+
+    CLIENT_INTERVAL = setInterval(() => {
       nonBusMaxCount = Math.max(getAllCount().count, nonBusMaxCount)
     }, 5000)
     logger.warn(
@@ -149,10 +166,56 @@ export async function initMessageBus() {
   }
 }
 
-function handleErrors() {
-  clients.pub.on('error', (error) => {})
+function reconnectRedis() {
+  clients.pub = redis.createClient({ url: getUri(), socket: { reconnectStrategy: 250 } })
+  clients.sub = redis.createClient({ url: getUri(), socket: { reconnectStrategy: 250 } })
+}
 
-  clients.sub.on('error', (error) => {})
+async function pingClients() {
+  const pingId = `ping-${v4()}`
+
+  const lazy = lazySimplePromise()
+  const start = Date.now()
+
+  try {
+    const timer = setTimeout(() => {
+      clients.sub.unsubscribe(pingId)
+      lazy.reject(true)
+    }, 5000)
+
+    clients.sub.subscribe(pingId, (msg) => {
+      logger.debug(`Redis ping received [${Date.now() - start}ms]`)
+      clearTimeout(timer)
+      lazy.resolve(true)
+      clients.sub.unsubscribe(pingId)
+    })
+
+    clients.pub.publish(pingId, JSON.stringify({ sent: start }))
+    await lazy.promise
+    return
+  } catch (ex) {
+    ex
+  }
+
+  logger.warn(`Reconnecting to message bus`)
+
+  reconnectRedis()
+  await Promise.all([
+    clients.pub.disconnect().catch((ex) => {}),
+    clients.sub.disconnect().catch((ex) => {}),
+  ])
+  await Promise.all([clients.pub.connect(), clients.sub.connect()])
+  logger.info(`Reconnected to message bus`)
+}
+
+function handleErrors() {
+  clients.pub.on('error', (error) => {
+    logger.error({ err: error }, `Redis publish client error`)
+  })
+
+  clients.sub.on('error', (error) => {
+    logger.error({ err: error }, `Redis subscribe client error`)
+  })
 }
 
 function getUri() {
@@ -161,14 +224,6 @@ function getUri() {
   if (creds) creds += '@'
 
   return `redis://${creds}${config.redis.host}:${config.redis.port}`
-}
-
-function getBroadcastUri() {
-  let creds = config.broadcast.user || ''
-  if (creds && config.broadcast.pass) creds += `:${config.broadcast.pass}`
-  if (creds) creds += '@'
-
-  return `redis://${creds}${config.broadcast.host}:${config.broadcast.port}`
 }
 
 type BusMessage<T extends { type: string } = { type: string }> =

@@ -28,14 +28,15 @@ const SubscriptionList: Component = () => {
     }
   })
 
-  const cfg = userStore()
+  const cfg = userStore((s) => ({ tiers: s.tiers }))
 
   const [deleting, setDeleting] = createSignal<string>()
   const subCats = createMemo(() => {
     const cats = new Map<number, Array<SubscriptionModel & { label: string }>>()
 
     for (const sub of state.enabled) {
-      let level = sub.levels.reduce<number | null>(
+      const levels = sub.levels || []
+      let level = levels.reduce<number | null>(
         (prev, curr) => (prev === null ? curr.level : curr.level < prev ? curr.level : prev),
         null
       )
@@ -84,18 +85,15 @@ const SubscriptionList: Component = () => {
         ← Back to Manage
       </A>
       <div class="mb-4 flex w-full justify-end gap-2">
-        <A href="/admin/tiers/new">
-          <Button>
-            <Plus />
-            Tier
-          </Button>
-        </A>
-        <A href="/admin/subscriptions/new">
-          <Button>
-            <Plus />
-            Model
-          </Button>
-        </A>
+        <Button href="/admin/tiers/new">
+          <Plus />
+          Tier
+        </Button>
+
+        <Button href="/admin/subscriptions/new">
+          <Plus />
+          Model
+        </Button>
       </div>
       <div class="flex flex-col items-center gap-2">
         <Show when={cfg.tiers.length === 0}>
@@ -163,7 +161,7 @@ const SubscriptionList: Component = () => {
                   <div class="flex w-full items-center gap-2">
                     <A
                       href={`/admin/subscriptions/${sub._id}`}
-                      class="flex h-12 w-full gap-2 rounded-xl hover:bg-[var(--bg-600)]"
+                      class="flex h-12 w-full items-center gap-2 rounded-xl hover:bg-[var(--bg-600)]"
                       classList={{
                         'bg-red-900': sub.subDisabled && !sub.isDefaultSub,
                         'text-500': sub.subDisabled && !sub.isDefaultSub,
@@ -172,17 +170,34 @@ const SubscriptionList: Component = () => {
                       }}
                     >
                       <div class="ml-4 flex w-full items-center">
-                        <div class="flex gap-1">
+                        <div class="flex items-center gap-1">
                           <span class="mr-1 text-xs italic text-[var(--text-600)]">
-                            [Level: {sub.subLevel}] {getServiceName(sub.service)}
+                            <Pill small inverse type={sub.allowGuestUsage ? 'green' : 'premium'}>
+                              {sub.subLevel}
+                            </Pill>
                           </span>
-                          {sub.name}
+                          <div class="flex flex-col gap-0">
+                            <div>{sub.name}</div>
+                            <div class="text-xs leading-3 text-[var(--text-600)]">
+                              {sub.subModel}
+                            </div>
+                          </div>
                           <Show when={sub.description}>
-                            <span class="text-500 ml-1 text-xs">{sub.description}</span>
+                            <Pill small inverse type="hl">
+                              {sub.description}
+                            </Pill>
                           </Show>
                           <span class="mr-1 text-xs italic text-[var(--text-600)]">
-                            {sub.isDefaultSub ? ' default' : ''}
-                            {sub.subDisabled ? ' (disabled)' : ''}
+                            <Show when={sub.isDefaultSub}>
+                              <Pill inverse small>
+                                default
+                              </Pill>
+                            </Show>
+                            <Show when={sub.subDisabled}>
+                              <Pill inverse small type="rose">
+                                disabled
+                              </Pill>
+                            </Show>
                           </span>
                           <Contexts
                             levels={[

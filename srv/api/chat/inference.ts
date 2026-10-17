@@ -1,5 +1,5 @@
 import { StatusError, errors, wrap } from '../wrap'
-import { sendGuest, sendOne } from '../ws'
+import { sendGuest, sendMany, sendOne } from '../ws'
 import { assertValid } from '/common/valid'
 import {
   InferenceRequest,
@@ -11,25 +11,11 @@ import { store } from '/srv/db'
 import { AppSchema } from '/common/types'
 import { obtainLock, releaseLock } from './lock'
 import { v4 } from 'uuid'
-import { renderMessagesToPrompt } from '/srv/adapter/template-chat-payload'
 import { replaceTags } from '/common/presets/templates'
 import { getCachedSubscriptionModels, getCachedTiers } from '/srv/db/subscriptions'
-import { generateImageSync } from '/srv/image'
 import { getSubscriptionModelLimits, getUserSubscriptionTier } from '/common/util'
-
-const validImage = {
-  prompt: 'string',
-  negative: 'string?',
-  model: 'string?',
-  width: 'number?',
-  height: 'number?',
-  cfg_scale: 'number?',
-  clip_skip: 'number?',
-  steps: 'number?',
-  sampler: 'string?',
-  seed: 'number?',
-  use_recommended: 'string?',
-} as const
+import { renderMessagesToPrompt } from '/common/template-messages'
+import { optional } from '/common/valid/types'
 
 const validInference = {
   prompt: 'string',
@@ -38,6 +24,7 @@ const validInference = {
   presetId: 'string?',
   jsonSchema: 'any?',
   imageData: 'string?',
+  chatId: 'string?',
 } as const
 
 const validInferenceApi = {
@@ -82,34 +69,170 @@ const validInferenceApi = {
   json_schema: 'any?',
 } as const
 
-export const generateImageApi = wrap(async ({ authed, userId, log, body }) => {
-  assertValid(validImage, body)
-
-  if (body.use_recommended && authed) {
-    authed.useRecommendedImages = body.use_recommended
-  }
-
-  const result = await generateImageSync(
+export const inferenceStream = wrap(async (req, res) => {
+  const { socketId, userId, body, log } = req
+  assertValid(
     {
-      user: authed!,
-      model: body.model,
-      prompt: body.prompt,
-      source: 'api',
-      parentId: undefined,
-      params: body,
-      noAffix: true,
+      ...validInference,
+      stop: ['string?'],
+      messages: 'any?',
+      requestId: 'string',
+      broadcast: optional({ type: 'string', id: 'string', payload: 'any' }),
     },
-    log
+    body
   )
 
-  if (result.error) {
-    throw new StatusError(result.error, 500)
+  const isEventStream = req.headers.accept === 'text/event-stream'
+  const signal = new AbortController()
+
+  if (isEventStream) {
+    req.socket.on('end', () => {
+      if (signal.signal.aborted) return
+      signal.abort()
+      res.status(499).end()
+    })
   }
 
-  return { output: result.output }
+  if (userId) {
+    if (!req.authed) throw errors.Unauthorized
+    body.user = req.authed
+  }
+
+  /** @todo convert to event-stream hybrid */
+
+  const { stream, service } = await createInferenceStream({
+    user: body.user!,
+    log,
+    prompt: body.prompt,
+    messages: body.messages,
+    settings: body.settings,
+    guest: userId ? undefined : socketId,
+    jsonSchema: body.jsonSchema,
+    imageData: body.imageData,
+    stop: body.stop,
+    signal,
+    chatId: body.chatId,
+  })
+
+  const requestId = body.requestId || v4()
+
+  if (!isEventStream) {
+    res.json({ requestId, success: true, generating: true })
+  } else {
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders()
+    res.write(
+      `data: ${JSON.stringify({ generating: true, success: true, requestId: body.requestId })}\n\n`
+    )
+  }
+
+  let response = ''
+  let partial = ''
+
+  const broadcastMembers = body.broadcast
+    ? await getBroadcastMembers(req.userId, body.broadcast)
+    : []
+
+  const wrapped = (data: any) => {
+    const aborted = signal.signal.aborted
+    if (isEventStream && !aborted) {
+      res.write(`data: ${JSON.stringify(data)}\n\n`)
+    }
+
+    if (!userId) {
+      sendGuest(socketId, data)
+      return
+    }
+
+    if (body.broadcast) {
+      sendMany(broadcastMembers, { ...data, ...body.broadcast.payload })
+      return
+    }
+
+    if (userId) {
+      sendOne(userId, data)
+    }
+  }
+
+  const lockId = body.chatId ? body.chatId : userId ? userId : socketId
+
+  await obtainLock(lockId, 10)
+
+  let promptSent = false
+
+  try {
+    for await (const gen of stream) {
+      if (typeof gen === 'string') {
+        response = gen
+        continue
+      }
+
+      if ('prompt' in gen) {
+        if (promptSent) continue
+        promptSent = true
+        wrapped({ type: 'inference-prompt', prompt: gen.prompt })
+      }
+
+      if ('meta' in gen) {
+        wrapped({ type: 'inference-meta', meta: gen.meta, requestId })
+        continue
+      }
+
+      if ('partial' in gen) {
+        partial = gen.partial
+        wrapped({ type: 'inference-partial', partial, service, requestId })
+        continue
+      }
+
+      if ('error' in gen) {
+        wrapped({ type: 'inference-error', partial, error: gen.error, requestId })
+        continue
+      }
+
+      if ('warning' in gen) {
+        wrapped({ type: 'inference-warning', requestId, warning: gen.warning })
+        continue
+      }
+
+      if ('thoughts' in gen) {
+        wrapped({ type: 'inference-thought', requestId, thoughts: gen.thoughts })
+      }
+    }
+
+    if (!promptSent) {
+      wrapped({ type: 'inference-prompt', prompt: body.prompt })
+    }
+  } catch (ex: any) {
+    // User cancellation
+    if (ex?.name === 'AbortError') {
+      req.log.debug('user cancelled inference')
+      response = partial
+      signal.abort()
+    } else if (ex instanceof StatusError) {
+      wrapped({
+        type: 'inference-error',
+        partial,
+        error: `[${ex.status}] ${ex.message}`,
+        requestId,
+      })
+    } else {
+      wrapped({ type: 'inference-error', partial, error: `${ex.message || ex}`, requestId })
+    }
+  }
+
+  wrapped({ type: 'inference', requestId, response })
+  await releaseLock(lockId)
+
+  if (isEventStream) {
+    res.write(`data: [DONE]`)
+    res.end()
+  }
 })
 
-export const guidance = wrap(async ({ userId, log, body, socketId }) => {
+export const guidance = wrap(async ({ userId, log, body, socketId }, res) => {
   assertValid(
     {
       ...validInference,
@@ -135,7 +258,7 @@ export const guidance = wrap(async ({ userId, log, body, socketId }) => {
 
     if (!body.settings) {
       if (body.presetId) {
-        const preset = await store.presets.getUserPreset(body.presetId)
+        const preset = await store.presets.getUserPresetInternal(body.presetId)
         if (!preset) {
           throw new StatusError(`Preset not found - ${body.presetId}`, 400)
         }
@@ -143,12 +266,17 @@ export const guidance = wrap(async ({ userId, log, body, socketId }) => {
         body.settings = preset
       } else if (!body.service) {
         if (!user.defaultPreset) throw errors.BadRequest
-        const preset = await store.presets.getUserPreset(user.defaultPreset)
+        const preset = await store.presets.getUserPresetInternal(user.defaultPreset)
         body.service = preset?.service!
         body.settings = preset
       }
     }
   }
+
+  const signal = new AbortController()
+
+  const listener = () => signal.abort()
+  res.addListener('close', listener)
 
   const props: InferenceRequest = {
     user: body.user,
@@ -162,23 +290,20 @@ export const guidance = wrap(async ({ userId, log, body, socketId }) => {
     lists: body.lists,
     reguidance: body.reguidance,
     requestId: body.requestId,
+    messages: [],
     jsonSchema: body.jsonSchema,
+    signal,
   }
 
   const result = await guidanceAsync(props)
+  res.removeListener('close', listener)
   return result
 })
 
 export const inferenceModels = wrap(async (req) => {
-  if (!req.authed?.defaultPreset) {
-    throw new StatusError(`No default preset configured - Check your Agnai user settings`, 400)
-  }
-
-  const preset = await store.presets.getUserPreset(req.authed?.defaultPreset!)
-  if (!preset) {
-    throw new StatusError(`Default preset not found - Check your Agnai user settings`, 400)
-  }
-
+  // if (!req.authed?.defaultPreset) {
+  //   throw new StatusError(`No default preset configured - Check your Agnai user settings`, 400)
+  // }
   const level = getUserSubscriptionTier(req.authed!, getCachedTiers())?.level ?? 0
   const userModels = getCachedSubscriptionModels()
     .filter((m) => m.subLevel <= level)
@@ -199,20 +324,24 @@ export const inferenceModels = wrap(async (req) => {
       }
     })
 
-  return {
-    object: 'list',
-    data: [
-      {
+  if (req.authed?.defaultPreset) {
+    const preset = await store.presets.getUserPresetInternal(req.authed?.defaultPreset!)
+    if (preset) {
+      userModels.unshift({
         id: `(${preset.service}) ${preset.name}`,
         object: 'model',
         created: Date.now(),
-        owned_by: req.user?.userId,
+        owned_by: req.user?.userId || '',
         root: preset._id,
         parent: null,
-        permission: [],
-      },
-      ...userModels,
-    ],
+        permissions: [] as any,
+      } as any)
+    }
+  }
+
+  return {
+    object: 'list',
+    data: [...userModels],
   }
 })
 
@@ -229,10 +358,10 @@ export const inferenceApi = wrap(async (req, res) => {
     ? getCachedSubscriptionModels().find((m) => m._id === body.model)
     : undefined
   const bodyPreset =
-    !bodySubPreset && body.model ? await store.presets.getUserPreset(body.model) : null
+    !bodySubPreset && body.model ? await store.presets.getUserPresetInternal(body.model) : null
 
   const subPreset = bodySubPreset || getCachedSubscriptionModels().find((m) => m._id === presetId)
-  const preset = bodyPreset || (await store.presets.getUserPreset(presetId))
+  const preset = bodyPreset || (await store.presets.getUserPresetInternal(presetId))
 
   if (!subPreset && !preset) {
     throw new StatusError('Invalid preset ID', 400)
@@ -284,12 +413,14 @@ export const inferenceApi = wrap(async (req, res) => {
     ? renderMessagesToPrompt(subPreset || preset!, body.messages)
     : undefined
 
+  const signal = new AbortController()
   const request: InferenceRequest = {
     prompt: body.prompt
-      ? replaceTags(body.prompt, subPreset?.modelFormat || preset?.modelFormat || 'ChatML')
+      ? replaceTags(body.prompt, subPreset?.modelFormat || preset?.modelFormat || 'None')
       : body.messages
       ? rendered?.prompt || ''
       : '',
+    messages: body.messages || [],
     user: req.authed!,
     log: req.log,
     settings,
@@ -297,9 +428,10 @@ export const inferenceApi = wrap(async (req, res) => {
     previous: body.previous,
     lists: body.lists,
     stop: rendered ? [rendered.stop, ...(body.stop || [])] : undefined,
+    signal,
   }
 
-  if (!request.prompt) {
+  if (!request.prompt && !request.messages) {
     throw new StatusError(`Invalid request: Request must contain 'prompt' or 'messages'`, 400)
   }
 
@@ -379,11 +511,19 @@ export const inferenceApi = wrap(async (req, res) => {
 export const inference = wrap(async ({ socketId, userId, body, log, get }, res) => {
   assertValid({ ...validInference, requestId: 'string' }, body)
 
+  if (Array.isArray(body.jsonSchema)) {
+    body.jsonSchema = { fields: body.jsonSchema, entities: {} }
+  }
+
   if (userId) {
     const user = await store.users.getUser(userId)
     if (!user) throw errors.Unauthorized
     body.user = user
   }
+
+  const signal = new AbortController()
+  const listener = () => signal.abort()
+  res.addListener('close', listener)
 
   const inference = await inferenceAsync({
     user: body.user,
@@ -393,82 +533,22 @@ export const inference = wrap(async ({ socketId, userId, body, log, get }, res) 
     guest: userId ? undefined : socketId,
     jsonSchema: body.jsonSchema,
     imageData: body.imageData,
+    messages: [],
+    signal,
   })
+
+  res.removeListener('close', listener)
 
   return { response: inference.generated, meta: inference.meta }
 })
 
-export const inferenceStream = wrap(async ({ socketId, userId, body, log, ...req }, res) => {
-  assertValid({ ...validInference, requestId: 'string' }, body)
+async function getBroadcastMembers(userId: string, opts: { type: string; id: string }) {
+  const chat = await store.chats.getChatOnly(opts.id)
 
-  if (userId) {
-    if (!req.authed) throw errors.Unauthorized
-    body.user = req.authed
-  }
+  if (!chat) return []
 
-  const { stream, service } = await createInferenceStream({
-    user: body.user!,
-    log,
-    prompt: body.prompt,
-    settings: body.settings,
-    guest: userId ? undefined : socketId,
-    jsonSchema: body.jsonSchema,
-    imageData: body.imageData,
-  })
+  if (chat.userId !== userId && !chat.memberIds.includes(userId)) return []
 
-  const requestId = body.requestId || v4()
-  res.json({ requestId, success: true, generating: true })
-  let response = ''
-  let partial = ''
-
-  const send = userId ? sendOne : sendGuest
-  const sendId = userId ? userId : socketId
-
-  await obtainLock(sendId, 15)
-
-  send(sendId, { type: 'inference-prompt', prompt: body.prompt })
-
-  try {
-    for await (const gen of stream) {
-      if (typeof gen === 'string') {
-        response = gen
-        continue
-      }
-
-      if ('meta' in gen) {
-        send(sendId, { type: 'inference-meta', meta: gen.meta, requestId })
-      }
-
-      if ('partial' in gen) {
-        partial = gen.partial
-        send(sendId, { type: 'inference-partial', partial, service, requestId })
-        continue
-      }
-
-      if ('error' in gen) {
-        send(sendId, { type: 'inference-error', partial, error: gen.error, requestId })
-        continue
-      }
-
-      if ('warning' in gen) {
-        send(sendId, { type: 'inference-warning', requestId, warning: gen.warning })
-        continue
-      }
-    }
-  } catch (ex: any) {
-    if (ex instanceof StatusError) {
-      send(sendId, {
-        type: 'inference-error',
-        partial,
-        error: `[${ex.status}] ${ex.message}`,
-        requestId,
-      })
-    } else {
-      send(sendId, { type: 'inference-error', partial, error: `${ex.message || ex}`, requestId })
-    }
-  }
-
-  await releaseLock(sendId)
-
-  send(sendId, { type: 'inference', requestId, response })
-})
+  const members = chat.memberIds.filter((id) => id !== userId)
+  return members
+}

@@ -4,6 +4,7 @@ export const ADAPTER_SETTINGS: {
   [key in keyof PresetAISettings]: Array<AIAdapter | ThirdPartyFormat>
 } = {
   temp: [
+    'third-party',
     'kobold',
     'novel',
     'ooba',
@@ -54,7 +55,16 @@ export const ADAPTER_SETTINGS: {
   xtcProbability: ['agnaistic', 'tabby', 'ooba', 'arli', 'aphrodite'],
   xtcThreshold: ['agnaistic', 'tabby', 'ooba', 'arli', 'aphrodite'],
 
-  prefill: ['claude', 'openrouter', 'openai', 'openai-chat', 'gemini', 'openai-chatv2'],
+  // prefill: [
+  //   'claude',
+  //   'openrouter',
+  //   'openai',
+  //   'openai-chat',
+  //   'gemini',
+  //   'openai-chatv2',
+  //   'agnaistic',
+  //   'openrouter-completion',
+  // ],
 
   topP: [
     'horde',
@@ -71,8 +81,20 @@ export const ADAPTER_SETTINGS: {
     'tabby',
     'mistral',
     'openrouter',
+    'openrouter-completion',
   ],
-  localRequests: ['openai', 'openai-chat', 'openai-chatv2'],
+  localRequests: [
+    'openai',
+    'openai-chat',
+    'openai-chatv2',
+    'ollama',
+    'ooba',
+    'exllamav2',
+    'koboldcpp',
+    'aphrodite',
+    'tabby',
+    'vllm',
+  ],
   repetitionPenalty: [
     'horde',
     'novel',
@@ -84,6 +106,7 @@ export const ADAPTER_SETTINGS: {
     'tabby',
     'ollama',
     'openrouter',
+    'openrouter-completion',
   ],
   repetitionPenaltyRange: ['horde', 'novel', 'kobold', 'ooba', 'agnaistic', 'tabby', 'ollama'],
   repetitionPenaltySlope: ['horde', 'novel', 'kobold'],
@@ -99,8 +122,19 @@ export const ADAPTER_SETTINGS: {
     'aphrodite',
     'tabby',
     'openrouter',
+    'openrouter-completion',
   ],
-  topA: ['horde', 'novel', 'kobold', 'ooba', 'agnaistic', 'aphrodite', 'tabby', 'openrouter'],
+  topA: [
+    'horde',
+    'novel',
+    'kobold',
+    'ooba',
+    'agnaistic',
+    'aphrodite',
+    'tabby',
+    'openrouter',
+    'openrouter-completion',
+  ],
   topK: [
     'horde',
     'novel',
@@ -156,7 +190,7 @@ export const ADAPTER_SETTINGS: {
     'openai-chatv2',
   ],
 
-  claudeModel: ['claude'],
+  claudeModel: ['claude', 'claude-v2'],
   novelModel: ['novel'],
   mistralModel: ['mistral'],
   oaiModel: ['openai', 'openai-chat'],
@@ -170,6 +204,7 @@ export const ADAPTER_SETTINGS: {
     'aphrodite',
     'tabby',
     'openrouter',
+    'openrouter-completion',
     'arli',
   ],
   presencePenalty: [
@@ -182,6 +217,7 @@ export const ADAPTER_SETTINGS: {
     'tabby',
     'ollama',
     'openrouter',
+    'openrouter-completion',
     'arli',
   ],
   streamResponse: [
@@ -198,10 +234,11 @@ export const ADAPTER_SETTINGS: {
     'mistral',
     'ollama',
     'openrouter',
+    'openrouter-completion',
     'gemini',
     'arli',
   ],
-  openRouterModel: ['openrouter'],
+  openRouterModel: ['openrouter', 'openrouter-completion'],
   stopSequences: [
     'ooba',
     'agnaistic',
@@ -215,6 +252,7 @@ export const ADAPTER_SETTINGS: {
     'tabby',
     'ollama',
     'openrouter',
+    'openrouter-completion',
     'arli',
   ],
   trimStop: ['koboldcpp'],

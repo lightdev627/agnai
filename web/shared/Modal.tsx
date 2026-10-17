@@ -6,15 +6,18 @@ import Tabs, { TabHook } from './Tabs'
 import { markdown } from './markdown'
 import { Portal } from 'solid-js/web'
 import { useMobileDetect } from './hooks'
+import { PartialEventEmitter } from './util'
 
 interface Props {
   title?: string | JSX.Element
+  debug?: string
   show: boolean
   children?: JSX.Element
   close: () => void
   footer?: JSX.Element
   maxWidth?: 'full' | 'half'
   maxHeight?: boolean
+  disableResize?: boolean
   fixedHeight?: boolean
   transparent?: boolean
   onSubmit?: (ev: Event & { currentTarget: HTMLFormElement }) => void
@@ -24,6 +27,23 @@ interface Props {
   dismissable?: boolean
   ariaLabel?: string
   ariaDescription?: string
+
+  emitter?: PartialEventEmitter<'width'>
+
+  contentClass?: string
+}
+
+export const ConditionalModal: Component<Props & { modal: boolean }> = (props) => {
+  return (
+    <>
+      <Switch>
+        <Match when={props.modal}>
+          <Modal {...props} />
+        </Match>
+        <Match when={!props.modal}>{props.children}</Match>
+      </Switch>
+    </>
+  )
 }
 
 const Modal: Component<Props> = (props) => {
@@ -31,6 +51,11 @@ const Modal: Component<Props> = (props) => {
   const [full, setFull] = createSignal(false)
 
   const toggleFull = () => setFull((f) => !f)
+  const toggleFull = () => {
+    const next = !full()
+    setFull((f) => next)
+    props.emitter?.emit.width?.(next)
+  }
 
   const width = createMemo(() => {
     if (!props.maxWidth && !full()) return `sm:max-w-lg`
@@ -41,16 +66,19 @@ const Modal: Component<Props> = (props) => {
   const minHeight = createMemo(() => (props.fixedHeight ? 'modal-height-fixed' : ''))
 
   const defaultSubmit = (ev: Event) => {
-    ev.preventDefault
+    ev.preventDefault()
   }
 
   // on-screen readers require focusing on the dialog to work
   const autofocus = (ref: HTMLFormElement) => setTimeout(() => ref.focus())
 
   return (
-    <Portal>
-      <Show when={props.show}>
-        <div class="fixed inset-x-0 top-0 z-[100] items-center justify-center px-2 sm:inset-0 sm:flex sm:items-center sm:justify-center">
+    <Show when={props.show}>
+      <Portal>
+        <div
+          class={`fixed inset-x-0 top-0 z-[100] items-center justify-center px-2 sm:inset-0 sm:flex sm:items-center sm:justify-center`}
+          classList={{ '!hidden': !props.show }}
+        >
           <div class="fixed inset-0 -z-10 opacity-40 transition-opacity">
             <div class="absolute inset-0 bg-black" />
           </div>
@@ -60,6 +88,8 @@ const Modal: Component<Props> = (props) => {
               onSubmit={props.onSubmit || defaultSubmit}
               class={`modal-height bg-900 z-50 w-[calc(100vw-0px)] overflow-hidden rounded-lg shadow-md shadow-black transition-all ${width()} `}
               classList={{ 'h-full': props.maxHeight || full(), 'opacity-80': props.transparent }}
+              class={`modal-container bg-900 z-50 w-[calc(100vw-0px)] overflow-hidden rounded-lg shadow-md shadow-black transition-all ${width()}`}
+              classList={{ 'h-screen': props.maxHeight || full(), 'opacity-80': props.transparent }}
               role="dialog"
               aria-modal="true"
               aria-label={props.ariaLabel}
@@ -68,14 +98,20 @@ const Modal: Component<Props> = (props) => {
             >
               <Switch>
                 <Match when={props.tabs}>
-                  <div class="flex h-[56px] flex-row justify-between text-lg">
+                  <div class="modal-header flex h-[56px] flex-row justify-between text-lg">
                     <Tabs
                       selected={props.tabs?.selected!}
                       select={props.tabs?.select!}
-                      tabs={props.tabs?.tabs!}
+                      tabs={props.tabs?.tabs?.()!}
                     />
                     <div class="flex gap-2">
                       <a class="icon-button" classList={{ hidden: mobile() }} onClick={toggleFull}>
+                    <div class="flex items-center gap-2">
+                      <a
+                        class="icon-button"
+                        classList={{ hidden: mobile() || props.disableResize }}
+                        onClick={toggleFull}
+                      >
                         <FullscreenIcon />
                       </a>
                       <Show when={props.dismissable !== false}>
@@ -93,7 +129,7 @@ const Modal: Component<Props> = (props) => {
                 </Match>
 
                 <Match when>
-                  <div class="flex w-full flex-row justify-between p-4 text-lg font-bold">
+                  <div class="modal-header flex w-full flex-row justify-between p-4 text-lg font-bold">
                     <div class="w-full">{props.title}</div>
                     <div class="flex gap-2">
                       <a class="icon-button" classList={{ hidden: mobile() }} onClick={toggleFull}>
@@ -117,81 +153,32 @@ const Modal: Component<Props> = (props) => {
 
               {/* 132px is the height of the title + footer*/}
               <div
-                class={`modal-content ${minHeight()} overflow-y-auto p-4 pt-0 text-lg`}
-                classList={{ 'h-full': props.maxHeight }}
+                class={`modal-content-area overflow-y-auto p-2 pt-0 text-lg ${
+                  props.contentClass || ''
+                }`}
+                classList={{
+                  'modal-height-fixed': !!minHeight(),
+                  'h-full': props.maxHeight,
+                  'modal-content': !!props.footer,
+                  'modal-content-footerless': !props.footer,
+                }}
               >
                 {props.children}
               </div>
               <Show when={props.footer}>
-                <div class="flex w-full flex-row justify-end gap-2 p-4">{props.footer}</div>
+                <div class="modal-footer flex w-full flex-row justify-end gap-2 p-4">
+                  {props.footer}
+                </div>
               </Show>
             </form>
           </div>
         </div>
-      </Show>
-    </Portal>
+      </Portal>
+    </Show>
   )
 }
 
 export default Modal
-
-export const NoTitleModal: Component<Omit<Props, 'title'>> = (props) => {
-  const width = createMemo(() => {
-    if (!props.maxWidth) return `sm:max-w-lg`
-
-    return props.maxWidth === 'full' ? `sm:w-[calc(100vw-64px)]` : 'sm:w-[calc(50vw)]'
-  })
-
-  const minHeight = createMemo(() =>
-    props.fixedHeight ? `min-h-[calc(80vh-132px)] sm:min-h-[calc(90vh-132px)]` : ''
-  )
-
-  const defaultSubmit = (ev: Event) => {
-    ev.preventDefault()
-  }
-
-  // on-screen readers require focusing on the dialog to work
-  const autofocus = (ref: HTMLFormElement) => setTimeout(() => ref.focus())
-
-  return (
-    <Show when={props.show}>
-      <div class="fixed inset-x-0 top-0 z-[100] items-center justify-center px-4 sm:inset-0 sm:flex sm:items-center sm:justify-center">
-        <div class="fixed inset-0 -z-10 opacity-40 transition-opacity">
-          <div class="absolute inset-0 bg-black" />
-        </div>
-        <div class="modal-body">
-          <form
-            ref={autofocus}
-            onSubmit={props.onSubmit || defaultSubmit}
-            class={`bg-900 my-auto max-h-[80vh] w-[calc(100vw-16px)] overflow-hidden rounded-lg shadow-md shadow-black transition-all sm:max-h-[90vh] ${width()} `}
-            role="dialog"
-            aria-modal="true"
-            aria-label={props.ariaLabel}
-            aria-description={props.ariaDescription}
-            tabindex="-1"
-          >
-            <div class="flex flex-row justify-end pr-4 pt-4 text-lg font-bold">
-              <div onClick={props.close} class="cursor-pointer">
-                <X />
-              </div>
-            </div>
-
-            {/* 132px is the height of the title + footer*/}
-            <div
-              class={`max-h-[calc(80vh-132px)] sm:max-h-[calc(90vh-132px)] ${minHeight()} overflow-y-auto text-lg`}
-            >
-              {props.children}
-            </div>
-
-            <Show when={props.footer}>
-              <div class="flex w-full flex-row justify-end gap-2 p-4">{props.footer}</div>
-            </Show>
-          </form>
-        </div>
-      </div>
-    </Show>
-  )
-}
 
 export const ConfirmModal: Component<{
   show: boolean
@@ -272,8 +259,25 @@ export const HelpModal: Component<{
 
 export const RootModal: Component<Props> = (props) => {
   return (
-    <Portal>
-      <Modal {...props} />
-    </Portal>
+    <Modal
+      contentClass={props.contentClass}
+      show={props.show}
+      close={props.close}
+      title={props.title}
+      footer={props.footer}
+      maxHeight={props.maxHeight}
+      maxWidth={props.maxWidth}
+      tabs={props.tabs}
+      onSubmit={props.onSubmit}
+      fixedHeight={props.fixedHeight}
+      transparent={props.transparent}
+      dismissable={props.dismissable}
+      ariaLabel={props.ariaLabel}
+      ariaDescription={props.ariaDescription}
+      emitter={props.emitter}
+      disableResize={props.disableResize}
+    >
+      {props.children}
+    </Modal>
   )
 }

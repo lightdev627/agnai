@@ -1,4 +1,5 @@
-import { Component, JSX, Show, createMemo, createSignal } from 'solid-js'
+import { useNavigate } from '@solidjs/router'
+import { Component, For, JSX, Show, createMemo, createSignal } from 'solid-js'
 
 export type ButtonSchema = keyof typeof kinds
 
@@ -27,18 +28,23 @@ const sizes = {
   xs: 'py-0.5 text-xs',
 }
 
-const Button: Component<{
+export type ButtonProps = {
   children: JSX.Element
   onClick?: JSX.EventHandler<HTMLButtonElement, MouseEvent>
   schema?: ButtonSchema
   type?: 'submit' | 'reset' | 'button'
   size?: 'sm' | 'md' | 'lg' | 'pill'
+  minHeight?: number
   disabled?: boolean
   class?: string
   alignLeft?: boolean
   classList?: { [key: string]: boolean }
   ariaLabel?: string
-}> = (props) => {
+  href?: string
+}
+
+const Button: Component<ButtonProps> = (props) => {
+  const nav = useNavigate()
   const schema = createMemo(() => kinds[props.schema || 'primary'])
   return (
     <button
@@ -48,16 +54,23 @@ const Button: Component<{
         ...props.classList,
         [schema()]: true,
         'leading-5': props.size === 'pill',
-        'py-0': props.size === 'pill',
-        'py-1': props.size === 'sm',
-        'py-2': !props.size || props.size === 'md',
-        'py-4': props.size === 'lg',
+        'px-1 py-0': props.size === 'pill',
+        'px-1.5 py-1': props.size === 'sm',
+        'px-2.5 py-2': !props.size || props.size === 'md',
+        'px-3 py-4': props.size === 'lg',
         'text-sm': props.size === 'sm' || props.size === 'pill',
         'text-lg': props.size === 'lg',
         'justify-center': !props.alignLeft,
       }}
+      style={{ 'min-height': props.minHeight ? `${props.minHeight}px` : '' }}
       disabled={props.disabled}
-      onClick={props.onClick}
+      onClick={(ev) => {
+        if (props.onClick) props.onClick(ev)
+        if (props.href) {
+          nav(props.href)
+          return
+        }
+      }}
       aria-label={props.ariaLabel}
     >
       {props.children}
@@ -79,7 +92,7 @@ export const LabelButton: Component<{
 }> = (props) => (
   <label
     for={props.for}
-    class={`select-none items-center` + (props.class || '')}
+    class={`cursor-pointer select-none items-center ` + (props.class || '')}
     classList={{
       ...props.classList,
       [kinds[props.schema || 'primary']]: true,
@@ -129,7 +142,7 @@ export const ModeButton: Component<{
     }
     const value = props.modes[index]
     setMode(value)
-    ref.value = value
+    ref!.value = value
     props.onChange?.(value)
   }
 
@@ -143,7 +156,10 @@ export const ModeButton: Component<{
           } ` + (props.class || '')
         }
         disabled={props.disabled}
-        onClick={onClick}
+        onClick={(ev) => {
+          // ev.preventDefault()
+          onClick(ev)
+        }}
       >
         {label()}
       </button>
@@ -154,7 +170,7 @@ export const ModeButton: Component<{
 
 export const ToggleButton: Component<{
   fieldName?: string
-  children: JSX.Element
+  children?: JSX.Element
   onChange: (value: boolean) => void
   size?: 'sm' | 'md' | 'lg' | 'xs'
   disabled?: boolean
@@ -185,12 +201,58 @@ export const ToggleButton: Component<{
           'border-[var(--hl-500)]': !props.value,
         }}
         disabled={props.disabled}
-        onClick={onClick}
+        onClick={(ev) => {
+          ev.preventDefault()
+          onClick(ev)
+        }}
       >
-        {props.children} <Show when={props.value && props.onText}>{props.onText}</Show>
+        <Show when={props.children}>{props.children}</Show>
+        <Show when={props.value && props.onText}>{props.onText}</Show>
         <Show when={!props.value && props.offText}>{props.offText}</Show>
       </button>
     </>
+  )
+}
+
+type MultiButton = {
+  content: any
+  onClick?: () => void
+  schema?: ButtonSchema
+  disabled?: boolean
+}
+
+export const MultiButton: Component<{
+  size?: 'sm' | 'md' | 'lg' | 'pill'
+  buttons: MultiButton[]
+}> = (props) => {
+  const buttons = createMemo(() =>
+    props.buttons.map((btn, i) => ({
+      ...btn,
+      first: i === 0,
+      last: i === props.buttons.length - 1,
+    }))
+  )
+
+  return (
+    <div class="flex gap-0">
+      <For each={buttons()}>
+        {(button) => (
+          <Button
+            size={props.size}
+            schema={button.schema}
+            onClick={button.onClick}
+            disabled={button.disabled}
+            // class={`${!button.first ? '!rounded-l-none' : ''} ${!button.last ? '!rounded-r-none' : ''}`}
+            classList={{
+              '!rounded-l-none': !button.first,
+              '!rounded-r-none': !button.last,
+            }}
+          >
+            {button.content}
+          </Button>
+        )}
+      </For>
+    </div>
   )
 }
 

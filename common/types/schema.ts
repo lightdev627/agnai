@@ -1,7 +1,7 @@
 import type { AIAdapter, ChatAdapter, ThirdPartyFormat } from '../adapters'
 import * as Memory from './memory'
 import type { GenerationPreset } from '../presets'
-import type { ImageSettings } from './image-schema'
+import type { BaseImageSettings, ImageProviderSettings, ImageSettings } from './image-schema'
 import type { TTSSettings } from './texttospeech-schema'
 import type { UISettings } from './ui'
 import * as Saga from './saga'
@@ -29,6 +29,7 @@ export type AllDoc =
   | AppSchema.Configuration
   | AppSchema.SagaTemplate
   | AppSchema.SagaSession
+  | AppSchema.ImagePreset
 
 export type OAuthScope = keyof typeof oauthScopes
 
@@ -43,8 +44,10 @@ export namespace AppSchema {
   export type Character = Library.Character
 
   export type GenSettings = Preset.GenSettings
+  export type ImagePreset = Preset.ImagePreset
   export type UserGenPreset = Preset.UserGenPreset
   export type PromptTemplate = Preset.PromptTemplate
+  export type Provider = Preset.Provider
 
   export type SubscriptionTier = Preset.SubscriptionTier
   export type SubscriptionModel = Preset.SubscriptionModel
@@ -57,6 +60,8 @@ export namespace AppSchema {
   export type AppConfig = Admin.AppConfig
   export type Configuration = Admin.Configuration
   export type ImageModel = Admin.ImageModel
+  export type ServerEmbedding = Admin.ServerEmbedding
+  export type ImageSettingsSource = 'last-character' | 'main-character' | 'chat' | 'settings'
 
   export type ChatMode = 'standard' | 'adventure'
 
@@ -111,6 +116,7 @@ export namespace AppSchema {
     oaiKey: string
     oaiKeySet?: boolean
 
+    userHordeKey?: string
     hordeKey: string
     hordeModel: string | string[]
     hordeName?: string
@@ -136,7 +142,10 @@ export namespace AppSchema {
     defaultAdapter: AIAdapter
     defaultPresets?: { [key in AIAdapter]?: string }
     defaultPreset?: string
+
     chargenPreset?: string
+    summaryPreset?: string
+    jsonPreset?: string
 
     createdAt?: string
 
@@ -150,6 +159,9 @@ export namespace AppSchema {
 
     images?: ImageSettings & {}
 
+    imageProviders?: ImageProviderSettings[]
+    imageProviderId?: string
+
     imageDefaults?: {
       size: boolean
       affixes: boolean
@@ -158,6 +170,7 @@ export namespace AppSchema {
       guidance: boolean
       steps: boolean
     }
+
     useRecommendedImages?: string // 'all' | 'except-(size|affix|negative)' | 'none'
 
     adapterConfig?: { [key in AIAdapter]?: Record<string, any> }
@@ -216,6 +229,10 @@ export namespace AppSchema {
     }
 
     banHistory?: Array<{ at: Date; reason: string }>
+
+    resetCode?: string
+
+    providers?: Preset.Provider[]
   }
 
   export interface ApiKey {
@@ -283,8 +300,18 @@ export namespace AppSchema {
 
     treeLeafId?: string
 
-    imageSource?: 'last-character' | 'main-character' | 'chat' | 'settings'
-    imageSettings?: ImageSettings
+    imageSource?: ImageSettingsSource
+    imageSettings?: BaseImageSettings
+    imageProviderId?: string
+
+    background?: string
+    localSettings?: { bgFormat?: 'contain' | 'cover' | 'auto' }
+
+    invisible?: Record<string, boolean | undefined>
+    invisibleChars?: Record<string, Record<string, boolean | undefined>>
+
+    /**  */
+    deletes?: Record<string, string>
   }
 
   export interface ChatMember {
@@ -301,7 +328,9 @@ export namespace AppSchema {
     _id: string
     kind: 'chat-message'
     chatId: string
+
     msg: string
+
     retries?: string[]
     extras?: string[]
     characterId?: string
@@ -325,8 +354,15 @@ export namespace AppSchema {
     json?: {
       response: string
       history: string
+      imageCaption: string
       values: any
     }
+
+    invisible?: Record<string, boolean | undefined>
+
+    // Emphemeral (lost on page refresh):
+    reasoning?: string
+    deleted?: boolean
   }
 
   export type ScenarioEventType = 'world' | 'character' | 'hidden' | 'ooc'
@@ -453,6 +489,7 @@ export namespace Patreon {
     type: 'member'
     id: string
     attributes: {
+      currently_entitled_amount_cents: number
       campaign_lifetime_support_cents: number
       campaign_entitled_amount_cents: number
       is_gifted: boolean

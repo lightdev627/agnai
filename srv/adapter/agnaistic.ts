@@ -12,7 +12,6 @@ import { handleMancer } from './mancer'
 import { handleNovel } from './novel'
 import { handleOAI } from './openai'
 import { handleOpenRouter } from './openrouter'
-import { getThirdPartyPayload } from './payloads'
 import { handlePetals } from './petals'
 import { registerAdapter } from './register'
 import { handleReplicate } from './replicate'
@@ -21,13 +20,15 @@ import { websocketStream } from './stream'
 import { ModelAdapter } from './type'
 import { AIAdapter, AdapterSetting } from '/common/adapters'
 import { AppSchema } from '/common/types'
-import { parseStops } from '/common/util'
-import { getTextgenCompletion } from './dispatch'
+import { getSubscriptionModelLimits, parseStops } from '/common/util'
 import { handleVenus } from './venus'
-import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
+import { sanitise } from '/common/requests/util'
 import { obtainLock, releaseLock } from '../api/chat/lock'
 import { getServerConfiguration } from '../db/admin'
 import { handleGemini } from './gemini'
+import { getPresetConnection, PresetConnection } from '/common/providers'
+import { getServicePayload } from './payloads'
+import { stripImageContent } from '/common/template-messages'
 
 export type SubscriptionPreset = Awaited<NonNullable<ReturnType<typeof getSubscriptionPreset>>>
 
@@ -38,7 +39,7 @@ export async function getSubscriptionPreset(
 ) {
   if (!isConnected()) return
   if (!gen) return
-  if (gen.service !== 'agnaistic') return
+  if (gen.service !== 'agnaistic' && gen.providerId !== 'agnaistic') return
 
   const tier = store.users.getUserSubTier(user)
   const level = user.admin ? 999999 : tier?.level ?? -1
@@ -46,7 +47,7 @@ export async function getSubscriptionPreset(
   let warning: string | undefined = undefined
 
   const fallback = await store.subs.getDefaultSubscription()
-  const subId = gen.registered?.agnaistic?.subscriptionId
+  const subId = gen.providerModels?.agnaistic || gen.registered?.agnaistic?.subscriptionId
   let preset = subId ? await store.subs.getSubscription(subId) : fallback
 
   if (guest && preset?.allowGuestUsage === false) {
@@ -72,7 +73,7 @@ export async function getSubscriptionPreset(
 }
 
 export const handleAgnaistic: ModelAdapter = async function* (opts) {
-  const { char, members, prompt, log, gen } = opts
+  const { prompt, log, gen } = opts
 
   if ('subscription' in opts === false) {
     opts.subscription = await getSubscriptionPreset(opts.user, !!opts.guest, opts.gen)
@@ -105,7 +106,9 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
     return
   }
 
-  if (subPreset.subLevel > -1 && subPreset.subLevel > newLevel) {
+  const limit = getSubscriptionModelLimits(subPreset, newLevel)
+  const subLevel = limit?.level ?? subPreset.subLevel
+  if (subLevel > -1 && subLevel > newLevel) {
     opts.log.error(
       {
         preset: subPreset.name,
@@ -119,7 +122,6 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
     yield { error: 'Your account is ineligible for this model - Subscription tier insufficient' }
     return
   }
-
   if (!subPreset.allowGuestUsage && opts.guest) {
     yield { error: 'Please sign in to use this model' }
     return
@@ -158,6 +160,12 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
       ...recommended
     } = subPreset
     Object.assign(opts.gen, recommended)
+
+    // Add the recommended stop sequences when the user preset needs recommended settings
+    if (!opts.gen.stopSequences) opts.gen.stopSequences = []
+    if (stopSequences?.length) {
+      opts.gen.stopSequences.push(...stopSequences)
+    }
   }
 
   // Max tokens and max context limit are decided by the subscription preset
@@ -166,12 +174,13 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
   opts.gen.thirdPartyUrl = subPreset.thirdPartyUrl
   opts.gen.thirdPartyFormat = subPreset.thirdPartyFormat
 
+  // Typical requests are always `kind: 'plain'` so we don't automatically always inherit the subPreset stop sequences
   const stops =
     Array.isArray(subPreset.stopSequences) && opts.kind !== 'plain'
       ? new Set(subPreset.stopSequences)
       : new Set<string>()
 
-  if (Array.isArray(opts.gen.stopSequences) && opts.gen.stopSequences.length) {
+  if (Array.isArray(opts.gen.stopSequences)) {
     for (const stop of opts.gen.stopSequences) {
       stops.add(stop)
     }
@@ -187,6 +196,20 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
     const userKey = subPreset.subApiKey
 
     opts.user.oaiKey = userKey
+
+    // Use either the 'sub api key' or fall-through to the sub model third-party key
+    opts.gen.thirdPartyKey = userKey || subPreset.thirdPartyKey
+
+    // If 'reasoning' is enabled in the subscription model, allow users to pass-through reasoning settings
+    opts.gen.reasoning = subPreset.reasoning?.enabled ? opts.gen.reasoning : undefined
+
+    // Use the sub-model Jinja config?
+    opts.gen.jinjaEnabled = subPreset.jinjaEnabled
+    opts.gen.jinjaTemplate = subPreset.jinjaTemplate
+
+    // Use sub-model third-party config for 'third-party' setups
+    opts.gen.thirdPartyUrlNoSuffix = subPreset.thirdPartyUrlNoSuffix
+    opts.gen.thirdPartyUrl = subPreset.thirdPartyUrl
     opts.gen.thirdPartyModel = subPreset.thirdPartyModel
     opts.gen.oaiModel = subPreset.thirdPartyModel || subPreset.oaiModel
 
@@ -242,14 +265,22 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
     return
   }
 
-  const body = getThirdPartyPayload(opts, allStops)
+  const body = getServicePayload(opts, allStops)
+  const hasImages = opts.hasAttachments && opts.subscription.preset.subVisionModel
+  const isChatModel = opts.subscription.preset.modelFormat === 'None'
+  if (hasImages || isChatModel) {
+    body.messages = opts.messages
+  }
+
   body.api_key = key
 
-  yield { prompt }
+  const stripped = body.messages?.length ? stripImageContent(body.messages) : null
 
-  log.debug({ ...body, prompt: null, imageData: null }, 'Agnaistic payload')
+  yield { prompt: stripped || prompt }
 
-  log.debug(`Prompt:\n${prompt}`)
+  log.debug({ ...body, prompt: null, messages: null, imageData: null }, 'Agnaistic payload')
+
+  log.debug(`Prompt:\n${body.messages?.length ? JSON.stringify(stripped, null, 2) : prompt}`)
 
   const [submodel, override = ''] = subPreset.subModel.split(',')
 
@@ -265,70 +296,74 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
 
   body.model_override = override
 
-  const resp = gen.streamResponse
-    ? await websocketStream({
-        url: `${subPreset.subServiceUrl || subPreset.thirdPartyUrl}/api/v1/stream?${params}`,
-        body,
-      })
-    : getTextgenCompletion(
-        'Agnastic',
-        `${subPreset.subServiceUrl || subPreset.thirdPartyUrl}/api/v1/generate?${params}`,
-        body,
-        {}
-      )
+  const resp = await websocketStream({
+    url: `${subPreset.subServiceUrl || subPreset.thirdPartyUrl}/api/v1/stream?${params}`,
+    body,
+    signal: opts.signal,
+  })
 
   let accumulated = ''
   let result = ''
 
-  while (true) {
-    let generated = await resp.next()
-
+  for await (const generated of resp) {
     // Both the streaming and non-streaming generators return a full completion and yield errors.
-    if (generated.done) {
-      break
-    }
+    // if (generated.done) {
+    //   break
+    // }
 
-    if (generated.value.meta) {
-      const meta = generated.value.meta
+    if (generated.meta) {
+      const meta = generated.meta
       yield { meta }
       if (meta.host && !opts.guest) {
         sendOne(opts.user._id, { type: 'message-meta', host: meta.host })
       }
     }
 
-    if (generated.value.error) {
-      opts.log.error({ err: generated.value.error }, 'Agnaistic request failed')
-      yield generated.value
+    if (generated.error) {
+      if (generated.error !== 'inference cancelled by user') {
+        opts.log.error({ err: generated.error, model: submodel, level }, 'Agnaistic request failed')
+      }
+
+      yield generated
       await releaseLock(lockId)
       return
     }
 
     // Only the streaming generator yields individual tokens.
-    if (generated.value.token) {
-      if (opts.guidance) accumulated = generated.value.token
-      else accumulated += generated.value.token
-      yield { partial: sanitiseAndTrim(accumulated, prompt, char, opts.characters, members) }
+    if (generated.token) {
+      if (opts.guidance) accumulated = generated.token
+      else accumulated += generated.token
+
+      if (gen.streamResponse) {
+        yield { partial: accumulated }
+      }
     }
 
-    if (typeof generated.value === 'string') {
-      result = generated.value
+    if (generated.thoughts) {
+      yield { thoughts: generated.thoughts }
+    }
+
+    if (generated.tokens) {
+      result = generated.tokens
+      break
+    }
+
+    if (typeof generated === 'string') {
+      result = generated
       break
     }
   }
+
+  // while (true) {
+  //   let generated = await resp.next()
+  // }
 
   if (+srv.lockSeconds > 0) {
     await releaseLock(lockId)
   }
 
   const parsed = sanitise((result || accumulated).replace(prompt, ''))
-  const trimmed = trimResponseV2(
-    parsed,
-    opts.replyAs,
-    members,
-    opts.characters,
-    Array.from(stops.values())
-  )
-  yield trimmed || parsed
+  yield parsed
 }
 
 const settings: AdapterSetting[] = [
@@ -394,46 +429,64 @@ export async function updateRegisteredSubs() {
 export const handlers: { [key in AIAdapter]: ModelAdapter } = {
   novel: handleNovel,
   kobold: handleThirdParty,
+  'third-party': handleThirdParty,
   ooba: handleThirdParty,
   horde: handleHorde,
   openai: handleOAI,
   scale: handleScale,
   claude: handleClaude,
+  'claude-v2': handleClaude,
   goose: handleGooseAI,
   replicate: handleReplicate,
   openrouter: handleOpenRouter,
+  'openrouter-completion': handleOpenRouter,
   mancer: handleMancer,
   petals: handlePetals,
   agnaistic: handleAgnaistic,
   venus: handleVenus,
 }
 
-export function getHandlers(settings: Partial<AppSchema.GenSettings>) {
-  switch (settings.service!) {
+export function getHandlers(opts: {
+  settings: Partial<AppSchema.GenSettings>
+  user?: AppSchema.User
+}): ModelAdapter {
+  const conn = getPresetConnection(opts.settings, opts.user?.providers)
+
+  if (conn.provider) {
+    const { handler } = getProviderHandler(conn)
+    Object.assign(opts.settings, conn.preset)
+    opts.settings = conn.preset
+    return handler
+  }
+
+  switch (opts.settings.service!) {
     case 'agnaistic':
     case 'claude':
+    case 'claude-v2':
     case 'goose':
     case 'replicate':
     case 'horde':
     case 'ooba':
     case 'openrouter':
+    case 'openrouter-completion':
     case 'openai':
     case 'scale':
     case 'petals':
     case 'mancer':
     case 'novel':
     case 'venus':
-      return handlers[settings.service]
+      return handlers[opts.settings.service]
   }
 
-  switch (settings.thirdPartyFormat!) {
+  switch (opts.settings.thirdPartyFormat!) {
     case 'claude':
     case 'kobold':
     case 'openai':
-      return handlers[settings.thirdPartyFormat!]
+      return handlers[opts.settings.thirdPartyFormat!]
 
     case 'openai-chat':
     case 'openai-chatv2':
+    case 'lm-studio':
       return handlers.openai
 
     case 'featherless':
@@ -445,4 +498,20 @@ export function getHandlers(settings: Partial<AppSchema.GenSettings>) {
   }
 
   return handleThirdParty
+}
+
+function getProviderHandler({ provider, service, format, detail }: PresetConnection) {
+  // const { detail, type, category } = assertProviderDetail(provider.provider)
+
+  if (format) {
+    const handler = getHandlers({ settings: { thirdPartyFormat: format } })
+    return { handler }
+  }
+
+  if (service) {
+    const handler = getHandlers({ settings: { service } })
+    return { handler }
+  }
+
+  throw new Error(`Unknown provider: ${provider?.provider}`)
 }

@@ -10,6 +10,7 @@ export type Option<T extends string = string> = {
 const Select: Component<{
   fieldName?: string
   label?: JSX.Element | string
+  inline?: boolean
   helperText?: string | JSX.Element
   helperMarkdown?: string
   items: Option[]
@@ -21,6 +22,7 @@ const Select: Component<{
   onChange?: (item: Option) => void
   recommend?: string
   recommendLabel?: string
+  children?: any
 
   ref?: (ref: HTMLSelectElement) => void
   hide?: boolean
@@ -56,24 +58,26 @@ const Select: Component<{
       classList={{
         ...props.classList,
         hidden: props.hide ?? false,
+        'flex gap-2 items-center': props.inline,
       }}
     >
-      <FormLabel
-        label={
-          <span>
-            <label class="form-label">{props.label}</label>
-            <Show when={recommend() !== undefined}>
-              <span class="text-xs italic text-gray-500">
-                &nbsp;({props.recommendLabel || 'Recommended'}: {recommend()?.toString()})
-              </span>
-            </Show>
-          </span>
-        }
-        helperText={props.helperText}
-        helperMarkdown={props.helperMarkdown}
-      />
-
-      <div class="flex items-center">
+      <Show when={props.label || props.helperText || props.helperMarkdown}>
+        <FormLabel
+          label={
+            <span>
+              <label class="form-label">{props.label}</label>
+              <Show when={recommend() !== undefined}>
+                <span class="text-xs italic text-gray-500">
+                  &nbsp;({props.recommendLabel || 'Recommended'}: {recommend()?.toString()})
+                </span>
+              </Show>
+            </span>
+          }
+          helperText={props.helperText}
+          helperMarkdown={props.helperMarkdown}
+        />
+      </Show>
+      <div class="flex items-center gap-1">
         <div class="relative overflow-hidden rounded-xl bg-transparent">
           <select
             ref={(ele) => {
@@ -81,7 +85,7 @@ const Select: Component<{
               props.ref?.(ele)
             }}
             name={props.fieldName}
-            class={`form-field cursor-pointer appearance-none rounded-xl bg-[var(--hl-700)] py-2 pl-3 pr-8 shadow-none ${
+            class={`form-field max-w-full cursor-pointer appearance-none rounded-xl bg-[var(--hl-700)] py-2 pl-3 pr-8 shadow-none ${
               props.class || ''
             }`}
             onChange={onChange}
@@ -94,15 +98,17 @@ const Select: Component<{
                   value={item.value}
                   selected={props.value === item.value}
                 >
-                  {item.label}
+                  {item.label ?? item.value}
                 </option>
               )}
             </For>
           </select>
+
           <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-white">
             <ChevronDown />
           </div>
         </div>
+        {props.children ? props.children : null}
       </div>
     </div>
   )

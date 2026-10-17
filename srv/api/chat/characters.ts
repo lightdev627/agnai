@@ -7,6 +7,7 @@ import { v4 } from 'uuid'
 import { now } from '/srv/db/util'
 import { entityUploadBase64 } from '../upload'
 import { toArray } from '/common/util'
+import { optional } from '/common/valid/types'
 
 export const addCharacter = handle(async ({ body, params, userId }) => {
   assertValid({ charId: 'string' }, body)
@@ -82,11 +83,12 @@ export const upsertTempCharacter = handle(async ({ body, params, userId }) => {
       systemPrompt: 'string?',
       postHistoryInstructions: 'string?',
       alternateGreetings: 'any?',
-      characterBook: 'string?',
+      characterBook: 'any?',
       visualType: 'string?',
       sprite: 'any?',
       culture: 'string?',
       json: 'any?',
+      insert: optional({ prompt: 'string', depth: 'number' }),
     },
     body
   )
@@ -120,8 +122,14 @@ export const upsertTempCharacter = handle(async ({ body, params, userId }) => {
     voice: body.voice,
     postHistoryInstructions: body.postHistoryInstructions,
     systemPrompt: body.systemPrompt,
+    insert: body.insert,
     alternateGreetings: body.alternateGreetings ? toArray(body.alternateGreetings) : undefined,
-    characterBook: body.characterBook ? JSON.parse(body.characterBook) : undefined,
+    characterBook:
+      typeof body.characterBook === 'string'
+        ? JSON.parse(body.characterBook)
+        : typeof body.characterBook === 'object'
+        ? body.characterBook
+        : undefined,
     visualType: body.visualType,
     sprite: body.sprite,
     culture: body.culture,

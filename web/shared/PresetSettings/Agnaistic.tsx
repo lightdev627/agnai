@@ -1,63 +1,67 @@
-import { Component, For, Show, createEffect, createMemo, createSignal, on } from 'solid-js'
-import { chatStore, presetStore, settingStore, userStore } from '/web/store'
-import { CustomOption, CustomSelect } from '../CustomSelect'
+import { Component, For, Show, createMemo } from 'solid-js'
+import { settingStore, toastStore, userStore } from '/web/store'
+import { CustomSelect } from '../CustomSelect'
 import { getSubscriptionModelLimits } from '/common/util'
 import {
   SubscriptionModelLevel,
   SubscriptionModelOption,
   SubscriptionTier,
 } from '/common/types/presets'
-import { ChevronDown } from 'lucide-solid'
 import { SubCTA } from '/web/Navigation'
-import { applyStoreProperty, createEmitter } from '../util'
-import { isDefaultPreset } from '/common/presets'
-import { Field } from './Fields'
+import { createEmitter } from '../util'
 import { useAppContext } from '/web/store/context'
 import { AppSchema } from '/common/types'
 import { Pill } from '../Card'
 import { RootModal } from '../Modal'
+import { PresetFuncs, ContextPreset } from '/web/store/preset-context'
 
-export const AgnaisticSettings: Field<{ noSave: boolean }> = (props) => {
+const MODEL_NAMES = new Map<string, string>()
+
+export const AgnaisticSettings: Component<{
+  state: ContextPreset
+  setters: PresetFuncs
+  noSave: boolean
+  page?: string
+}> = (props) => {
+  const [appctx] = useAppContext()
   const state = userStore((s) => ({ tiers: s.tiers }))
+  const models = settingStore((s) => ({ list: s.config.subs || [] }))
+
+  const fallback = createMemo(() => {
+    const fb = models.list.find((m) => m.preset.isDefaultSub)
+    return fb?._id
+  })
 
   const cats = useModelCategories()
-  const [ctx] = useAppContext()
 
   const onSave = (value: string) => {
+    const models = props.state.providerModels || {}
+    const next = { ...models, agnaistic: value }
+    props.setters.setState('providerModels', next)
+
     if (props.noSave) {
-      const next = applyStoreProperty(props.state.registered, 'agnaistic.subscriptionId', value)
-      props.setter('registered', next)
       return
     }
-    presetStore.updateRegisterPresetProp(props.state._id, 'agnaistic', 'subscriptionId', value)
-    props.setter(
-      'registered',
-      applyStoreProperty(props.state.registered, 'agnaistic.subscriptionId', value)
-    )
+
+    props.setters.upsert({
+      quiet: true,
+      onCreated: (preset) => {
+        toastStore.success('Preset created')
+
+        if (!appctx.chat?._id) return
+        props.setters.change({ chatId: appctx.chat._id, presetId: preset._id })
+      },
+      onUpdated: () => toastStore.success('Model updated'),
+    })
+
+    // presetStore.updatePreset(props.state._id, { providerModels: next })
   }
-
-  createEffect(
-    on(
-      () => ctx.preset?.registered?.agnaistic?.subscriptionId,
-      (id) => {
-        if (!ctx.preset?._id || !id) return
-        if (ctx.preset._id !== props.state._id) return
-
-        const curr = props.state.registered?.agnaistic?.subscriptionId
-        if (id === curr) return
-
-        props.setter(
-          'registered',
-          applyStoreProperty(props.state.registered, 'agnaistic.subscriptionId', id)
-        )
-      }
-    )
-  )
 
   const emitter = createEmitter('close')
 
   const label = createMemo(() => {
-    const id = props.state.registered?.agnaistic?.subscriptionId
+    const id =
+      props.state.providerModels?.agnaistic ?? props.state.registered?.agnaistic?.subscriptionId
     let opt = cats().all.find((v) => v.value === id)
 
     if (!opt) {
@@ -67,6 +71,7 @@ export const AgnaisticSettings: Field<{ noSave: boolean }> = (props) => {
     if (!opt) {
       return <div>None</div>
     }
+
     return (
       <ModelLabel
         sub={opt?.sub!}
@@ -76,35 +81,36 @@ export const AgnaisticSettings: Field<{ noSave: boolean }> = (props) => {
         disabled={opt.disabled}
         requires={opt.requires}
         tiers={state.tiers}
+        page={props.page}
       />
     )
   })
 
   return (
-    <Show when={props.state.service === 'agnaistic'}>
-      <CustomSelect
-        size="sm"
-        buttonLabel={label()}
-        modalTitle={
-          <div class="flex w-full flex-col">
-            <div>Select a Model</div>
-            <div class="flex justify-center">
-              <SubCTA onClick={emitter.emit.close}>Subscribe for higher quality models</SubCTA>
+    <Show when={props.state.providerId === 'agnaistic' || props.state.service === 'agnaistic'}>
+      <div class="flex items-center gap-2">
+        <CustomSelect
+          size="sm"
+          buttonLabel={label()}
+          modalTitle={
+            <div class="flex w-full flex-col">
+              <div class="flex justify-center">
+                <SubCTA onClick={emitter.emit.close}>Subscribe for higher quality models</SubCTA>
+              </div>
             </div>
-          </div>
-        }
-        label={
-          <>
-            Model <span class="text-500 text-xs italic">(Available: {cats().all.length})</span>
-          </>
-        }
-        // options={opts()}
-        categories={cats().categories}
-        onSelect={(ev) => onSave(ev.value)}
-        value={props.state.registered?.agnaistic?.subscriptionId}
-        selected={props.state.registered?.agnaistic?.subscriptionId}
-        emitter={emitter.on}
-      />
+          }
+          // options={opts()}
+          search={isFoundModel}
+          categories={cats().categories}
+          onSelect={(ev) => onSave(ev.value)}
+          selected={
+            props.state.providerModels?.agnaistic ??
+            props.state.registered?.agnaistic?.subscriptionId ??
+            fallback()
+          }
+          closeSub={emitter.on}
+        />
+      </div>
     </Show>
   )
 }
@@ -163,87 +169,17 @@ export const ModelList: Component<{ show: boolean; close: () => void }> = (props
   )
 }
 
-export const AgnaisticModel: Component = (props) => {
-  const [ctx] = useAppContext()
+function isFoundModel(compare: string, input: string) {
+  const name = MODEL_NAMES.get(compare)?.toLowerCase()
+  if (!name) return true
 
-  const [selected, setSelected] = createSignal(ctx.preset?.registered?.agnaistic?.subscriptionId)
-  const cats = useModelCategories()
+  const words = input.split(' ').map((w) => w.toLocaleLowerCase())
 
-  createEffect(
-    on(
-      () => ctx.preset?.registered?.agnaistic?.subscriptionId,
-      (id) => {
-        setSelected(id)
-      }
-    )
-  )
-
-  const onSave = (opt: CustomOption) => {
-    const chat = chatStore.getState().active
-
-    if (isDefaultPreset(ctx.preset?._id)) {
-      const create = {
-        ...ctx.preset,
-        name: `My Preset`,
-        service: 'agnaistic' as const,
-        chatId: chat?.chat._id,
-        registered: {
-          agnaistic: {
-            subscriptionId: opt.value,
-          },
-        },
-      }
-
-      presetStore.createPreset(create, (preset) => {
-        if (!ctx.chat?._id) return
-        chatStore.setChat(ctx.chat._id, { genPreset: preset._id, genSettings: undefined })
-      })
-      return
-    }
-
-    presetStore.updatePreset(ctx.preset?._id!, {
-      registered: { ...ctx.preset?.registered, agnaistic: { subscriptionId: opt.value } },
-    })
+  for (const word of words) {
+    if (!name.includes(word)) return false
   }
 
-  const label = createMemo(() => {
-    const id = selected()
-    let opt = cats().all.find((v) => v.value === id)
-
-    if (!opt) {
-      opt = cats().all.find((v) => v.sub.preset.isDefaultSub)
-    }
-
-    return (
-      <>
-        <span class="font-bold">Model:</span> {opt?.sub.name || 'Default'} <ChevronDown size={12} />
-      </>
-    )
-  })
-
-  const emitter = createEmitter('close')
-
-  return (
-    <Show when={ctx.preset} fallback={null}>
-      <CustomSelect
-        size="sm"
-        buttonLabel={label()}
-        modalTitle={
-          <div class="flex w-full flex-col">
-            <div>Select a Model</div>
-            <div class="flex justify-center">
-              <SubCTA onClick={emitter.emit.close}>Subscribe for higher quality models</SubCTA>
-            </div>
-          </div>
-        }
-        categories={cats().categories}
-        onSelect={onSave}
-        value={ctx.preset?.registered?.agnaistic?.subscriptionId}
-        selected={selected()}
-        emitter={emitter.on}
-      />
-    </Show>
-  )
+  return true
 }
 
 type ModelOption = {
@@ -265,7 +201,7 @@ function useModelCategories() {
     userLevel: s.userLevel,
   }))
 
-  const settings = settingStore()
+  const settings = settingStore((s) => ({ config: s.config }))
 
   const list = createMemo(() => {
     const tierLevel = state.user?.admin ? Infinity : state.userLevel
@@ -284,7 +220,9 @@ function useModelCategories() {
       if (sub.preset.subDisabled && !state.user?.admin) continue
 
       const limit = getSubscriptionModelLimits(sub.preset, level)
-      const disabled = !!sub.preset.allowGuestUsage ? false : sub.level > level
+      const disabled = !!sub.preset.allowGuestUsage
+        ? false
+        : (limit?.level ?? sub.preset.subLevel) > level
       const tier =
         sub.level <= 0
           ? 'Free'
@@ -302,6 +240,7 @@ function useModelCategories() {
       const tierName = tier || 'Staff'
 
       const category = cats.get(tierName) || { tier: sub.level, options: [] }
+      MODEL_NAMES.set(sub._id, sub.name)
       const base = {
         value: sub._id,
         level: sub.level,
@@ -359,6 +298,7 @@ const ModelLabel: Component<{
   disabled: boolean
   nodesc?: boolean
   tiers: AppSchema.SubscriptionTier[]
+  page?: string
 }> = (props) => {
   const context = createMemo(() =>
     props.limit ? props.limit.maxContextLength : props.sub.preset.maxContextLength!
@@ -369,12 +309,7 @@ const ModelLabel: Component<{
 
   const maxes = createMemo(() => {
     const pills: any[] = []
-    if (!props.sub.preset.levels?.length) {
-      pills.push(<>{tokens()} tokens</>)
-      return pills
-    }
-
-    const levels = props.sub.preset.levels.slice()
+    const levels = (props.sub.preset.levels || []).slice()
     const baseIncluded = props.sub.preset.levels.find((l) => l.level === props.sub.preset.subLevel)
     if (!baseIncluded) {
       levels.push({
@@ -382,6 +317,15 @@ const ModelLabel: Component<{
         maxContextLength: props.sub.preset.maxContextLength!,
         maxTokens: props.sub.preset.maxTokens,
       })
+    }
+
+    if (!levels.length) {
+      pills.push(
+        <>
+          {tokens()} tokens, {tokens()} tokens
+        </>
+      )
+      return pills
     }
 
     levels.sort((l, r) => l.level - r.level)
@@ -395,12 +339,19 @@ const ModelLabel: Component<{
         return curr.level < prev.level ? curr : prev
       }, null)
 
-      if (!required && props.sub.preset.subLevel > -1) continue
-      const name = required ? required.name : level.level === 0 ? 'User' : 'Guest'
+      if (!required && props.sub.preset.subLevel > -1) {
+        pills.push(
+          <Pill small class="text-xs" inverse>
+            All {Math.round(level.maxContextLength / 1000)}K
+          </Pill>
+        )
+        continue
+      }
+      const name = required ? required.name : level.level === 0 ? 'User' : 'All'
 
       pills.push(
         <Pill small class="text-xs" inverse>
-          {name} {Math.floor(level.maxContextLength / 1000)}K
+          {name} {Math.round(level.maxContextLength / 1000)}K
         </Pill>
       )
     }
@@ -414,19 +365,17 @@ const ModelLabel: Component<{
         <div class="min-w-fit font-bold">{props.sub.name}</div>
         <div class="text-700 flex flex-wrap gap-1 text-xs">
           <Show
-            when={maxes().length}
-            fallback={
-              <>
-                {Math.floor(context() / 1000)}K, {tokens()} tokens
-              </>
-            }
+            when={maxes().length && !props.page}
+            fallback={<>{Math.round(context() / 1000)}K</>}
           >
             <For each={maxes()}>{(max) => <>{max}</>}</For>
           </Show>
         </div>
       </div>
       <Show when={!props.disabled && !props.nodesc}>
-        <div class="text-700 text-xs">{props.sub.preset.description}</div>
+        <div class="text-700 text-xs">
+          {tokens()} tokens{props.sub.preset.description ? `, ${props.sub.preset.description}` : ''}
+        </div>
       </Show>
       <Show when={props.disabled}>
         <div class="text-700 text-xs">Requires {props.requires}</div>

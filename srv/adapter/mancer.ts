@@ -2,11 +2,11 @@ import needle from 'needle'
 import { Completion, Inference, ModelAdapter } from './type'
 import { decryptText } from '../db/util'
 import { registerAdapter } from './register'
-import { getStoppingStrings } from './prompt'
-import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
-import { streamCompletion } from './stream'
+import { sanitise } from '/common/requests/util'
 import { requestFullCompletion } from './chat-completion'
+import { streamGenerator } from '/common/requests/stream'
 import { getCompletionContent } from './openai'
+import { getStoppingStrings } from '/common/requests/payloads'
 
 const mancerOptions: Record<string, string> = {}
 
@@ -52,7 +52,7 @@ export const handleMancer: ModelAdapter = async function* (opts) {
     frequency_penalty: opts.gen.frequencyPenalty,
     tfs: opts.gen.tailFreeSampling,
     seed: -1,
-    stop: getStoppingStrings(opts),
+    stop: getStoppingStrings(opts, opts.gen),
     smoothing_factor: gen.smoothingFactor,
     smoothing_curve: gen.smoothingCurve,
     stream: opts.gen.streamResponse,
@@ -74,7 +74,7 @@ export const handleMancer: ModelAdapter = async function* (opts) {
     return
   }
 
-  const key = opts.user.adapterConfig?.mancer?.apiKey
+  const key = opts.gen.thirdPartyKey || opts.user.adapterConfig?.mancer?.apiKey
   if (!key) {
     yield { error: `Mancer request failed: API key not set` }
     return
@@ -94,8 +94,26 @@ export const handleMancer: ModelAdapter = async function* (opts) {
   let response: Completion<Inference> | undefined
 
   const iter = opts.gen.streamResponse
-    ? streamCompletion(opts.user._id, url, headers, body, 'mancer', opts.log, 'openai')
-    : requestFullCompletion(opts.user._id, url, headers, body, 'mancer', opts.log)
+    ? streamGenerator({
+        userId: opts.user._id,
+        url,
+        headers,
+        body,
+        service: 'mancer',
+        log: opts.log,
+        format: 'openai',
+        signal: opts.signal,
+      })
+    : requestFullCompletion({
+        userId: opts.user._id,
+        url,
+        headers,
+        body,
+        service: 'mancer',
+        log: opts.log,
+        format: 'openai',
+        signal: opts.signal,
+      })
 
   while (true) {
     let generated = await iter.next()
@@ -106,27 +124,28 @@ export const handleMancer: ModelAdapter = async function* (opts) {
       break
     }
 
-    if (generated.value.error) {
+    if ('error' in generated.value) {
       yield { error: generated.value.error }
       return
+    }
+
+    if ('thoughts' in generated.value) {
+      yield { thoughts: generated.value.thoughts! }
+    }
+
+    if ('tokens' in generated.value) {
+      accumulated = generated.value.tokens!
+      break
     }
 
     // Only the streaming generator yields individual tokens.
     if ('token' in generated.value) {
       accumulated += generated.value.token
-      yield {
-        partial: sanitiseAndTrim(
-          accumulated,
-          opts.prompt,
-          opts.char,
-          opts.characters,
-          opts.members
-        ),
-      }
+      yield { partial: accumulated }
     }
   }
   try {
-    let text = getCompletionContent(response, opts.log)
+    let text = getCompletionContent(response, accumulated, opts.log)
     if (text instanceof Error) {
       yield { error: `Mancer returned an error: ${text.message}` }
       return
@@ -141,8 +160,7 @@ export const handleMancer: ModelAdapter = async function* (opts) {
     accumulated = text
 
     const parsed = sanitise(accumulated.replace(opts.prompt, ''))
-    const trimmed = trimResponseV2(parsed, opts.replyAs, opts.members, opts.characters, body.stop)
-    yield trimmed || parsed
+    yield parsed
   } catch (ex: any) {
     opts.log.error({ err: ex }, 'Mancer failed to parse')
     yield { error: `Mancer request failed: ${ex.message}` }

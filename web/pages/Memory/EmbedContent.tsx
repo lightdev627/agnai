@@ -9,13 +9,14 @@ import { embedApi } from '/web/store/embeddings'
 import Select from '/web/shared/Select'
 import { getStore } from '/web/store/create'
 import { SolidCard } from '/web/shared/Card'
-import { settingStore } from '/web/store'
+import { pageStore } from '/web/store'
 import { createStore } from 'solid-js/store'
+import { v4 } from 'uuid'
 
 export { EmbedContent as default }
 
 const EmbedContent: Component = (props) => {
-  const user = getStore('user')()
+  const user = getStore('user')((s) => ({ ui: s.ui }))
 
   const options = ['Article', 'PDF', 'Text file', 'Plain Text']
   const [store, setStore] = createStore({
@@ -40,6 +41,10 @@ const EmbedContent: Component = (props) => {
   }
 
   const embedFile = async () => {
+    if (!store.embedName) {
+      toastStore.error(`Enter a name for the embedding`)
+    }
+
     setLoading(true)
     try {
       const docNeeded = store.type === 'PDF' || store.type === 'Text file'
@@ -49,14 +54,13 @@ const EmbedContent: Component = (props) => {
         return
       }
 
-      const slug = slugify(store.embedName)
       switch (store.type) {
         case 'PDF':
-          await embedApi.embedPdf(slug, doc!)
+          await embedApi.embedPdf(v4(), store.embedName, doc!)
           break
 
         case 'Text file':
-          await embedApi.embedFile(slug, doc!)
+          await embedApi.embedFile(v4(), store.embedName, doc!)
           break
 
         case 'Plain Text': {
@@ -64,11 +68,11 @@ const EmbedContent: Component = (props) => {
             toastStore.warn(`Embedding content is empty`)
             return
           }
-          await embedApi.embedPlainText(slug, store.embedText)
+          await embedApi.embedPlainText(v4(), store.embedName, store.embedText)
           break
         }
       }
-      toastStore.success(`Successfully created embedding: ${slug}`)
+      toastStore.success(`Successfully created embedding`)
     } finally {
       setLoading(false)
     }
@@ -90,10 +94,10 @@ const EmbedContent: Component = (props) => {
 
   return (
     <form class="flex flex-col gap-2">
-      <Show when={user.user?.disableLTM ?? true}>
+      <Show when={!user.ui.embeddingModel}>
         <SolidCard bg="premium-700">
-          You need need to enable{' '}
-          <b class="underline hover:cursor-pointer" onClick={() => settingStore.modal(true)}>
+          You need to enable{' '}
+          <b class="underline hover:cursor-pointer" onClick={() => pageStore.settings(true)}>
             Embeddings/Long-Term Memory
           </b>{' '}
           in your Settings
@@ -125,7 +129,7 @@ const EmbedContent: Component = (props) => {
           <TextInput
             fieldName="embedName"
             label="Name"
-            helperText='(Optional) An identifier for your embedding. This will become a "slug". E.g. "Hello World" will become "hello-world"'
+            helperText="An identifier for your embedding."
             value={store.embedName}
             onChange={(ev) => setStore('embedName', ev.currentTarget.value)}
           />
@@ -178,10 +182,11 @@ const EmbedContent: Component = (props) => {
             helperText="The content to be embedded. Use line breaks to seperate lines."
             isMultiline
             onChange={(ev) => setStore('embedText', ev.currentTarget.value)}
+            class="max-h-80"
           />
 
           <Button class="mt-2 w-fit" onClick={embedFile}>
-            Embed Content
+            Embed Text
           </Button>
         </Match>
       </Switch>

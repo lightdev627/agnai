@@ -1,18 +1,20 @@
-import { Component, createEffect, createMemo, createSignal, onMount, Show } from 'solid-js'
+import {
+  batch,
+  Component,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  onMount,
+  Show,
+} from 'solid-js'
 import { Plus, Save, X, Import, Download, SlidersVertical, Dices, Image } from 'lucide-solid'
 import Button from '../../shared/Button'
 import PageHeader from '../../shared/PageHeader'
 import TextInput, { ButtonInput } from '../../shared/TextInput'
 import { FormLabel } from '../../shared/FormLabel'
 import { FileInputResult } from '../../shared/FileInput'
-import {
-  characterStore,
-  tagStore,
-  toastStore,
-  chatStore,
-  userStore,
-  settingStore,
-} from '../../store'
+import { characterStore, tagStore, toastStore, chatStore, userStore, pageStore } from '../../store'
 import { useNavigate, useSearchParams } from '@solidjs/router'
 import PersonaAttributes from '../../shared/PersonaAttributes'
 import Select from '../../shared/Select'
@@ -41,6 +43,9 @@ import { AlternateGreetingsInput } from './form/AltGreetings'
 import { SpriteModal } from './form/SpriteModal'
 import { AdvancedOptions } from './form/AdvancedOptions'
 import { AvatarField } from './form/AvatarField'
+import { usePresetContext } from '/web/store/preset-context'
+import { PageSpinner } from '/web/shared/Loading'
+// import { randomElement } from '/common/util'
 
 const formatOptions = [
   { value: 'attributes', label: 'Attributes (Key: value)' },
@@ -67,9 +72,11 @@ export const CreateCharacterForm: Component<{
 }> = (props) => {
   let spriteRef: any
 
+  const [charLoading, setCharLoading] = createSignal(false)
   const [search, setSearch] = useSearchParams()
   const nav = useNavigate()
-  const user = userStore()
+  const user = userStore((s) => ({ user: s.user }))
+  const [preset, presetSetters] = usePresetContext({ anonymous: true })
 
   const isPage = props.close === undefined
 
@@ -85,13 +92,14 @@ export const CreateCharacterForm: Component<{
   const [forceNew, setForceNew] = createSignal<boolean>(false)
 
   const srcId = createMemo(() => props.editId || props.duplicateId || '')
+
   const [image, setImage] = createSignal<string | undefined>()
   const [openPreset, setOpenPreset] = createSignal(false)
   const [presetFooter, setPresetFooter] = createSignal<JSX.Element>()
 
   const editor = useCharEditor()
 
-  const tagState = tagStore()
+  const tagState = tagStore((s) => ({ tags: s.tags }))
   const state = characterStore((s) => {
     const edit = s.editing
 
@@ -117,6 +125,11 @@ export const CreateCharacterForm: Component<{
   const [converted, setConverted] = createSignal<AppSchema.Character>()
   const [showImport, setImport] = createSignal(false)
 
+  const clearEditor = () => {
+    setForceNew(true)
+    editor.clear()
+  }
+
   const personaFormats = createMemo(() => {
     const options = formatOptions.slice()
     if (editor.state.personaKind in backupFormats) {
@@ -140,13 +153,19 @@ export const CreateCharacterForm: Component<{
     characterStore.clearCharacter()
 
     if (canStartTour('char')) {
-      settingStore.closeMenu()
+      pageStore.closeMenu()
     }
 
     startTour('char')
 
     if (srcId()) {
-      characterStore.getCharacter(srcId(), props.chat)
+      setCharLoading(true)
+      characterStore.getCharacter(srcId(), {
+        chat: props.chat,
+        onDone: () => {
+          setCharLoading(false)
+        },
+      })
     }
 
     /* Character importing from CharacterHub */
@@ -155,7 +174,7 @@ export const CreateCharacterForm: Component<{
       const { file, json } = await downloadCharacterHub(query.import)
       const imageData = await imageApi.getImageData(file)
       const char = jsonToCharacter(json)
-      editor.load(char)
+      await editor.load(char)
       editor.update({
         book: json.characterBook,
         alternateGreetings: json.alternateGreetings || [],
@@ -171,35 +190,56 @@ export const CreateCharacterForm: Component<{
     }
   })
 
-  createEffect(() => {
-    // We know we're waiting for a character to edit, so let's just wait
-    if (!state.edit && srcId()) return
+  createEffect(
+    on(
+      () => [state.edit, srcId()],
+      async () => {
+        // We know we're waiting for a character to edit, so let's just wait
+        if (!state.edit && srcId()) return
 
-    // If this is our first pass: load something no matter what
-    if (!editor.original()) {
-      if (!srcId()) {
-        return
+        if (srcId() === 'undefined') {
+          toastStore.error(`Character load failed (ID missing?) - Try again or contact support`)
+          return
+        }
+
+        // If this is our first pass: load something no matter what
+        if (!editor.original()) {
+          if (!srcId()) {
+            await editor.loadCached()
+            return
+          }
+
+          // We have a `srcId`, we need to wait to receive the character we're editing
+          if (!state.edit) return
+
+          editor.update('editId', srcId())
+          await editor.load(state.edit)
+          setImage(state.edit?.avatar)
+          return
+        }
+
+        // This is a subsequent pass - we already have state
+        // We want to avoid unnecessarily clearing/reseting state due to a websocket reconnect
+
+        if (!state.edit) return
+        const diffCharLoaded = editor.state.editId !== state.edit._id && state.edit._id === srcId()
+        if (diffCharLoaded) {
+          editor.update('editId', srcId())
+          await editor.load(state.edit)
+          setImage(state.edit?.avatar)
+          return
+        }
+
+        if ('__type' in state.edit) return
+        const orig = editor.original()
+        if (orig?.__type === 'list_character' && state.edit._id === editor.state.editId) {
+          await editor.load(state.edit)
+          setImage(state.edit?.avatar)
+          return
+        }
       }
-
-      // We have a `srcId`, we need to wait to receive the character we're editing
-      if (!state.edit) return
-
-      editor.load(state.edit)
-      setImage(state.edit?.avatar)
-      return
-    }
-
-    // This is a subsequent pass - we already have state
-    // We want to avoid unnecessarily clearing/reseting state due to a websocket reconnect
-
-    if (!state.edit) return
-    if (editor.state.editId !== state.edit._id && state.edit._id === srcId()) {
-      editor.update('editId', srcId())
-      editor.load(state.edit)
-      setImage(state.edit?.avatar)
-      return
-    }
-  })
+    )
+  )
 
   createEffect(() => {
     tagStore.updateTags(state.list)
@@ -240,10 +280,27 @@ export const CreateCharacterForm: Component<{
       })
     } else {
       characterStore.createCharacter(payload, (result) => {
+        editor.update('editId', result._id)
         setForceNew(false)
         if (isPage) nav(`/character/${result._id}/chats`)
       })
     }
+  }
+
+  const randomName = async () => {
+    const gender = Math.random() > 0.65 ? 'male' : 'female'
+    const name = await random('first', { gender })
+
+    batch(() => {
+      editor.update('name', name)
+      if (editor.state.appearance && !isRandomAppearance(editor.state.appearance)) {
+        return
+      }
+
+      // editor.update({
+      //   appearance: randomAppearance(gender),
+      // })
+    })
   }
 
   const footer = (
@@ -263,14 +320,13 @@ export const CreateCharacterForm: Component<{
     () => !!props.chat?.overrides && props.chat.characterId === props.editId
   )
 
-  const tabs = useTabs(['Persona', 'Voice', 'Images', 'Advanced'], +(search.char_tab || '0'))
+  const tabs = useTabs(
+    ['Persona', 'Voice', 'Images', 'Advanced'],
+    isNaN(+(search.char_tab || '0')) ? 0 : +(search.char_tab || '0')
+  )
 
   return (
-    <Page
-      classList={{
-        'p-0': !isPage,
-      }}
-    >
+    <Page classList={{ 'p-0': !isPage }}>
       <Show when={!props.noTitle && (isPage || paneOrPopup() === 'pane')}>
         <PageHeader
           title={`${
@@ -289,6 +345,9 @@ export const CreateCharacterForm: Component<{
             </>
           }
         />
+      </Show>
+      <Show when={charLoading()}>
+        <PageSpinner />
       </Show>
       <form class="relative text-base">
         <div class="flex flex-col gap-4">
@@ -320,19 +379,29 @@ export const CreateCharacterForm: Component<{
             </Show>
 
             <div class="flex justify-end gap-2 text-[1em]">
-              <Button onClick={() => setOpenPreset(true)} class="tour-preset">
+              <Button
+                size="sm"
+                onClick={() => {
+                  const presetId = user.user?.chargenPreset || user.user?.defaultPreset
+                  if (presetId) presetSetters.load(presetId)
+                  else presetSetters.clear()
+                  setOpenPreset(true)
+                }}
+                class="tour-preset"
+              >
                 <SlidersVertical size={24} /> Preset
               </Button>
-              <Button onClick={() => setImport(true)}>
+              <Button size="sm" onClick={() => setImport(true)}>
                 <Import /> Import
               </Button>
 
-              <Button onClick={() => setConverted(editor.convert())}>
+              <Button size="sm" onClick={() => setConverted(editor.convert())}>
                 <Download /> Export
               </Button>
 
               <Show when={state.edit}>
                 <Button
+                  size="sm"
                   onClick={() => {
                     setForceNew(true)
                     editor.clear()
@@ -340,6 +409,21 @@ export const CreateCharacterForm: Component<{
                 >
                   <Plus />
                   New
+                </Button>
+              </Show>
+
+              <Show when={!state.edit}>
+                <Button
+                  size="sm"
+                  schema="warning"
+                  onClick={() => {
+                    pageStore.openConfirm({
+                      message: 'Are you sure you wish to clear the editor?',
+                      onConfirm: clearEditor,
+                    })
+                  }}
+                >
+                  <X />
                 </Button>
               </Show>
             </div>
@@ -350,7 +434,7 @@ export const CreateCharacterForm: Component<{
                 setSearch({ char_tab: id })
               }}
               selected={tabs.selected}
-              tabs={tabs.tabs}
+              tabs={tabs.tabs()}
             />
 
             <div class="flex flex-col gap-2" classList={{ hidden: tabs.current() !== 'Persona' }}>
@@ -364,11 +448,7 @@ export const CreateCharacterForm: Component<{
                   parentClass="pb-2"
                   onChange={(ev) => editor.update('name', ev.currentTarget.value)}
                 >
-                  <Button
-                    size="sm"
-                    schema="input"
-                    onClick={() => random('first', {}).then((name) => editor.update('name', name))}
-                  >
+                  <Button size="sm" schema="input" onClick={randomName}>
                     <Dices size={12} />
                   </Button>
                 </ButtonInput>
@@ -391,7 +471,11 @@ export const CreateCharacterForm: Component<{
                     fieldName="description"
                     parentClass="w-full"
                     value={editor.state.description}
-                    onChange={(ev) => editor.update('description', ev.currentTarget.value)}
+                    onChange={(ev) => {
+                      editor.update({
+                        description: ev.currentTarget.value,
+                      })
+                    }}
                   />
                 </div>
               </Card>
@@ -408,7 +492,6 @@ export const CreateCharacterForm: Component<{
               </Card>
 
               <AvatarField
-                user={user}
                 editor={editor}
                 updateFile={updateFile}
                 showBuilder={setShowBuilder}
@@ -423,12 +506,7 @@ export const CreateCharacterForm: Component<{
                   fieldName="scenario"
                   label={
                     <>
-                      <Regenerate
-                        field={'scenario'}
-                        editor={editor}
-                        allowed={editor.canGuidance}
-                        class="tour-gen-field"
-                      />
+                      <Regenerate field={'scenario'} editor={editor} class="tour-gen-field" />
                       Scenario{' '}
                     </>
                   }
@@ -447,11 +525,7 @@ export const CreateCharacterForm: Component<{
                     label={
                       <div class="flex items-center gap-1">
                         <Show when={editor.state.personaKind === 'text'}>
-                          <Regenerate
-                            field={'persona'}
-                            editor={editor}
-                            allowed={editor.canGuidance}
-                          />
+                          <Regenerate field={'persona'} editor={editor} />
                         </Show>
                         Personality
                       </div>
@@ -479,7 +553,7 @@ export const CreateCharacterForm: Component<{
                 <PersonaAttributes
                   schema={editor.state.personaKind}
                   tokenCount={(v) => setTokens((prev) => ({ ...prev, persona: v }))}
-                  editor={editor}
+                  generate={editor.generateField}
                   state={editor.state.personaAttrs}
                   setter={(next) => editor.update('personaAttrs', next)}
                 />
@@ -490,7 +564,7 @@ export const CreateCharacterForm: Component<{
                   fieldName="greeting"
                   label={
                     <>
-                      <Regenerate field={'greeting'} editor={editor} allowed={editor.canGuidance} />
+                      <Regenerate field={'greeting'} editor={editor} />
                       Greeting{' '}
                     </>
                   }
@@ -514,11 +588,7 @@ export const CreateCharacterForm: Component<{
                   fieldName="sampleChat"
                   label={
                     <>
-                      <Regenerate
-                        field={'sampleChat'}
-                        editor={editor}
-                        allowed={editor.canGuidance}
-                      />
+                      <Regenerate field={'sampleChat'} editor={editor} />
                       Sample Conversation{' '}
                     </>
                   }
@@ -612,8 +682,8 @@ export const CreateCharacterForm: Component<{
       <ImportCharacterModal
         show={showImport()}
         close={() => setImport(false)}
-        onSave={(char, imgs) => {
-          editor.load(char[0])
+        onSave={async (char, imgs) => {
+          await editor.load(char[0])
           editor.receiveAvatar(imgs[0]!)
           setImage(imgs[0] as any)
           setImport(false)
@@ -635,13 +705,55 @@ export const CreateCharacterForm: Component<{
           <sub>This preset used for character generation</sub>
           <ModeGenSettings
             presetId={user.user?.chargenPreset || user.user?.defaultPreset}
+            preset={preset.current}
+            setters={presetSetters}
             onPresetChanged={(id) => userStore.updatePartialConfig({ chargenPreset: id })}
             close={() => setOpenPreset(false)}
             hideTabs={['Memory', 'Prompt']}
             footer={setPresetFooter}
+            page="char"
           />
         </RootModal>
       </Show>
     </Page>
   )
+}
+
+const LOOKS = {
+  gender: ['male', 'female'],
+  hairColor: ['brown', 'blonde', 'red', 'black', 'orange'],
+  hairLength: ['short', 'medium', 'long'],
+  hairStyle: ['neat', 'curly', 'straight', 'parted'],
+  eyeColor: ['green', 'blue', 'brown', 'hazel'],
+  chest: ['flat', 'small', 'medium', 'large'],
+}
+
+// function randomAppearance(gender: string) {
+//   const hairColor = randomElement(LOOKS.hairColor)
+//   const hairLength = randomElement(LOOKS.hairLength)
+//   const hairStyle = randomElement(['neat', 'curly', 'straight', 'parted'])
+//   const eyeColor = randomElement(['green', 'blue', 'brown', 'hazel'])
+//   const chest = randomElement(['flat', 'small', 'medium', 'large'])
+
+//   const elements = [
+//     gender,
+//     `${eyeColor} eyes`,
+//     `${hairStyle} ${hairColor} ${hairLength}-length hair`,
+//   ]
+
+//   if (gender === 'female') {
+//     elements.push(`${chest} chest`)
+//   }
+
+//   return elements.join(', ')
+// }
+
+function isRandomAppearance(appearance: string) {
+  const [gender, eyes, hair, chest] = appearance.split(',').map((value) => value.trim())
+
+  if (!LOOKS.gender.includes(gender)) return false
+  if (!eyes.endsWith(' eyes')) return false
+  if (!hair.endsWith('-length hair')) return false
+  if (chest && !chest.endsWith(' chest')) return false
+  return true
 }

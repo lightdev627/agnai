@@ -3,14 +3,19 @@ import * as lf from 'localforage'
 import { UnwrapBody, Validator, assertValid } from '/common/valid'
 import { AIAdapter, PresetAISettings, ThirdPartyFormat } from '/common/adapters'
 import type { Option } from './Select'
-import { Component, createEffect, JSX, onCleanup } from 'solid-js'
+import { Component, createEffect, createMemo, JSX, onCleanup } from 'solid-js'
 import type { UserState } from '../store'
 import { AppSchema, UI } from '/common/types'
 import { deepClone } from '/common/util'
 import { getRootRgb } from './colors'
 import { getStore } from '../store/create'
 import { ADAPTER_SETTINGS } from './PresetSettings/settings'
-import { PresetState } from './PresetSettings/types'
+import { ContextPreset } from '../store/preset-context'
+import { v4 } from 'uuid'
+import { getChatPreset } from '../pages/Chat/util'
+import { extractReasoning } from '/common/reasoning'
+import { getUserId, isLoggedIn } from '../store/api'
+import { debug } from '/common/debug'
 
 const [css, hooks] = createHooks(recommended)
 
@@ -35,25 +40,92 @@ export async function random<T extends keyof Chance.Chance>(kind: T, opts: Chanc
   return ''
 }
 
-export type ComponentEmitter<T extends string> = {
-  emit: { [key in T]: () => void }
-  on: ComponentSubscriber<T>
+export type InvokeEmitter = (...args: any[]) => void
+
+export type PartialEventEmitter<T extends string> = {
+  emit: PartialEmit<T>
+  on: ComponentSubscriber<any>
+  off: (id: string | Function) => boolean
 }
 
-export type ComponentSubscriber<T> = (event: T, callback: () => any) => void
+export type PartialListener<T extends string> = PartialEventEmitter<T>['emit']
+
+export type ComponentEventEmitter<T extends string> = {
+  emit: ComponentEmit<T>
+  on: ComponentSubscriber<T>
+  off: (id: string | Function) => boolean
+}
+
+export type ComponentEmit<T extends string> = {
+  [key in T]: InvokeEmitter
+}
+
+export type PartialEmit<T extends string> = {
+  [key in T]?: InvokeEmitter
+}
+
+type UnsubFunc = () => void
+
+export type ComponentSubscriber<T> = (event: T, callback: InvokeEmitter) => UnsubFunc
+
+export function getAbsolutePosition(ele: HTMLElement) {
+  let curr = ele
+  let top = 0
+  let left = 0
+
+  do {
+    top += curr.offsetTop
+    left += curr.offsetLeft
+    curr = curr.offsetParent as HTMLElement
+  } while (curr)
+
+  return { top, left, bottom: window.innerHeight - top, right: window.innerWidth - left }
+}
 
 export function createEmitter<T extends string>(...events: T[]) {
   let emit: any = {}
-  const listeners: Array<{ event: T; callback: () => void }> = []
+  const listeners: Array<{ id: string; event: T; callback: InvokeEmitter }> = []
 
-  const on = (event: T, callback: () => void) => {
-    listeners.push({ event, callback })
+  const unsubscribe = (id: string) => {
+    const index = listeners.findIndex((i) => i.id === id)
+    if (index === -1) return
+
+    listeners.splice(index, 1)
+  }
+
+  const on = (event: T, callback: InvokeEmitter) => {
+    const id = v4()
+    listeners.push({ event, callback, id })
+
+    const unsub = () => unsubscribe(id)
+
+    return unsub
+  }
+
+  const off = (id: string | Function) => {
+    if (typeof id === 'string') {
+      const index = listeners.findIndex((l) => l.id === id)
+      if (index > -1) {
+        listeners.splice(index, 1)
+        return true
+      }
+    }
+
+    if (typeof id === 'function') {
+      const index = listeners.findIndex((l) => l.callback === id)
+      if (index > -1) {
+        listeners.splice(index, 1)
+        return true
+      }
+    }
+
+    return false
   }
 
   for (const event of events) {
-    emit[event] = () => {
+    emit[event] = (...args: any[]) => {
       for (const cb of listeners) {
-        if (cb.event === event) cb.callback()
+        if (cb.event === event) cb.callback.apply(null, args)
       }
     }
   }
@@ -63,19 +135,96 @@ export function createEmitter<T extends string>(...events: T[]) {
     emit = undefined
   })
 
-  return { emit, on } as ComponentEmitter<T>
+  return { emit, on, off } as ComponentEventEmitter<T>
+}
+
+async function userCacheGet<T = any>(key: string) {
+  const prop = getUserCacheKey(key)
+  if (!prop) return
+
+  const data = await getItem(prop)
+  if (!data) {
+    debug('cache')(`[${key}] miss`)
+    return
+  }
+
+  const json = JSON.parse(data)
+  debug('cache')(`[${key}] hit`)
+  return json as T
+}
+
+async function userCacheSet(key: string, data: any) {
+  if (!isLoggedIn()) return
+
+  const prop = getUserCacheKey(key)
+  if (!prop) return
+
+  debug('cache')(`[${key}] modified`)
+  await setItem(prop, JSON.stringify(data))
+}
+
+function getUserCacheKey(key: string) {
+  if (!isLoggedIn()) return
+  const userId = getUserId()
+  if (!userId) return
+  return `user-${userId}_${key}`
+}
+
+export function tryParseImport(content: string) {
+  try {
+    const json = JSON.parse(content)
+    return json
+  } catch (ex) {}
+
+  try {
+    const data = decodeURIComponent(content)
+    const json = JSON.parse(data)
+    return json
+  } catch (ex) {}
+
+  if (content?.startsWith('data:')) {
+    try {
+      const index = content.indexOf(',')
+      const data = decodeURIComponent(content.slice(index + 1))
+      const json = JSON.parse(data)
+      return json
+    } catch (ex) {}
+  }
+
+  throw new Error(`Could not parse imported content`)
+}
+
+export function getUtterableText(msg: string) {
+  const { details, lastChatId } = getStore('chat').getState()
+  const { ui, user } = getStore('user').getState()
+  const { presets } = getStore('presets').getState()
+  const active = details[lastChatId]
+
+  if (!active?.chat || !user) return
+
+  const preset = getChatPreset(active.chat, user, presets)
+  const extract = extractReasoning(msg, { tags: preset.reasoning, display: ui.displayReasoning })
+  return extract
 }
 
 export function downloadJson(content: string | object, filename: string = 'agnai_export') {
-  const output = encodeURIComponent(
-    typeof content === 'string' ? content : JSON.stringify(content, null, 2)
-  )
+  const output = typeof content === 'string' ? content : JSON.stringify(content, null, 2)
 
+  const encode: boolean = false
   const anchor = document.createElement('a')
-  anchor.href = `data:text/json:charset=utf-8,${output}`
+  const href = `data:text/json:charset=utf-8,${encodeURIComponent(output)}`
+  anchor.href = encode ? URL.createObjectURL(new Blob([href])) : href
   anchor.download = `${filename}.json`
   anchor.click()
   URL.revokeObjectURL(anchor.href)
+}
+
+export async function prepareJsonHref(content: string | object) {
+  const output = encodeURIComponent(
+    typeof content === 'string' ? content : JSON.stringify(content, null, 2)
+  )
+  const href = `data:application/json:charset=utf-8,${output}`
+  return href
 }
 
 export function getHeaderBg(mode: UI.UISettings['mode']) {
@@ -120,6 +269,9 @@ export const storage = {
   localRemoveItem,
   localClear,
   test,
+
+  userCacheGet,
+  userCacheSet,
 }
 
 export function isExpired(date?: string | Date) {
@@ -206,8 +358,8 @@ export function getAssetPrefix() {
 }
 
 export function isBase64(file: string) {
-  if (file.startsWith('/') || file.startsWith('http')) return false
-  if (file.startsWith('data:')) return true
+  if (file?.startsWith('/') || file?.startsWith('http')) return false
+  if (file?.startsWith('data:')) return true
 
   return file.length > 500
 }
@@ -289,6 +441,16 @@ export function formatDate(value: string | number | Date) {
   const time = str.slice(16, 24)
 
   return `${month} ${day} ${time}`
+}
+
+export function isToday(time: Date | string) {
+  const date = typeof time === 'string' || typeof time === 'number' ? new Date(time) : time
+
+  const now = new Date()
+  if (now.getFullYear() !== date.getFullYear()) return false
+  if (now.getMonth() !== date.getMonth()) return false
+  if (now.getDate() !== date.getDate()) return false
+  return true
 }
 
 export function toShortDuration(valueSecs: number | Date | string, parts?: number) {
@@ -438,8 +600,15 @@ export function capitalize(input: string) {
   return input.slice(0, 1).toUpperCase() + input.slice(1)
 }
 
-export function toDropdownItems(values: string[] | readonly string[]): Option[] {
-  return values.map((value) => ({ label: capitalize(value), value }))
+export function toDropdownItems(
+  values: string[] | readonly string[] | Record<string, string>
+): Option[] {
+  if (Array.isArray(values)) {
+    return values.map((value) => ({ label: capitalize(value), value }))
+  }
+
+  const options = Object.entries(values).map(([value, label]) => ({ label, value }))
+  return options
 }
 
 export function createDebounce<T extends (...args: any[]) => void>(
@@ -535,7 +704,7 @@ export function isDirty<T extends {}>(original: T, compare: T): boolean {
 }
 
 export function serviceHasSetting(
-  state: Pick<PresetState, 'service' | 'thirdPartyFormat'>,
+  state: Pick<ContextPreset, 'service' | 'thirdPartyFormat'>,
   ...props: Array<keyof PresetAISettings>
 ) {
   if (!state.service) {
@@ -570,7 +739,7 @@ function isPresetSetting(key: string): key is keyof PresetAISettings {
 }
 
 export function isValidServiceSetting(
-  state: Pick<PresetState, 'service' | 'thirdPartyFormat'>,
+  state: Pick<ContextPreset, 'service' | 'thirdPartyFormat'>,
   prop?: keyof PresetAISettings
 ) {
   const services = getAISettingServices(prop)
@@ -706,6 +875,23 @@ export function asyncFrame() {
   return new Promise((resolve) => requestAnimationFrame(resolve))
 }
 
+export function useUsableServices() {
+  const users = getStore('user')((s) => ({ user: s.user }))
+  const cfg = getStore('settings')((s) => ({ config: s.config }))
+
+  const services = createMemo(() => {
+    const list: AIAdapter[] = []
+
+    for (const service of cfg.config.adapters) {
+      if (isUsableService(service, cfg.config, users.user)) list.push(service)
+    }
+
+    return list
+  })
+
+  return services
+}
+
 export function getUsableServices() {
   const { user } = getStore('user').getState()
   const { config } = getStore('settings').getState()
@@ -731,6 +917,7 @@ export function isUsableService(
       return match
     }
 
+    case 'claude-v2':
     case 'claude': {
       return !!user?.claudeApiKeySet || !!user?.claudeApiKey
     }
@@ -751,6 +938,7 @@ export function isUsableService(
       return !!user?.oaiKeySet || !!user?.oaiKey
     }
 
+    case 'openrouter-completion':
     case 'openrouter': {
       return (
         !!user?.adapterConfig?.openrouter?.apiKeySet || !!user?.adapterConfig?.openrouter?.apiKey
@@ -782,6 +970,38 @@ export function isUsableService(
   return false
 }
 
+export function getJsonSchema(opts: {
+  characterId?: string
+  preset: Pick<AppSchema.GenSettings, 'json' | 'jsonSource'>
+}) {
+  const { chatChars } = getStore('character').getState()
+  const { user } = getStore('user').getState()
+  const { presets } = getStore('presets').getState()
+
+  const source = opts.preset.jsonSource
+
+  switch (source) {
+    case 'character': {
+      if (!opts.characterId) return
+      const char = chatChars.map[opts.characterId]
+      return { source: 'character' as const, schema: char?.json }
+    }
+
+    case 'json-preset': {
+      if (!user?.jsonPreset) return
+      const preset = presets.find((p) => p._id === user.jsonPreset)
+
+      return { source: 'json-preset' as const, schema: preset?.json }
+    }
+
+    case 'preset':
+    case undefined:
+    default: {
+      return { source: 'preset' as const, schema: opts.preset.json }
+    }
+  }
+}
+
 export function toLocalTime(date: string) {
   const d = new Date(date)
   const Y = d.getFullYear()
@@ -803,25 +1023,23 @@ export type FieldUpdater = (index: number, path: string) => (ev: any) => void
  * @returns
  */
 export function useRowHelper<T extends object>(opts: {
-  signal: [() => T[], (v: T[]) => void]
+  getter: () => T[]
+  setter: (next: T[]) => void
   empty: () => T
 }) {
-  const items = opts.signal[0]
-  const setItems = opts.signal[1]
-
   const add = () => {
-    const next = items().concat(deepClone(opts.empty()))
-    setItems(next)
+    const next = opts.getter().concat(deepClone(opts.empty()))
+    opts.setter(next)
   }
 
   const remove = (index: number) => {
-    const prev = items()
+    const prev = opts.getter()
     const next = prev.slice(0, index).concat(prev.slice(index + 1))
-    setItems(next)
+    opts.setter(next)
   }
 
   const updateItem = (index: number, field: string, value: any) => {
-    const prev = items()
+    const prev = opts.getter()
     const base = getProperty(opts.empty(), field)
     const parsed = typeof base === 'number' ? +value : value
     const item = setProperty(prev[index], field, parsed)
@@ -830,7 +1048,7 @@ export function useRowHelper<T extends object>(opts: {
       .slice(0, index)
       .concat(item)
       .concat(prev.slice(index + 1))
-    setItems(next)
+    opts.setter(next)
   }
 
   const updater = (index: number, field: string) => {
@@ -862,7 +1080,7 @@ export function useRowHelper<T extends object>(opts: {
     }
   }
 
-  return { add, remove, updateItem, items, updater }
+  return { add, remove, updateItem, updater }
 }
 
 function setProperty(obj: any, path: string, value: any): any {
@@ -889,7 +1107,7 @@ function getProperty(obj: any, path: string) {
 }
 
 export const sticky = {
-  interval: null as any as NodeJS.Timer,
+  interval: null as any as NodeJS.Timeout,
   monitor: (ref: HTMLElement) => {
     let bottom = true
 
@@ -903,11 +1121,15 @@ export const sticky = {
       }
     }
 
+    if (sticky.interval) {
+      clearInterval(sticky.interval)
+    }
+
     sticky.interval = setInterval(() => {
       if (bottom && ref.scrollTop !== 0) {
         ref.scrollTop = 0
       }
     }, 1000 / 30)
   },
-  clear: () => clearInterval(sticky.interval),
+  clear: () => clearInterval(sticky.interval as any),
 }

@@ -49,6 +49,7 @@ if (!process.env.JWT_SECRET) {
 export const config = {
   clustering: !!env('CLUSTERING', ''),
   clusterWorkers: +env('CLUSTERING', ''),
+  requestTimeout: +env('REQUEST_TIMEOUT', '0'),
   auth: {
     inferenceKey: env('INFERENCE_KEY', ''),
     urls: env(
@@ -69,6 +70,7 @@ export const config = {
   assetUrl: env('ASSET_URL', ''),
   cdnHostname: env('CDN_HOSTNAME', ''),
   assetFolder: env('ASSET_FOLDER', resolve(__dirname, '..', 'dist', 'assets')),
+  assetUploadUrl: env('ASSET_UPLOAD_URL', ''),
   extraFolder: env('EXTRA_FOLDER', ''),
   billing: {
     private: env('STRIPE_PRIVATE_KEY', ''),
@@ -146,12 +148,23 @@ export const config = {
 
   inference: {
     flatChatCompletion: !!env('SIMPLE_COMPLETION', ''),
+    skipModelLists: env('SKIP_MODEL_LISTS', '0') === '1',
   },
   keys: {
     REPLICATE: env('REPLICATE_KEY', ''),
   },
   pipelineProxy: !!env('PIPELINE_PROXY', ''),
   publicTunnel: !!env('PUBLIC_TUNNEL', ''),
+}
+
+if (config.adapters.includes('openrouter')) {
+  const i = config.adapters.findIndex((o) => o === 'openrouter')
+  config.adapters.splice(i + 1, 0, 'openrouter-completion')
+}
+
+if (config.adapters.includes('claude')) {
+  const i = config.adapters.findIndex((o) => o === 'claude')
+  config.adapters.splice(i + 1, 0, 'claude-v2')
 }
 
 insertInject()

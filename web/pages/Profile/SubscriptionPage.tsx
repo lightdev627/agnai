@@ -13,7 +13,7 @@ import { ModelList } from '/web/shared/PresetSettings/Agnaistic'
 
 export const SubscriptionPage: Component<{}> = (props) => {
   const settings = settingStore((s) => s.config)
-  const user = userStore()
+  const user = userStore((s) => ({ user: s.user, sub: s.sub, billingLoading: s.billingLoading }))
   const cfg = userStore((s) => {
     const tier = s.user ? getUserSubscriptionTier(s.user, s.tiers) : null
 
@@ -119,7 +119,7 @@ export const SubscriptionPage: Component<{}> = (props) => {
             <SolidCard>
               If you require billing or subscription support contact{' '}
               <a class="link" href={`mailto:${settings.serverConfig?.supportEmail}`}>
-                {settings.serverConfig?.supportEmail}
+                {settings.serverConfig?.supportEmail?.split(',')[0]}
               </a>
             </SolidCard>
           </Show>
@@ -213,7 +213,7 @@ export const SubscriptionPage: Component<{}> = (props) => {
               {(each) => (
                 <>
                   <TierCard tier={each} class="sm:w-1/3">
-                    <Show when={user.user?.manualSub?.tierId === each._id}>
+                    <Show when={user.user?.manualSub?.tierId === each._id && !!each._id}>
                       <Pill type="green">This tier is currently gifted to you</Pill>
                     </Show>
                     <div class="mt-4 flex justify-center">

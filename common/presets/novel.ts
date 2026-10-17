@@ -1,6 +1,19 @@
-import { NOVEL_MODELS } from '../adapters'
 import { AppSchema } from '../types/schema'
 import { templates } from './templates'
+
+export const NOVEL_MODELS = {
+  'llama-3-erato-v1': 'erato-v1',
+  euterpe: 'euterpe-v2',
+  krake: 'krake-v2',
+  clio_v1: 'clio-v1',
+  kayra_v1: 'kayra-v1',
+  glm_46: 'glm-4-6',
+} satisfies { [key: string]: string }
+
+export const NOVEL_ALIASES: Record<string, string> = {
+  'erato-v1': 'llama-3-erato-v1',
+  glm_45: 'glm-4-6',
+}
 
 export const novelPresets = {
   novel_kayra: {
@@ -43,38 +56,6 @@ export const novelPresets = {
     topA: 0.075,
     order: [1, 3, 4, 0, 2],
     streamResponse: true,
-    gaslight: templates.NovelAI,
-  },
-  novel_20BC: {
-    name: '20BC+',
-    service: 'novel',
-    maxTokens: 80,
-    maxContextLength: 2048,
-    repetitionPenalty: 1.055,
-    repetitionPenaltyRange: 2048,
-    repetitionPenaltySlope: 3.33,
-    temp: 0.65,
-    tailFreeSampling: 0.879,
-    topK: 20,
-    topP: 1,
-    order: [0, 1, 2, 3],
-    novelModel: templates.NovelAI,
-  },
-  novel_blueLighter: {
-    name: 'Blue Lighter',
-    service: 'novel',
-    maxTokens: 80,
-    maxContextLength: 2048,
-    repetitionPenalty: 1.05,
-    repetitionPenaltyRange: 560,
-    repetitionPenaltySlope: 0,
-    temp: 1.33,
-    tailFreeSampling: 0.937,
-    topK: 1,
-    topP: 1,
-    typicalP: 0.965,
-    topA: 0.085,
-    order: [3, 4, 5, 2, 0],
     gaslight: templates.NovelAI,
   },
 } satisfies Record<string, Partial<AppSchema.GenSettings>>

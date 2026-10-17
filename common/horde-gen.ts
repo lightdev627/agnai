@@ -133,11 +133,10 @@ export async function generateImage(
   log?.debug(`Prompt:\n${payload.prompt}`)
 
   let key = user.hordeKey
-  if (!key) {
-    key = HORDE_GUEST_KEY
-  } else {
-    key = decryptText(user.hordeKey)
-  }
+    ? user.hordeKey
+    : user.userHordeKey
+    ? decryptText(user.userHordeKey)
+    : HORDE_GUEST_KEY
 
   const image = await generate({
     type: 'image',
@@ -146,8 +145,8 @@ export async function generateImage(
     onTick,
   })
 
-  if (!image.text.startsWith('data:') && typeof window !== 'undefined') {
-    image.text = `data:image/image;base64,${image.text}`
+  if (!image.text?.startsWith('data:') && typeof window !== 'undefined') {
+    image.text = `data:image/png;base64,${image.text}`
   }
 
   return image

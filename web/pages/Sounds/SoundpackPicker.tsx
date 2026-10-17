@@ -10,7 +10,10 @@ export const SoundpackPicker: Component<{
   helperText?: string
   level: SoundpackLevel
 }> = (props) => {
-  const audio = audioStore()
+  const audio = audioStore((s) => ({
+    soundpacks: s.soundpacks,
+    selectedSoundpacks: s.selectedSoundpacks,
+  }))
   const [selectedId, setSelectedId] = createSignal<string>(__none_soundpack__)
 
   const getSoundpackOptions = createMemo(() => {
@@ -22,9 +25,12 @@ export const SoundpackPicker: Component<{
     ]
   })
 
-  const selectSoundpack = ({ value: id }: { value: string }) => {
-    setSelectedId(id)
-    audioStore.selectSoundpack(props.level, id === __none_soundpack__ ? undefined : id)
+  const selectSoundpack = (opts: { value: string }) => {
+    setSelectedId(opts.value)
+    audioStore.selectSoundpack(
+      props.level,
+      opts.value === __none_soundpack__ ? undefined : opts.value
+    )
   }
 
   createEffect(() => setSelectedId(audio.selectedSoundpacks[props.level] || __none_soundpack__))

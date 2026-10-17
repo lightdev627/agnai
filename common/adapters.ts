@@ -1,3 +1,7 @@
+import { defaultPresets, isDefaultPreset } from './default-preset'
+import { NOVEL_MODELS } from './presets/novel'
+import { OPENAI_MODELS } from './presets/openai'
+import { getPresetConnection, PresetConnection } from './providers'
 import { AppSchema } from './types/schema'
 
 export type AdapterSetting = {
@@ -44,24 +48,69 @@ export const MODE_SETTINGS: {
     [key in keyof AppSchema.GenSettings]?: boolean
   }
 } = {
+  // Settings to extract from the Recommended preset
   simple: {
-    maxContextLength: true,
-    maxTokens: true,
     modelFormat: true,
+    topA: true,
+    topK: true,
+    topP: true,
+    minP: true,
+    doSample: true,
+    cfgOppose: true,
+    addBosToken: true,
+    cfgScale: true,
+    dryAllowedLength: true,
+    dryBase: true,
+    dryMultiplier: true,
+    dryRange: true,
+    drySequenceBreakers: true,
+    banEosToken: true,
+    dynatemp_exponent: true,
+    dynatemp_range: true,
+    earlyStopping: true,
+    etaCutoff: true,
+    epsilonCutoff: true,
+    encoderRepitionPenalty: true,
+    frequencyPenalty: true,
+    xtcThreshold: true,
+    xtcProbability: true,
+    mirostatLR: true,
+    mirostatTau: true,
+    mirostatToggle: true,
+    penaltyAlpha: true,
+    phraseBias: true,
+    phraseRepPenalty: true,
+    repetitionPenalty: true,
+    repetitionPenaltyRange: true,
+    repetitionPenaltySlope: true,
+    presencePenalty: true,
+    skipSpecialTokens: true,
+    smoothingCurve: true,
+    smoothingFactor: true,
+    reasoning: true,
+    tempLast: true,
+    tailFreeSampling: true,
+    tokenHealing: true,
+    typicalP: true,
+    tokenizer: true,
+
     ultimeJailbreak: true,
+    // thirdPartyModel: true,
+    // thirdPartyFormat: true,
+    // thirdPartyUrl: true,
+    // maxContextLength: true,
+    maxTokens: true,
     streamResponse: true,
     temp: true,
-    localRequests: true,
-    openRouterModel: true,
-    oaiModel: true,
-    thirdPartyModel: true,
-    claudeModel: true,
-    novelModel: true,
-    mistralModel: true,
     stopSequences: true,
     thirdPartyKey: true,
-    thirdPartyFormat: true,
-    thirdPartyUrl: true,
+
+    // localRequests: true,
+    // openRouterModel: true,
+    // oaiModel: true,
+    // claudeModel: true,
+    // novelModel: true,
+    // mistralModel: true,
   },
   advanced: {},
 }
@@ -100,6 +149,7 @@ export const THIRDPARTY_HANDLERS: { [svc in ThirdPartyFormat]: AIAdapter } = {
   featherless: 'kobold',
   gemini: 'kobold',
   arli: 'kobold',
+  'lm-studio': 'openai',
 }
 
 export const BASIC_PROMPT_ONLY: { [svc in ThirdPartyFormat]?: boolean } = {
@@ -125,10 +175,12 @@ export const THIRDPARTY_FORMATS = [
   'featherless',
   'arli',
   'gemini',
+  'lm-studio',
 ] as const
 
 export const AI_ADAPTERS = [
   'agnaistic',
+  'third-party',
   'kobold',
   'novel',
   'ooba',
@@ -136,9 +188,11 @@ export const AI_ADAPTERS = [
   'openai',
   'scale',
   'claude',
+  'claude-v2',
   'goose',
   'replicate',
   'openrouter',
+  'openrouter-completion',
   'mancer',
   'petals',
   'venus',
@@ -169,37 +223,6 @@ export const GOOSE_ENGINES = {
   'fairseq-125m': 'Fairseq 125M',
 }
 
-export const OPENAI_MODELS = {
-  DaVinci: 'text-davinci-003',
-  Turbo: 'gpt-3.5-turbo',
-  Turbo0301: 'gpt-3.5-turbo-0301',
-  Turbo0613: 'gpt-3.5-turbo-0613',
-  Turbo1106: 'gpt-3.5-turbo-1106',
-  Turbo_16k: 'gpt-3.5-turbo-16k',
-  Turbo_Instruct: 'gpt-3.5-turbo-instruct',
-  Turbo_Intruct914: 'gpt-3.5-turbo-instruct-0914',
-  GPT4: 'gpt-4',
-  GPT4_0314: 'gpt-4-0314',
-  GPT4_0613: 'gpt-4-0613',
-  GPT4_32k: 'gpt-4-32k',
-  GPT4_32k_0314: 'gpt-4-32k-0314',
-  GPT4_32k_0613: 'gpt-4-32k-0613',
-  GPT45_1106: 'gpt-4-1106-preview',
-  GPT45_0125: 'gpt-4-0125-preview',
-  GPT45_Preview: 'gpt-4-turbo-preview',
-  GPT4_Turbo_Preview: 'gpt-4-turbo-preview',
-  GPT4_Turbo: 'gpt-4-turbo',
-  GPT4_Turbo_0409: 'gpt-4-turbo-2024-04-09',
-  GPT4_Omni: 'gpt-4o',
-  GPT4_Omni_Mini: 'gpt-4o-mini',
-  GPT4_Omni_0806: 'gpt-4o-2024-08-06',
-  GPT4_Omni_Latest: 'chatgpt-4o-latest',
-  O1_Preview: 'o1-preview',
-  O1_Preview_20240912: 'o1-preview-2024-09-12',
-  O1_Mini: 'o1-mini',
-  O1_Mini_20240912: '1-mini-2024-09-12',
-} as const
-
 export const MISTRAL_MODELS = {
   OpenMistral7b: 'open-mistral-7b',
   OpenMixtral8x7b: 'open-mixtral-8x7b',
@@ -208,50 +231,6 @@ export const MISTRAL_MODELS = {
   MistralLarge: 'mistral-large-latest',
   MistralLarge2411: 'mistral-large-2411',
 } as const
-
-export const OPENAI_CONTEXTS: Record<string, number> = {
-  [OPENAI_MODELS.Turbo]: 16300,
-  [OPENAI_MODELS.Turbo0613]: 16300,
-  [OPENAI_MODELS.Turbo1106]: 16300,
-  [OPENAI_MODELS.Turbo_16k]: 16300,
-  [OPENAI_MODELS.GPT4]: 8100,
-  [OPENAI_MODELS.GPT4_0314]: 8100,
-  [OPENAI_MODELS.GPT4_0613]: 8100,
-  [OPENAI_MODELS.GPT4_32k]: 32000,
-  [OPENAI_MODELS.GPT4_32k_0314]: 32000,
-  [OPENAI_MODELS.GPT4_32k_0613]: 32000,
-  [OPENAI_MODELS.GPT45_1106]: 128000,
-  [OPENAI_MODELS.GPT45_0125]: 128000,
-  [OPENAI_MODELS.GPT45_Preview]: 128000,
-  [OPENAI_MODELS.GPT4_Turbo_0409]: 128000,
-  [OPENAI_MODELS.GPT4_Omni]: 120000,
-}
-
-export const OPENAI_CHAT_MODELS: Record<string, boolean> = {
-  [OPENAI_MODELS.Turbo]: true,
-  [OPENAI_MODELS.Turbo0301]: true,
-  [OPENAI_MODELS.Turbo0613]: true,
-  [OPENAI_MODELS.Turbo1106]: true,
-  [OPENAI_MODELS.Turbo_16k]: true,
-  [OPENAI_MODELS.GPT4]: true,
-  [OPENAI_MODELS.GPT4_0314]: true,
-  [OPENAI_MODELS.GPT4_0613]: true,
-  [OPENAI_MODELS.GPT4_32k]: true,
-  [OPENAI_MODELS.GPT4_32k_0314]: true,
-  [OPENAI_MODELS.GPT4_32k_0613]: true,
-  [OPENAI_MODELS.GPT45_1106]: true,
-  [OPENAI_MODELS.GPT45_0125]: true,
-  [OPENAI_MODELS.GPT45_Preview]: true,
-  [OPENAI_MODELS.GPT4_Turbo_0409]: true,
-  [OPENAI_MODELS.GPT4_Omni]: true,
-  [OPENAI_MODELS.GPT4_Omni_Mini]: true,
-  [OPENAI_MODELS.GPT4_Omni_0806]: true,
-  [OPENAI_MODELS.GPT4_Omni_Latest]: true,
-  [OPENAI_MODELS.O1_Preview]: true,
-  [OPENAI_MODELS.O1_Preview_20240912]: true,
-  [OPENAI_MODELS.O1_Mini]: true,
-  [OPENAI_MODELS.O1_Mini_20240912]: true,
-}
 
 export const FLAI_CONTEXTS: Record<string, number> = {
   'qwen2-72b-lc': 16 * 1024,
@@ -281,13 +260,24 @@ export const GOOGLE_MODELS = {
   GEMINI_15_FLASH_002: { id: 'gemini-1.5-flash-002', label: 'Gemini 1.5 Flash 002' },
   GEMINI_15_FLASH_8B: { id: 'gemini-1.5-flash-8b', label: 'Gemini 1.5 Flash 8B' },
   GEMINI_EXP_1114: { id: 'gemini-exp-1114', label: 'Gemini Exp 1114' },
-  GEMINI_20_FLASH: { id: 'gemini-2.0-flash-exp', label: 'Gemini 2.0 Flash' },
   GEMINI_20_FLASH_EXP: { id: 'gemini-2.0-flash-exp', label: 'Gemini 2.0 Flash Exp' },
   GEMINI_20_FLASH_THINKING: {
     id: 'gemini-2.0-flash-thinking-exp-01-21',
     label: 'Gemini 2.0 Flash Thinking',
   },
   GEMINI_20_PRO_0205: { id: 'gemini-2.0-pro-exp-02-05', label: 'Gemini 2.0 02/05' },
+  GEMINI_25_PRO_0325: { id: 'gemini-2.5-pro-exp-03-25', label: 'Gemini 2.5 Pro Exp 03/25' },
+  GEMINI_25_PRO: { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Latest)' },
+  GEMINI_25_PRO_PREVIEW_0325: {
+    id: 'gemini-2.5-pro-preview-03-25',
+    label: 'Gemini 2.5 Pro Preview 03/25',
+  },
+  GEMINI_25_FLASH_0417: { id: 'gemini-2.5-flash-preview-04-17', label: 'Gemini 2.5 Flash 04/17' },
+  GEMINI_25_FLASH_0520: { id: 'gemini-2.5-flash-preview-05-20', label: 'Gemini 2.5 Flash 05/20' },
+  GEMINI_25_PRO_PREVIEW_0506: {
+    id: 'gemini-2.5-pro-preview-05-06',
+    label: 'Gemini 2.5 Pro Preview 05-06',
+  },
 }
 
 export const GOOGLE_LIMITS: Record<string, number> = {
@@ -296,59 +286,8 @@ export const GOOGLE_LIMITS: Record<string, number> = {
   'gemini-1.5-flash': 1048576,
   'gemini-1.5-flash-8b': 1048576,
   'gemini-2.0-flash-exp': 1048576,
-}
-
-/** Note: claude-v1 and claude-instant-v1 not included as they may point
- * to different models in the future. New models may be less appropriate
- * for roleplaying so they should be updated to manually
- * <https://console.anthropic.com/docs/api/reference#-v1-complete>
- */
-export const CLAUDE_MODELS = {
-  ClaudeV1: 'claude-v1',
-  ClaudeV2: 'claude-2',
-  ClaudeV2_0: 'claude-2.0',
-  ClaudeV2_1: 'claude-2.1',
-  ClaudeV1_100k: 'claude-v1-100k',
-  ClaudeV1_0: 'claude-v1.0',
-  ClaudeV1_2: 'claude-v1.2',
-  ClaudeV1_3: 'claude-v1.3',
-  ClaudeV1_3_100k: 'claude-v1.3-100k',
-  ClaudeInstantV1: 'claude-instant-v1',
-  ClaudeInstantV1_100k: 'claude-instant-v1-100k',
-  ClaudeInstantV1_0: 'claude-instant-v1.0',
-  ClaudeInstantV1_1: 'claude-instant-v1.1',
-  ClaudeInstantV1_1_100k: 'claude-instant-v1.1-100k',
-  ClaudeV3_Opus: 'claude-3-opus-20240229',
-  ClaudeV3_Sonnet: 'claude-3-sonnet-20240229',
-  ClaudeV3_Haiku: 'claude-3-haiku-20240307',
-  ClaudeV35_Haiku_Oct2024: 'claude-3-5-haiku-20241022',
-  ClaudeV35_Haiku_Latest: 'claude-3-5-haiku-latest',
-  ClaudeV35_Sonnet: 'claude-3-5-sonnet-20240620',
-  ClaudeV35_Sonnet_Oct2024: 'claude-3-5-sonnet-20241022',
-  ClaudeV35_Sonnet_Latest: 'claude-3-5-sonnet-latest',
-} as const
-
-export const CLAUDE_CHAT_MODELS: Record<string, boolean> = {
-  [CLAUDE_MODELS.ClaudeV3_Opus]: true,
-  [CLAUDE_MODELS.ClaudeV3_Sonnet]: true,
-  [CLAUDE_MODELS.ClaudeV3_Haiku]: true,
-  [CLAUDE_MODELS.ClaudeV35_Sonnet]: true,
-  [CLAUDE_MODELS.ClaudeV35_Sonnet_Oct2024]: true,
-  [CLAUDE_MODELS.ClaudeV35_Sonnet_Latest]: true,
-  [CLAUDE_MODELS.ClaudeV35_Haiku_Oct2024]: true,
-  [CLAUDE_MODELS.ClaudeV35_Haiku_Latest]: true,
-}
-
-export const NOVEL_MODELS = {
-  'llama-3-erato-v1': 'erato-v1',
-  euterpe: 'euterpe-v2',
-  krake: 'krake-v2',
-  clio_v1: 'clio-v1',
-  kayra_v1: 'kayra-v1',
-} satisfies { [key: string]: string }
-
-export const NOVEL_ALIASES: Record<string, string> = {
-  'erato-v1': 'llama-3-erato-v1',
+  'gemini-2.5-pro-exp-03-25': 1000000,
+  fallback: 1048576,
 }
 
 export const REPLICATE_MODEL_TYPES = {
@@ -360,6 +299,7 @@ export const REPLICATE_MODEL_TYPES = {
 
 export type OpenRouterModel = {
   id: string
+  description: string
   pricing: { prompt: string; completion: string }
   context_length: number
 }
@@ -405,19 +345,43 @@ export type HordeWorker = {
 
 export const ADAPTER_LABELS: { [key in AIAdapter]: string } = {
   horde: 'Horde',
-  kobold: 'Third-Party / Self-Host',
+  'third-party': 'Third-Party',
+  kobold: 'Third-Party',
   novel: 'NovelAI',
   ooba: 'Textgen',
   openai: 'OpenAI',
   scale: 'Scale',
-  claude: 'Claude',
+  'claude-v2': 'Claude (V2)',
+  claude: 'Claude (Legacy)',
   goose: 'Goose AI',
   replicate: 'Replicate',
-  openrouter: 'OpenRouter',
+  openrouter: 'OpenRouter (Chat)',
+  'openrouter-completion': 'OpenRouter (Completions)',
   mancer: 'Mancer',
   petals: 'Petals',
   agnaistic: 'Agnaistic',
   venus: 'Venus',
+}
+
+export const FORMAT_LABEL: { [key in ThirdPartyFormat]: string } = {
+  kobold: 'Kobold',
+  openai: 'OpenAI (Completion)',
+  'openai-chat': 'OpenAI Compat (Chat - Legacy)',
+  'openai-chatv2': 'OpenAI Compat (Chat)',
+  aphrodite: 'Aphrodite',
+  arli: 'ArliAI',
+  claude: 'Claude (Legacy)',
+  exllamav2: 'ExllamaV2',
+  featherless: 'Featherless',
+  gemini: 'Google AI Studio',
+  koboldcpp: 'Kobold.cpp',
+  llamacpp: 'Llama.cpp',
+  mistral: 'Mistral AI',
+  ollama: 'Ollama',
+  ooba: 'TextGen WebUI (Ooba)',
+  tabby: 'TabbyAPI',
+  vllm: 'vLLM',
+  'lm-studio': 'LM Studio',
 }
 
 export const INSTRUCT_SERVICES: { [key in AIAdapter]?: boolean } = {
@@ -463,6 +427,70 @@ export const samplerDisableValues: { [key in keyof PresetAISettings]?: number } 
   tailFreeSampling: 1,
   xtcThreshold: 0,
   dryMultiplier: 0,
+}
+
+/**
+ * Order of Precedence:
+ * 1. chat.genPreset -> service
+ * 2. chat.genSettings -> service
+ * 3. chat.adapter
+ * 4. user.defaultAdapter
+ */
+export function getAdapter(
+  chat: AppSchema.Chat,
+  user: AppSchema.User,
+  preset: Partial<AppSchema.GenSettings> | undefined
+) {
+  let model = ''
+  const conn = getPresetConnection(preset || {}, user.providers)
+  const isThirdParty = isThirdPartyPreset(conn)
+  let adapter = conn.service || 'third-party'
+
+  if (adapter === 'kobold' || adapter === 'third-party') {
+    adapter = THIRDPARTY_HANDLERS[user.thirdPartyFormat]
+    model = conn.preset.thirdPartyModel || ''
+  }
+
+  let presetName = 'Fallback Preset'
+
+  if (adapter === 'openrouter' || adapter === 'openrouter-completion') {
+    model = preset?.openRouterModel?.id || ''
+  }
+
+  if (adapter === 'replicate') {
+    model = preset?.replicateModelType || 'llama'
+  }
+
+  if (adapter === 'novel') {
+    model = user.novelModel
+  }
+
+  if (adapter === 'openai') {
+    model = preset?.thirdPartyModel || preset?.oaiModel || defaultPresets.openai.oaiModel
+  }
+
+  if (adapter === 'claude') {
+    model = preset?.claudeModel || ''
+  }
+
+  if (isDefaultPreset(chat.genPreset)) {
+    presetName = 'Built-in Preset'
+  } else presetName = 'User Preset'
+
+  return { adapter, model, preset: presetName, isThirdParty }
+}
+
+export function isThirdPartyPreset(conn: PresetConnection) {
+  if (!conn.provider) {
+    const isThirdParty =
+      conn.format && conn.format in THIRDPARTY_HANDLERS && conn.service === 'kobold'
+    return !!isThirdParty
+  }
+
+  if (conn.service === 'agnaistic') return false
+  if (conn.service) return false
+
+  return true
 }
 
 export function adaptersToOptions(adapters: AIAdapter[]) {

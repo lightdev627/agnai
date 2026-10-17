@@ -2,7 +2,15 @@ import { v4 } from 'uuid'
 import { AppSchema } from '../../../common/types/schema'
 import { api, isLoggedIn } from '../api'
 import { loadItem, localApi } from './storage'
-import { now, replace } from '/common/util'
+import { deepClone, now, replace } from '/common/util'
+import { joinUrl } from '/common/requests/util'
+import { toastStore } from '../toasts'
+import { storage } from '/web/shared/util'
+import { getStore } from '../create'
+import { getSafeProviderDetail } from '/common/providers'
+import { defaultPresets, getFallbackPreset } from '/common/presets'
+import { isDefaultPreset } from '/common/default-preset'
+import { debug } from '/common/debug'
 
 export type PresetUpdate = Omit<AppSchema.UserGenPreset, '_id' | 'kind' | 'userId'>
 export type PresetCreate = PresetUpdate & { chatId?: string }
@@ -10,6 +18,8 @@ export type SubscriptionUpdate = Omit<AppSchema.SubscriptionModel, 'kind' | '_id
 
 export const presetApi = {
   getPresets,
+  getPreset,
+  getChatPreset,
   createPreset,
   editPreset,
   deletePreset,
@@ -18,16 +28,73 @@ export const presetApi = {
   updateTemplate,
   deleteTemplate,
   deleteUserPresetKey,
+  getModelListByPreset,
+  testLocalUrl,
 }
 
 export async function getPresets() {
   if (isLoggedIn()) {
-    const res = await api.get<{ presets: AppSchema.UserGenPreset[] }>('/user/presets')
+    const res = await api.get<{
+      presets: AppSchema.UserGenPreset[]
+      templates: AppSchema.PromptTemplate[]
+    }>('/user/presets')
     return res
   }
 
   const presets = await loadItem('presets')
-  return localApi.result({ presets })
+  const templates = await loadItem('templates')
+  return localApi.result({ presets, templates })
+}
+
+export async function getPreset(id: string) {
+  if (isLoggedIn()) {
+    const res = await api.get<AppSchema.UserGenPreset>(`/user/presets/${id}`)
+    return res
+  }
+
+  const presets = await loadItem('presets')
+  const preset = presets.find((p) => p._id === id)
+
+  if (!preset) {
+    return localApi.error('Preset not found')
+  }
+
+  return localApi.result(preset)
+}
+
+async function getChatPreset(chatId: string) {
+  if (isLoggedIn()) {
+    const res = await api.get<AppSchema.UserGenPreset>(`/user/presets/${chatId}/chat`)
+    return res
+  }
+
+  const chats = await loadItem('chats')
+  const chat = chats.find((ch) => ch._id === chatId)
+  if (!chat) {
+    return localApi.error(`Preset not found: Invalid chat`)
+  }
+
+  const presets = await loadItem('presets')
+
+  if (!chat.genPreset) {
+    const fallback = getFallbackPreset('agnaistic')
+    return localApi.result(fallback)
+  }
+
+  if (isDefaultPreset(chat.genPreset)) {
+    const fallback = { _id: chat.genPreset, ...deepClone(defaultPresets[chat.genPreset]) }
+    return localApi.result(fallback)
+  }
+
+  const preset = presets.find((p) => p._id === chat.genPreset)
+
+  if (!preset) {
+    toastStore.warn(`Preset not found: Using built-in`)
+    const fallback = getFallbackPreset('agnaistic')
+    return localApi.result(fallback)
+  }
+
+  return localApi.result(preset)
 }
 
 export async function createPreset(preset: PresetUpdate) {
@@ -86,6 +153,213 @@ export async function deleteUserPresetKey(presetId: string) {
   const next = presets.map((pre) => (pre._id === presetId ? { ...pre, thirdPartyKey: '' } : pre))
   await localApi.savePresets(next)
   return localApi.result({ success: true })
+}
+
+async function getLocalModelList(opts: {
+  url: string
+  key?: string
+}): Promise<{ models: string[]; data?: any[] }> {
+  try {
+    const headers: any = {}
+
+    if (opts.key) {
+      headers.Authorization = `Bearer ${opts.key}`
+      headers['x-api-key'] = opts.key
+    }
+
+    const res = await fetch(joinUrl(opts.url, '/models'), { headers }).then((res) => res.json())
+
+    const list = Array.isArray(res.data) ? res.data : Array.isArray(res) ? res : []
+    const models: string[] = []
+
+    if (list) {
+      for (const model of res.data) {
+        if (!model || typeof model.id !== 'string') continue
+        models.push(model.id)
+      }
+    }
+
+    models.sort((l, r) => l.localeCompare(r))
+
+    // if (models.length) {
+    //   MODEL_LIST_CACHE.set(opts.url, { models, result: res.data })
+    // }
+
+    return { models, data: res?.data }
+  } catch (ex: any) {
+    return { models: [] }
+  }
+}
+
+async function testLocalUrl(opts: { url: string; key?: string }) {
+  const headers: any = {}
+
+  if (opts.key) {
+    headers.Authorization = `Bearer ${opts.key}`
+    headers['x-api-key'] = opts.key
+  }
+
+  try {
+    const res = await fetch(joinUrl(opts.url, '/models'), { headers }).then((res) => res.json())
+    return localApi.result({ url: opts.url, success: true, json: res })
+  } catch (ex) {}
+
+  try {
+    const res = await fetch(joinUrl(opts.url, '/v1/models'), { headers }).then((res) => res.json())
+    return localApi.result({ url: joinUrl(opts.url, '/v1'), success: true, json: res })
+  } catch (ex) {}
+
+  return localApi.result({ success: false, url: opts.url })
+}
+
+async function getModelListByPreset(preset: Partial<AppSchema.UserGenPreset>, force = false) {
+  if (preset.providerId === 'agnaistic') return
+  if (!preset.providerId && preset.service === 'agnaistic') return
+
+  const providers = getStore('user').getState().user?.providers || []
+  const provider = preset.providerId
+    ? providers.find((p) => p._id === preset.providerId)
+    : undefined
+  const detail = getSafeProviderDetail(provider?.provider || '')
+
+  let url = preset.thirdPartyUrl || ''
+  let key = preset.thirdPartyKey || ''
+
+  if (provider && detail) {
+    switch (detail.category) {
+      case 'self':
+      case 'custom':
+        url = provider.url || detail.detail.url || ''
+        break
+
+      case 'known':
+        url = detail.detail.url || ''
+        break
+    }
+
+    if (!url) {
+      return { list: [], url: '', data: [] }
+    }
+
+    const useLocal = detail.category === 'self' || provider.provider === 'known-openrouter'
+
+    const result = useLocal
+      ? await getLocalModelList({ url, key: provider.userKey || provider.key })
+      : await getPresetModelList({
+          id: preset._id || '',
+          providerId: preset.providerId,
+          url,
+          key: isLoggedIn() ? '' : provider.key,
+          useCache: !force,
+        })
+
+    return { list: result.models, url, data: result.data }
+  }
+
+  const known = getSafeProviderDetail(
+    preset.service === 'kobold' ? `known-${preset.thirdPartyFormat}` : `known-${preset.service}`
+  )
+
+  if (known?.detail?.url) {
+    url = known.detail.url
+  }
+
+  if (!url) {
+    return { list: [], url: '', data: [] }
+  }
+
+  const result = preset.localRequests
+    ? await getLocalModelList({ url, key: preset.userThirdPartyKey })
+    : await getPresetModelList({
+        id: preset._id || '',
+        url,
+        // We pass this for presets that are un-saved
+        key,
+        useCache: !force,
+      })
+
+  return { list: result.models, data: result.data, url }
+}
+
+const MODELS_LOADED = new Set<string>()
+
+async function getPresetModelList(opts: {
+  id: string
+  url: string
+  providerId?: string
+  key?: string
+  useCache?: boolean
+}): Promise<{ models: string[]; data?: any[] }> {
+  const isGuest = !isLoggedIn()
+
+  if (opts.useCache) {
+    const cache = await getCachedModelList(opts.url)
+    if (cache?.models.length && cache.models.length > 1) return cache
+  }
+
+  const res = await api.post<{ data: any[] }>(`/user/preset-models`, {
+    id: isGuest ? '' : opts.id,
+    providerId: opts.providerId,
+    url: opts.url,
+    key: opts.key,
+  })
+  const models: string[] = []
+
+  if (res.error) {
+    toastStore.error(`Could not get models: ${res.error}`)
+    const cached = await getCachedModelList(opts.url, true)
+    if (cached) return cached
+
+    return { models: [] }
+  }
+
+  if (res.result) {
+    for (const model of res.result.data) {
+      if (!model || typeof model.id !== 'string') continue
+      models.push(model.id)
+    }
+  }
+
+  models.sort((l, r) => l.localeCompare(r))
+
+  const ttl = Date.now() + 60000 * 60 // 1 hour
+
+  MODELS_LOADED.add(opts.url)
+  await storage.setItem(
+    `model-list-${opts.url}`,
+    JSON.stringify({ ttl, models, data: res.result?.data })
+  )
+
+  return { models, data: res.result?.data }
+}
+
+async function getCachedModelList(url: string, ignoreTtl: boolean = false) {
+  const key = `model-list-${url}`
+  const cached = await storage.getItem(key)
+  debug('models')('cache attempt: %s', url)
+  if (!cached) {
+    debug('models')('cache miss: %s', url)
+    return
+  }
+
+  try {
+    const json = JSON.parse(cached) as { models: string[]; data: any[]; ttl: number }
+    if (!json?.models?.length) {
+      debug('models')('cache hit-empty: %s', url)
+      return
+    }
+    if (json && ignoreTtl) {
+      debug('models')('cache hit-ttl-ignored: %s', url)
+      return json
+    }
+    if (json.ttl > Date.now()) {
+      debug('models')('cache hit-within-ttl: %s', url)
+      return json
+    }
+    debug('models')('cache hit-expired: %s', url)
+  } catch (ex: any) {
+    debug('models')('cache error: %s', ex.message)
+  }
 }
 
 async function getTemplates() {

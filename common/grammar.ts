@@ -25,18 +25,34 @@ Expression = content:Parent* {
     return results
 }
 
-Parent "parent-node" = v:(BotIterator / ChatEmbedIterator / HistoryIterator / HistoryInsert / LowPriority / Condition / Placeholder / Text) { return v }
+Parent "parent-node" = v:(SystemBlock / AssistantBlock / InstructBlock / BotIterator / ChatEmbedIterator / HistoryIterator / HistoryInsert / LowPriority / Condition / Placeholder / Text) { return v }
 
 ManyPlaceholder "repeatable-placeholder" = OP i:(Character / User / Random / DiceRoll) CL {
 	return { kind: 'placeholder', value: i }
 }
 
+/** Role Blocks */
+SystemBlock "system-block" = OpenSystem text:SystemBlockText+ CloseSystem { return { kind: 'system-block', value: text.join('') } }
+OpenSystem "open-system" = "<system>"i
+CloseSystem "close-system" = "</system>"i
+SystemBlockText "block-text" = !(CloseSystem) ch:. { return ch }
+
+AssistantBlock "assistant-block" = OpenAssistant text:AssistantBlockText+ CloseAssistant { return { kind: 'assistant-block', value: text.join('') } }
+OpenAssistant "open-assistant" = "<assistant>"i
+CloseAssistant "close-assistant" = "</assistant>"i
+AssistantBlockText "block-text" = !(CloseAssistant) ch:. { return ch }
+
+InstructBlock "instruct-block" = OpenInstruct text:InstructionBlockText+ CloseInstruct { return { kind: 'instruct-block', value: text.join('') } }
+OpenInstruct "open-instruct" = "<instruct>"i
+CloseInstruct "close-instruct" = "</instruct>"i
+InstructionBlockText "block-text" = !(CloseInstruct) ch:. { return ch }
+
 BotIterator "bot-iterator" = OP "#each" WS loop:Bots CL children:(BotChild / LoopText)* CloseLoop { return { kind: 'each', value: loop, children } }
 BotChild = i:(BotRef / BotCondition / ManyPlaceholder) { return i }
 
 HistoryIterator "history-iterator" = OP "#each" WS loop:History CL children:(HistoryChild / LoopText)* CloseLoop { return { kind: 'each', value: loop, children } }
-HistoryChild = i:(HistoryRef / HistoryCondition / ManyPlaceholder) { return i }
-HistoryInsert "history-insert" = OP "#insert"i WS "="? WS line:[0-9]|1..2| CL children:(Placeholder / InsertText)* CloseInsert { return { kind: 'history-insert', values: +line.join(''), children } }
+HistoryChild = i:(HistoryRef / HistoryCondition / JsonSchemaValue / ManyPlaceholder) { return i }
+HistoryInsert "history-insert" = OP "#insert"i WS "="? WS line:[0-9]|1..2| CL children:(Condition / Placeholder / InsertText)* CloseInsert { return { kind: 'history-insert', values: +line.join(''), children } }
 
 ChatEmbedIterator "chat-embed-iterator" = OP "#each" WS loop:ChatEmbed CL children:(ChatEmbedChild / LoopText)* CloseLoop { return { kind: 'each', value: loop, children } }
 ChatEmbedChild = i:(ChatEmbedRef / ManyPlaceholder) { return i }
@@ -58,7 +74,7 @@ BotCondition "bot-condition" = OP "#if" WS prop:BotProperty CL sub:(BotRef / Loo
   return { kind: 'bot-if', prop, children: sub.flat() }
 }
 
-HistoryCondition "history-condition" = OP "#if" WS prop:HistoryProperty CL sub:(HistoryRef / LoopText)* CloseCondition {
+HistoryCondition "history-condition" = OP "#if" WS prop:HistoryProperty CL sub:(HistoryRef / JsonSchemaValue / LoopText)* CloseCondition {
   return { kind: 'history-if', prop, children: sub.flat() }
 }
 
@@ -68,7 +84,7 @@ Condition "if" = OP "#if" WS value:Word CL sub:(ConditionChild / ConditionText)*
 }
 
 
-InsertText "insert-text" = !(BotChild / HistoryChild / CloseCondition / CloseInsert) ch:(.) { return ch }
+InsertText "insert-text" = !(BotChild / HistoryChild / CloseInsert) ch:(.) { return ch }
 LowPriorityText "lowpriority-text" = !(BotChild / HistoryChild / CloseCondition / CloseLowPriority) ch:(.) { return ch }
 ElseText "else-text" = !(CloseElseBlock / CloseCondition / CloseLowPriority) ch:(.) { return ch }
 LoopText "loop-text" = !(BotChild / ChatEmbedChild / HistoryChild / CloseCondition / CloseLoop) ch:(.)  { return ch }
@@ -108,12 +124,14 @@ ChatEmbedRef = OP prop:ChatEmbedProperty CL {return { kind: 'chat-embed-prop', p
 BotRef = OP prop:BotProperty CL {return { kind: 'bot-prop', prop } }
 HistoryRef = OP prop:HistoryProperty CL { return { kind: 'history-prop', prop } }
 
-JsonSchemaValue "json-schema-value" = ("json."i / "var."i) prop:Word { return { kind: 'json', values: prop } }
+JsonSchemaValue "json-schema-value" = ("json."i) prop:Word { return { kind: 'json', values: prop } }
+UserVariableValue "user-variable-value" = ("vars."i / "var."i) prop:Word { return { kind: 'user-var', values: prop } }
 
 ChatEmbedProperty "chat-embed-prop" = "." prop:("name"i / "text"i / "i"i) { return prop.toLowerCase() }
 BotProperty "bot-prop" = "." prop:("name"i / Persona / "i"i) { return prop.toLowerCase() }
 HistoryProperty "history-prop" = "."? prop:(Message / "dialogue"i / "name"i / "isuser"i / "isbot"i / "i"i) { return prop.toLowerCase() }
 
+MainCharacter "main-character" = ("mainchar"i / "mainbot"i) { return "main-char" }
 Character "character" = ("char"i / "character"i / "bot"i) { return "char" }
 User "user" = "user"i { return "user" }
 Scenario "scenario" = "scenario"i { return "scenario" }
@@ -151,6 +169,7 @@ History "history" = ( "history"i / "messages"i / "msgs"i / "msg"i) { return "his
 
 Interp "interp"
 	= Character
+  / MainCharacter
   / UserEmbed
   / User
   / Scenario
@@ -170,5 +189,6 @@ Interp "interp"
   / Random
   / DiceRoll
   / JsonSchemaValue
+  / UserVariableValue
   / Value
 `

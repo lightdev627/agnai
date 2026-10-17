@@ -1,6 +1,7 @@
 import create, { StoreApi } from 'zustand/vanilla'
 import * as solidstore from 'solid-js/store'
 import { onCleanup } from 'solid-js'
+import type { pageStore } from './page'
 import type { userStore } from './user'
 import type { chatStore } from './chat'
 import type { toastStore } from './toasts'
@@ -13,6 +14,9 @@ import type { adminStore } from './admin'
 import type { presetStore } from './presets'
 import type { scenarioStore } from './scenario'
 import type { audioStore } from './audio'
+import type { promptStore } from './prompt'
+import type { imageStore } from './images'
+import type { responseStore } from './response'
 
 type StoreMap = {
   user: typeof userStore
@@ -27,6 +31,10 @@ type StoreMap = {
   presets: typeof presetStore
   scenario: typeof scenarioStore
   audio: typeof audioStore
+  prompt: typeof promptStore
+  page: typeof pageStore
+  image: typeof imageStore
+  responses: typeof responseStore
 }
 
 type HandlerReturn<S> =
@@ -41,8 +49,19 @@ type MaybeState<S> = Partial<S> | void
 type SetterFunction<S> = (state: S, ...args: any[]) => HandlerReturn<S>
 
 const win: any = window
-const devTools = win.__REDUX_DEVTOOLS_EXTENSION__?.connect?.() || {
+
+const devTools = {
   send: () => {},
+} as any
+
+const canDebug = localStorage.getItem('devtools') === 'true'
+
+if (canDebug) {
+  console.log('Debug Tools Enabled')
+  const res = win.__REDUX_DEVTOOLS_EXTENSION__?.connect?.()
+  if (res) {
+    devTools.send = res.send
+  }
 }
 
 type CachedStore = (() => any) & StoreApi<any>
@@ -83,7 +102,11 @@ type HandlerArgs<T> = T extends (first: any, ...args: infer U) => any ? U : neve
 
 type StateSetter<S> = (next: Partial<S>) => Promise<void>
 
-export function createStore<State extends {}>(name: string, init: State) {
+export function createStore<State extends {}>(
+  name: string,
+  init: State,
+  opts?: { quiet?: boolean }
+) {
   let setter: any
   let getter: any
 
@@ -103,7 +126,7 @@ export function createStore<State extends {}>(name: string, init: State) {
 
     const wrappedSetter = (next: any) => {
       if (!next) return
-      send(`[OUT] ${name}`, { type: 'setter' }, { ...getter(), ...next })
+      if (!opts?.quiet) send(`[OUT] ${name}`, { type: 'setter' }, { ...getter(), ...next })
       setter(next)
     }
 
@@ -113,14 +136,14 @@ export function createStore<State extends {}>(name: string, init: State) {
       wrapped[key] = async (...args: any[]) => {
         const prev = getter()
         const result = handler(getter(), ...args)
-        send(`[ IN] ${name}`, { type: key, args }, prev)
+        if (!opts?.quiet) send(`[ IN] ${name}`, { type: key, args }, prev)
         if (!result) return
 
         if (isPromise<State>(result)) {
           const nextState = await result.catch(() => null)
           if (!nextState) return
           const next = { ...getter(), ...nextState }
-          send(`[OUT] ${name}`, { type: key, args }, next)
+          if (!opts?.quiet) send(`[OUT] ${name}`, { type: key, args }, next)
           setter(next)
           return
         }
@@ -133,14 +156,14 @@ export function createStore<State extends {}>(name: string, init: State) {
             if (done === undefined) return
             if (!nextState) return
             const next = { ...getter(), ...nextState }
-            send(`[OUT] ${name}`, { type: key, args }, next)
+            if (!opts?.quiet) send(`[OUT] ${name}`, { type: key, args }, next)
             setter(next)
             if (done) return
           } while (true)
         }
 
         const next = { ...getter(), ...result }
-        send(`[OUT] ${name}`, { type: key, args }, next)
+        if (!opts?.quiet) send(`[OUT] ${name}`, { type: key, args }, next)
         setter(next)
       }
     }
@@ -162,8 +185,17 @@ export function createStore<State extends {}>(name: string, init: State) {
       return solid as T
     }
 
-    type PatchedStore = typeof useStore & Wrapped & typeof store
+    const mapState = <T>(mapFn: (state: State) => T) => {
+      const current = store.getState()
+      const mapped = mapFn(current)
+      return mapped
+    }
+
+    type PatchedStore = typeof useStore & Wrapped & typeof store & { mapState: typeof mapState }
     const patchedStore = useStore as PatchedStore
+
+    patchedStore.mapState = mapState
+
     Object.assign(patchedStore, store)
 
     for (const key of Object.keys(wrapped) as Array<keyof Handler>) {

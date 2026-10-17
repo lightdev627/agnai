@@ -1,3 +1,5 @@
+import { config } from '../config'
+import { wait } from '../db/util'
 import { logger } from '../middleware'
 
 type V1Model = {
@@ -8,6 +10,7 @@ type V1Model = {
   model_class: string
   context_length: number
   max_completion_tokens: number
+  available_on_current_plan: boolean
 }
 
 export type FeatherlessModel = {
@@ -19,14 +22,9 @@ export type FeatherlessModel = {
 
   ctx: number
   res: number
+  plan: boolean
 
-  created_at?: string
-  updated_at?: string
-  owned_by?: string
-  avg_rating?: number
-  total_reviews?: number
-  favorites?: number
-  downloads?: number
+  created?: string
 }
 
 let modelCache: FeatherlessModel[] = []
@@ -37,76 +35,52 @@ export function getFeatherModels() {
 }
 
 async function getModelList() {
+  if (config.inference.skipModelLists) return []
+
+  const url = 'https://api.featherless.ai/v1/models?available_on_current_plan=true'
   try {
-    const models = await fetch('https://api.featherless.ai/v1/models', {
+    const res = await fetch(url, {
       headers: {
-        accept: '*/*',
+        accept: 'application/json',
+        'content-type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:58.0) Gecko/20100101 Firefox/58.0',
       },
       method: 'GET',
-    })
-    const res = await fetch('https://api.featherless.ai/feather/models?page=1&perPage=5000', {
-      headers: {
-        accept: '*/*',
-      },
-      method: 'GET',
-    })
+    }).then((res) => res.json())
 
-    if (res.status && res.status > 200) {
-      const body = await res.json()
-      logger.warn({ body, status: res.status }, `Featherless model list failed`)
-      return
-    }
+    const models = res?.data as V1Model[]
+    if (!models) return
 
-    if (models.status && models.status > 200) {
-      const body = await models.json()
-      logger.warn({ body, status: models.status }, `Featherless model list failed`)
-      return
-    }
+    const all: FeatherlessModel[] = []
 
-    const map = await models.json().then((res) => {
-      const list = res?.data as V1Model[]
-      if (!list) return {}
+    for (const model of models) {
+      all.push({
+        id: model.id,
+        model_class: model.model_class,
+        ctx: model.context_length,
+        name: model.name,
+        res: model.max_completion_tokens,
+        status: 'active',
+        created: model.updated_at,
+        plan: model.available_on_current_plan,
+      })
 
-      const map: { [key: string]: V1Model } = {}
-      for (const model of list) {
-        if (!classCache[model.model_class]) {
-          classCache[model.model_class] = {
-            ctx: model.context_length,
-            res: model.max_completion_tokens,
-          }
-        }
+      if (!model.model_class) continue
+      if (classCache[model.model_class]) continue
 
-        map[model.id] = model
+      classCache[model.model_class] = {
+        ctx: model.context_length,
+        res: model.max_completion_tokens,
       }
-      return map
-    })
-
-    const json = (await res.json()) as { items: FeatherlessModel[] }
-
-    if (json.items.length) {
-      for (const item of json.items) {
-        delete item.favorites
-        delete item.downloads
-        delete item.total_reviews
-        delete item.avg_rating
-        delete item.updated_at
-        delete item.created_at
-        const match = map[item.id]
-        if (match) {
-          item.ctx = match.context_length
-          item.res = match.max_completion_tokens
-        }
-      }
-
-      modelCache = json.items
     }
 
-    return json
+    modelCache = all
   } catch (ex) {
-    logger.error({ err: ex }, `Featherless model list failed`)
+    logger.warn({ err: ex }, `Featherless model list failed`)
+  } finally {
+    await wait(60000 * 10)
+    getModelList()
   }
 }
 
 getModelList()
-
-setInterval(getModelList, 120000)

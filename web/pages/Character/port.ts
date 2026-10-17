@@ -4,6 +4,7 @@ import { characterBookToNative } from '/common/memory'
 import { AppSchema } from '/common/types'
 import { slugify } from '/common/util'
 import { FileInputResult, getFileAsString } from '/web/shared/FileInput'
+import { tryParseImport } from '/web/shared/util'
 import { NewCharacter, toastStore } from '/web/store'
 import { CHUB_URL } from '/web/store/chub'
 
@@ -40,7 +41,7 @@ export async function importCharacterFile(file: FileInputResult) {
       `Invalid file format: ${file.file.name}. Supported formats: ${SUPPORTED_FORMATS}`
     )
   } catch (ex: any) {
-    toastStore.error(`Failed to import ${file.file.name}: ${ex.message}`)
+    toastStore.error(ex, { prefix: `Failed to import ${file.file.name}` })
     throw ex
   }
 }
@@ -83,6 +84,12 @@ export function jsonToCharacter(json: any): NewCharacter {
       sampleChat: json.mes_example,
       scenario: json.scenario,
       originalAvatar: undefined,
+      alternateGreetings: ensureArray(json.data?.alternate_greetings).filter(
+        (v) => typeof v === 'string'
+      ),
+      characterBook: Array.isArray(json.data?.character_book?.entries)
+        ? characterBookToNative(json.data.character_book)
+        : undefined,
     }
   }
 
@@ -108,7 +115,7 @@ export function jsonToCharacter(json: any): NewCharacter {
       systemPrompt: v2.system_prompt,
       postHistoryInstructions: v2.post_history_instructions,
       tags: Array.isArray(v2.tags) ? v2.tags : [],
-      alternateGreetings: Array.isArray(v2.alternate_greetings) ? v2.alternate_greetings : [],
+      alternateGreetings: ensureArray(v2.alternate_greetings).filter((v) => typeof v === 'string'),
       extensions: ext,
     }
   }
@@ -206,7 +213,7 @@ async function processImage(file: FileInputResult) {
 
 async function processJSON(file: FileInputResult) {
   const content = await getFileAsString(file)
-  const json = JSON.parse(content)
+  const json = tryParseImport(content)
   const char = jsonToCharacter(json)
   char.tags = char.tags || []
   toastStore.success('Character file accepted')
@@ -225,4 +232,10 @@ function sanitiseCharacter<T>(char: T): T {
   }
 
   return char
+}
+
+function ensureArray<T = any>(value?: any): T[] {
+  if (!value) return []
+  if (Array.isArray(value)) return value
+  return []
 }

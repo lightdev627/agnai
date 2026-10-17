@@ -7,12 +7,27 @@ import { Card } from '../Card'
 import Sortable, { SortItem } from '../Sortable'
 import { A } from '@solidjs/router'
 import { inverseSamplerServiceMap, samplerServiceMap } from '/common/sampler-order'
-import { PresetState, PresetTabProps, SetPresetState } from './types'
+import { PresetFuncs, PresetTabProps, ContextPreset } from '/web/store/preset-context'
 
 export const ToggleSettings: Component<PresetTabProps> = (props) => {
   return (
     <div class="flex flex-col gap-4" classList={{ hidden: props.tab !== 'Toggles' }}>
-      <Card class="flex flex-col gap-4">
+      <Card class="flex flex-col gap-4" bg="bg-500">
+        <Toggle
+          label="Skip Chat Role Merges"
+          helperText="Chat completions: When enabled, do not collapse repeated roles into a single message"
+          value={props.state.skipRoleMerging}
+          onChange={(ev) => props.setters.setState('skipRoleMerging', ev)}
+        />
+
+        <Toggle
+          label="Ensure Last Role is User"
+          helperMarkdown={`Chat completions: When enabled, the \`{{post}}\` amble will be sent as a USER role, instead of ASSISTANT.
+          Fixes DeepSeek 3.1 issues.`}
+          value={props.state.postUserRole}
+          onChange={(ev) => props.setters.setState('postUserRole', ev)}
+        />
+
         <TextInput
           fieldName="cfgOppose"
           label="CFG Opposing Prompt"
@@ -28,8 +43,8 @@ export const ToggleSettings: Component<PresetTabProps> = (props) => {
           }
           value={props.state.cfgOppose || ''}
           disabled={props.state.disabled}
-          hide={props.hides.cfgScale}
-          onChange={(ev) => props.setter('cfgOppose', ev.currentTarget.value)}
+          hide={props.setters.context.hides.cfgScale}
+          onChange={(ev) => props.setters.setState('cfgOppose', ev.currentTarget.value)}
         />
 
         <Select
@@ -47,8 +62,8 @@ export const ToggleSettings: Component<PresetTabProps> = (props) => {
             { label: 'Off', value: 'off' },
           ]}
           value={props.state.phraseRepPenalty || 'aggressive'}
-          hide={props.hides.phraseRepPenalty}
-          onChange={(ev) => props.setter('phraseRepPenalty', ev.value)}
+          hide={props.setters.context.hides.phraseRepPenalty}
+          onChange={(ev) => props.setters.setState('phraseRepPenalty', ev.value)}
         />
 
         <Toggle
@@ -56,11 +71,11 @@ export const ToggleSettings: Component<PresetTabProps> = (props) => {
           label="Temperature Last"
           helperText="When using Min P, enabling this will make temperature the last sampler to be applied"
           value={props.state.tempLast ?? false}
-          service={props.state.service}
-          format={props.state.thirdPartyFormat}
-          hide={props.hides.tempLast}
+          service={props.setters.context.service}
+          format={props.setters.context.format}
+          hide={props.setters.context.hides.tempLast}
           recommended={props.sub?.preset.tempLast}
-          onChange={(ev) => props.setter('tempLast', ev)}
+          onChange={(ev) => props.setters.setState('tempLast', ev)}
         />
 
         <Toggle
@@ -77,11 +92,11 @@ export const ToggleSettings: Component<PresetTabProps> = (props) => {
           }
           value={props.state.mirostatToggle ?? false}
           disabled={props.state.disabled}
-          service={props.state.service}
-          hide={props.hides.mirostatLR}
-          format={props.state.thirdPartyFormat}
+          service={props.setters.context.service}
+          hide={props.setters.context.hides.mirostatLR}
+          format={props.setters.context.format}
           recommended={props.sub?.preset.mirostatToggle}
-          onChange={(ev) => props.setter('mirostatToggle', ev)}
+          onChange={(ev) => props.setters.setState('mirostatToggle', ev)}
         />
 
         <Toggle
@@ -90,11 +105,11 @@ export const ToggleSettings: Component<PresetTabProps> = (props) => {
           helperText="Backs up the generation process by one token then constrains the output's first token to equal the last token of your prompt."
           value={props.state.tokenHealing ?? true}
           disabled={props.state.disabled}
-          service={props.state.service}
-          hide={props.hides.tokenHealing}
-          format={props.state.thirdPartyFormat}
+          service={props.setters.context.service}
+          hide={props.setters.context.hides.tokenHealing}
+          format={props.setters.context.format}
           recommended={props.sub?.preset.tokenHealing}
-          onChange={(ev) => props.setter('tokenHealing', ev)}
+          onChange={(ev) => props.setters.setState('tokenHealing', ev)}
         />
         <Toggle
           fieldName="addBosToken"
@@ -102,11 +117,11 @@ export const ToggleSettings: Component<PresetTabProps> = (props) => {
           helperText="Add begining of sequence token to the start of prompt. Disabling makes the replies more creative."
           value={props.state.addBosToken ?? true}
           disabled={props.state.disabled}
-          service={props.state.service}
-          hide={props.hides.addBosToken}
-          format={props.state.thirdPartyFormat}
+          service={props.setters.context.service}
+          hide={props.setters.context.hides.addBosToken}
+          format={props.setters.context.format}
           recommended={props.sub?.preset.addBosToken}
-          onChange={(ev) => props.setter('addBosToken', ev)}
+          onChange={(ev) => props.setters.setState('addBosToken', ev)}
         />
         <Toggle
           fieldName="banEosToken"
@@ -114,11 +129,11 @@ export const ToggleSettings: Component<PresetTabProps> = (props) => {
           helperText="Ban the end of sequence token. This forces the model to never end the generation prematurely."
           value={props.state.banEosToken ?? false}
           disabled={props.state.disabled}
-          service={props.state.service}
-          hide={props.hides.banEosToken}
-          format={props.state.thirdPartyFormat}
+          service={props.setters.context.service}
+          hide={props.setters.context.hides.banEosToken}
+          format={props.setters.context.format}
           recommended={props.sub?.preset.banEosToken}
-          onChange={(ev) => props.setter('banEosToken', ev)}
+          onChange={(ev) => props.setters.setState('banEosToken', ev)}
         />
         <Toggle
           fieldName="skipSpecialTokens"
@@ -126,11 +141,11 @@ export const ToggleSettings: Component<PresetTabProps> = (props) => {
           helperText="Some specific models need this unset."
           value={props.state.skipSpecialTokens ?? true}
           disabled={props.state.disabled}
-          service={props.state.service}
-          hide={props.hides.skipSpecialTokens}
-          format={props.state.thirdPartyFormat}
+          service={props.setters.context.service}
+          format={props.setters.context.format}
+          hide={props.setters.context.hides.skipSpecialTokens}
           recommended={props.sub?.preset.skipSpecialTokens}
-          onChange={(ev) => props.setter('skipSpecialTokens', ev)}
+          onChange={(ev) => props.setters.setState('skipSpecialTokens', ev)}
         />
 
         <Toggle
@@ -139,10 +154,10 @@ export const ToggleSettings: Component<PresetTabProps> = (props) => {
           helperText="If doing contrastive search, disable this."
           value={props.state.doSample ?? true}
           disabled={props.state.disabled}
-          service={props.state.service}
-          hide={props.hides.doSample}
-          format={props.state.thirdPartyFormat}
-          onChange={(ev) => props.setter('doSample', ev)}
+          service={props.setters.context.service}
+          format={props.setters.context.format}
+          hide={props.setters.context.hides.doSample}
+          onChange={(ev) => props.setters.setState('doSample', ev)}
         />
 
         <Toggle
@@ -151,37 +166,37 @@ export const ToggleSettings: Component<PresetTabProps> = (props) => {
           helperText="Controls the stopping condition for beam-based methods, like beam-search."
           value={props.state.earlyStopping ?? false}
           disabled={props.state.disabled}
-          service={props.state.service}
-          hide={props.hides.earlyStopping}
-          format={props.state.thirdPartyFormat}
-          onChange={(ev) => props.setter('earlyStopping', ev)}
+          service={props.setters.context.service}
+          format={props.setters.context.format}
+          hide={props.setters.context.hides.earlyStopping}
+          onChange={(ev) => props.setters.setState('earlyStopping', ev)}
         />
 
-        <SamplerOrder state={props.state} setter={props.setter} />
+        <SamplerOrder state={props.state} setters={props.setters} />
       </Card>
     </div>
   )
 }
 
 const SamplerOrder: Component<{
-  state: PresetState
-  setter: SetPresetState
+  state: ContextPreset
+  setters: PresetFuncs
 }> = (props) => {
   const updateValue = (next: SortItem[]) => {
     const nextValue = next.map((n) => +n.value)
     const disabled = next.filter((n) => n.enabled === false).map((n) => n.id)
-    props.setter({ order: nextValue, disabledSamplers: disabled })
+    props.setters.setState({ order: nextValue, disabledSamplers: disabled })
   }
 
   const items = createMemo(() => {
     const list: SortItem[] = []
-    if (!props.state.service) return list
+    if (!props.setters.context.service) return list
 
-    const orderMap = samplerServiceMap[props.state.service]
-    const inverseMap = inverseSamplerServiceMap[props.state.service]
+    const orderMap = samplerServiceMap[props.setters.context.service]
+    const inverseMap = inverseSamplerServiceMap[props.setters.context.service]
     const disabled = ensureArray(props.state.disabledSamplers)
 
-    const base = samplerOrders[props.state.service]
+    const base = samplerOrders[props.setters.context.service]
       ?.map((o) => orderMap?.[o])
       .filter((o) => o !== undefined)
     const order = ensureArray(props.state.order)
@@ -218,7 +233,7 @@ const SamplerOrder: Component<{
   return (
     <div
       classList={{
-        hidden: items().length === 0 || props.state.thirdPartyFormat === 'aphrodite',
+        hidden: items().length === 0 || props.setters.context.format === 'aphrodite',
       }}
     >
       <Sortable label="Sampler Order" items={items()} onChange={updateValue} />

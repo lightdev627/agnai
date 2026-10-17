@@ -7,6 +7,7 @@ import { defaultChars } from '../../common/characters'
 const ALGO = 'aes-192-cbc'
 const KEY = crypto.scryptSync(config.jwtSecret, 'salt', 24)
 const KEY_LB = crypto.scryptSync(`${config.jwtSecret}\n`, 'salt', 24)
+const KEY_TRIM = crypto.scryptSync(`${config.jwtSecret}\\n`, 'salt', 24)
 
 export function now() {
   return new Date().toISOString()
@@ -27,23 +28,32 @@ export function encryptUserText(text: string, key: string) {
 
 export function encryptText(text: string) {
   const iv = crypto.randomBytes(16)
-  const cipher = crypto.createCipheriv(ALGO, KEY, iv)
+  const cipher = crypto.createCipheriv(ALGO, KEY as any, iv as any)
   const encrypted = cipher.update(text, 'utf8', 'hex')
 
-  return [encrypted + cipher.final('hex'), Buffer.from(iv).toString('hex')].join('|')
+  return [encrypted + cipher.final('hex'), Buffer.from(iv as any).toString('hex')].join('|')
 }
 
 export function decryptText(text: string, noError?: boolean) {
   const [encrypted, iv] = text.split('|')
-  if (!iv) throw new Error('IV not found')
+  if (!iv) {
+    // If there is no IV it's likely to already be decrypted
+    if (noError) return text
+    throw new Error('IV not found')
+  }
 
   try {
-    const decipher = crypto.createDecipheriv(ALGO, KEY, Buffer.from(iv, 'hex'))
+    const decipher = crypto.createDecipheriv(ALGO, KEY_TRIM as any, Buffer.from(iv, 'hex') as any)
     return decipher.update(encrypted, 'hex', 'utf8') + decipher.final('utf8')
   } catch (ex) {}
 
   try {
-    const decipher = crypto.createDecipheriv(ALGO, KEY_LB, Buffer.from(iv, 'hex'))
+    const decipher = crypto.createDecipheriv(ALGO, KEY as any, Buffer.from(iv, 'hex') as any)
+    return decipher.update(encrypted, 'hex', 'utf8') + decipher.final('utf8')
+  } catch (ex) {}
+
+  try {
+    const decipher = crypto.createDecipheriv(ALGO, KEY_LB as any, Buffer.from(iv, 'hex') as any)
     return decipher.update(encrypted, 'hex', 'utf8') + decipher.final('utf8')
   } catch (ex) {}
 
