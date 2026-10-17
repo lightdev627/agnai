@@ -1,4 +1,4 @@
-import { allSockets, sendMany, userSockets } from './redis'
+import { allSockets, sendGuest, sendMany, userSockets } from './redis'
 import { AppSocket } from './types'
 import { assertValid } from '/common/valid'
 import { store } from '/srv/db'
@@ -20,7 +20,7 @@ type Handlers = {
 }
 
 export const handlers: Handlers = {
-  login: (client: AppSocket, data: any) => {
+  login: async (client: AppSocket, data: any) => {
     assertValid({ token: 'string' }, data)
     try {
       if (client.userId) {
@@ -30,6 +30,12 @@ export const handlers: Handlers = {
       const payload = verifyJwt(data.token)
       client.token = data.token
       client.userId = payload.userId
+
+      const user = await store.users.getUser(payload.userId)
+      if (!user || user.banned) {
+        client.dispatch({ type: 'login', success: false })
+        return
+      }
 
       const sockets = userSockets.get(client.userId) || []
       sockets.push(client)
@@ -78,6 +84,11 @@ export const handlers: Handlers = {
       return
     }
 
+    // The client.updatedAt is newer than the stored.updatedAt
+    if (data.updatedAt && data.updatedAt > msg.updatedAt) {
+      return
+    }
+
     const chat = await store.chats.getChatOnly(msg.chatId)
     if (!chat) {
       return
@@ -87,7 +98,15 @@ export const handlers: Handlers = {
     const isChatMember = chat.memberIds.concat(chat.userId).includes(client.userId)
     if (!isChatMember) return
 
-    sendMany(members, {
+    const excluded = members.filter((m) => m !== client.userId)
+    sendGuest(client.uid, {
+      type: 'message-completed',
+      chatId: msg.chatId,
+      generate: true,
+      msg,
+      retry: !!data.updatedAt,
+    })
+    sendMany(excluded, {
       type: 'message-completed',
       chatId: msg.chatId,
       generate: true,

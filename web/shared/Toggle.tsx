@@ -36,24 +36,22 @@ export const Toggle: Component<{
 
   return (
     <div
-      class={`sm: flex flex-col gap-2 ${justify()}`}
+      class={`flex flex-row items-center gap-2 ${justify()}`}
       classList={{
-        'sm:flex-row': !props.vertLabel,
-        'sm:items-center': !props.vertLabel,
-        'gap-1': props.vertLabel && !props.class?.includes('gap-'),
+        '!gap-0': props.vertLabel && !props.class?.includes('gap-'),
         'gap-2': !props.vertLabel && !props.class?.includes('gap-'),
-        hidden: props.hide,
+        hidden: props.hide ?? false,
         ...props.classList,
       }}
     >
-      <Show when={props.label || !props.reverse || props.helperMarkdown || props.helperText}>
+      <Show when={!props.reverse && (props.label || props.helperMarkdown || props.helperText)}>
         <FormLabel
           label={
             <span>
               <label class="form-label">{props.label}</label>
               <Show when={props.recommended !== undefined}>
                 <span class="text-xs italic text-gray-500">
-                  &nbsp;(Recommended: {props.recommended?.toString()})
+                  &nbsp;(Rec.: {props.recommended?.toString()})
                 </span>
               </Show>
             </span>
@@ -78,8 +76,12 @@ export const Toggle: Component<{
         />
         <div class={`toggle-switch ${props.disabled ? 'toggle-disabled' : ''}`}></div>
       </label>
-      <Show when={props.label && props.reverse}>
-        <FormLabel label={props.label} helperText={props.helperText} />
+      <Show when={props.reverse && (props.label || props.helperText || props.helperMarkdown)}>
+        <FormLabel
+          label={props.label}
+          helperText={props.helperText}
+          helperMarkdown={props.helperMarkdown}
+        />
       </Show>
     </div>
   )
@@ -89,6 +91,7 @@ export const ToggleButtons: Component<{
   items: Option[]
   onChange: (opt: Option) => void
   selected: string
+  class?: string
 }> = (props) => {
   const selected = createMemo(() => {
     const idx = props.items.findIndex((opt) => opt.value === props.selected)
@@ -104,14 +107,19 @@ export const ToggleButtons: Component<{
             <button
               type="button"
               value={props.selected}
-              class="flex items-center justify-center rounded-none border-[1px] border-[var(--hl-800)] py-2"
+              class={`flex items-center justify-center rounded-none border-[1px] border-[var(--hl-800)] py-2 ${
+                props.class || ''
+              }`}
               classList={{
                 'btn-primary': selected() === i(),
                 'btn-hollow': selected() !== i(),
                 'rounded-l-md': i() === 0,
                 'rounded-r-md': isLast,
               }}
-              onClick={() => props.onChange(opt)}
+              onClick={(ev) => {
+                ev.preventDefault()
+                props.onChange(opt)
+              }}
             >
               {opt.label}
             </button>

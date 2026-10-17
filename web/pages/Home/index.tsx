@@ -2,13 +2,20 @@ import './home.scss'
 
 import { Component, For, Match, Show, Switch, createMemo, createSignal, onMount } from 'solid-js'
 import {
-  ComponentEmitter,
+  ComponentEventEmitter,
   createEmitter,
   getAssetUrl,
   setComponentPageTitle,
   uniqueBy,
 } from '../../shared/util'
-import { announceStore, chatStore, settingStore, userStore } from '../../store'
+import {
+  announceStore,
+  characterStore,
+  chatStore,
+  pageStore,
+  settingStore,
+  userStore,
+} from '../../store'
 import { A, useNavigate } from '@solidjs/router'
 import { AlertTriangle, MoveRight, Plus, Settings } from 'lucide-solid'
 import { Card, Pill, SolidCard, TitleCard } from '/web/shared/Card'
@@ -37,8 +44,8 @@ const HomePage: Component = () => {
 
   const closeSub = () => setSub(Sub.None)
 
-  const user = userStore()
-  const announce = announceStore()
+  const user = userStore((s) => ({ userLevel: s.userLevel }))
+  const announce = announceStore((s) => ({ list: s.list }))
   const cfg = settingStore((cfg) => ({
     initLoading: cfg.initLoading,
     adapters: adaptersToOptions(cfg.config.adapters),
@@ -61,7 +68,7 @@ const HomePage: Component = () => {
 
     emitter.on('loaded', () => {
       if (!canStartTour('home')) return
-      settingStore.menu(true)
+      pageStore.menu(true)
       startTour('home')
     })
   })
@@ -95,11 +102,12 @@ const HomePage: Component = () => {
         <Show when={cfg.config.patreon}>
           <TitleCard
             type="hl"
+            glow="hl-500"
             class="flex w-full items-center"
             ariaRole="region"
             ariaLabel="Models"
           >
-            Agnaistic now hosts its own models! Use them for free by using the{' '}
+            Agnaistic now hosts its own models! Get started for free by using the{' '}
             <span class="font-bold">&nbsp;Agnaistic&nbsp;</span> service in your presets
           </TitleCard>
         </Show>
@@ -118,14 +126,7 @@ const HomePage: Component = () => {
                   Official Guides
                 </Pill>
               </a>
-              <A href="/guides/novel">
-                <Pill inverse>NovelAI</Pill>
-              </A>
-              <a>
-                <Pill inverse onClick={() => setSub(Sub.Horde)} ariaRole="link">
-                  Horde
-                </Pill>
-              </a>
+
               <A href="/guides/memory">
                 <Pill inverse>Memory Book</Pill>
               </A>
@@ -192,20 +193,22 @@ const HomePage: Component = () => {
 
 export default HomePage
 
-const RecentChats: Component<{ emitter: ComponentEmitter<'loaded'> }> = (props) => {
+const RecentChats: Component<{ emitter: ComponentEventEmitter<'loaded'> }> = (props) => {
   const nav = useNavigate()
+
+  const chars = characterStore((s) => ({ map: s.characters.map }))
 
   const state = chatStore((s) => {
     // We want this to occur after the state has propogated
     setTimeout(() => props.emitter.emit.loaded(), 200)
 
     return {
-      chars: s.allChars.list,
       last: uniqueBy(s.allChats, 'characterId')
         .slice()
         .sort((l, r) => (r.updatedAt > l.updatedAt ? 1 : -1))
         .slice(0, 4)
-        .map((chat) => ({ chat, char: s.allChars.map[chat.characterId] })),
+        .map((chat) => ({ chat, char: chars.map[chat.characterId] }))
+        .filter((pair) => !!pair.char),
     }
   })
 
@@ -355,7 +358,7 @@ const Announcements: Component<{ list: AppSchema.Announcement[] }> = (props) => 
                 <div class="text-lg font-bold" role="heading">
                   {item.title}
                 </div>
-                <div class="text-700 text-xs">{elapsedSince(item.showAt)} ago</div>
+                {/* <div class="text-700 text-xs">{elapsedSince(item.showAt)} ago</div> */}
               </div>
               <div
                 class="rendered-markdown bg-900 rounded-b-md p-2"

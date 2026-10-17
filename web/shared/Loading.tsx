@@ -1,5 +1,6 @@
 import { LoaderCircle } from 'lucide-solid'
-import { Component } from 'solid-js'
+import { Component, createMemo } from 'solid-js'
+import { Portal } from 'solid-js/web'
 
 type Dot =
   | 'elastic'
@@ -25,9 +26,57 @@ const Loading: Component<{ type?: Dot }> = (props) => {
   )
 }
 
-export const Spinner: Component<{ size?: number; class?: string }> = (props) => {
+export const Spinner: Component<{ size?: number; class?: string; speed?: number }> = (props) => {
+  const speed = createMemo(() => {
+    return `${1.3 / (props.speed || 1)}s`
+  })
   return (
-    <div class={`spinner absolute bottom-1/2 left-1/2 ${props.class || ''}`}>
+    <div
+      class={`absolute bottom-1/2 left-1/2 animate-spin ${props.class || ''}`}
+      style={{
+        'animation-duration': speed(),
+        'animation-timing-function': 'linear',
+        'animation-iteration-count': 'infinite',
+      }}
+    >
+      <LoaderCircle size={props.size} />
+    </div>
+  )
+}
+
+export const PageSpinner: Component<{ size?: number; class?: string; speed?: number }> = (
+  props
+) => {
+  return (
+    <Portal>
+      <div
+        class={`fixed inset-0  top-0 z-[110] flex h-screen w-screen items-center justify-center bg-gray-900 bg-opacity-60`}
+      >
+        <RelativeSpinner size={props.size} speed={props.speed} class={props.class} />
+      </div>
+    </Portal>
+  )
+}
+
+export const RelativeSpinner: Component<{
+  size?: number
+  class?: string
+  speed?: number
+  full?: boolean
+}> = (props) => {
+  const speed = createMemo(() => {
+    return `${1.3 / (props.speed || 1)}s`
+  })
+
+  return (
+    <div
+      class={'animate-spin ' + props.class || ''}
+      style={{
+        'animation-duration': speed(),
+        'animation-timing-function': 'linear',
+        'animation-iteration-count': 'infinite',
+      }}
+    >
       <LoaderCircle size={props.size} />
     </div>
   )

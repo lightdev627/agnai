@@ -14,23 +14,30 @@ import { v4 } from 'uuid'
 import { getRegisteredAdapters } from '/srv/adapter/register'
 import { AIAdapter } from '/common/adapters'
 import { config } from '/srv/config'
-import { toArray } from '/common/util'
+import { getUserSubscriptionTier, toArray } from '/common/util'
 import { UI } from '/common/types'
 import { getLanguageModels } from '/srv/adapter/replicate'
 import { getUser, toSafeUser } from '/srv/db/user'
+import { getCachedTiers } from '/srv/db/subscriptions'
+import { optional } from '/common/valid/types'
+import { assertStrict } from '/common/valid/validate'
+import { ImageProviderSettings, ImageProviderType } from '/common/types/image-schema'
 
-export const getInitialLoad = handle(async ({ userId }) => {
+export const getInitialLoad = handle(async ({ userId, query }) => {
   const replicate = await getLanguageModels()
   if (config.ui.maintenance) {
     const appConfig = await getAppConfig()
     return { config: appConfig, replicate }
   }
 
+  const omitBooks = !!query['omit-books']
+  const omitPresets = !!query['omit-presets']
+
   const [profile, user, presets, books, scenarios] = await Promise.all([
     store.users.getProfile(userId!),
-    getSafeUserConfig(userId!),
-    store.presets.getUserPresets(userId!),
-    store.memory.getBooks(userId!),
+    getSafeUserConfig(userId!, query.seed as string),
+    !omitPresets ? store.presets.getUserPresets(userId!) : null,
+    !omitBooks ? store.memory.getBooks(userId!) : null,
     store.scenario.getScenarios(userId!),
   ])
 
@@ -134,6 +141,14 @@ export const deleteFeatherlessKey = handle(async ({ userId }) => {
   return { success: true }
 })
 
+export const deleteArliKey = handle(async ({ userId }) => {
+  await store.users.updateUser(userId!, {
+    arliApiKey: '',
+  })
+
+  return { success: true }
+})
+
 export const deleteElevenLabsKey = handle(async ({ userId }) => {
   await store.users.updateUser(userId!, {
     elevenLabsApiKey: '',
@@ -165,10 +180,11 @@ const validConfig = {
   hordeKey: 'string?',
   hordeModel: 'any?',
   hordeModels: ['string?'],
-  hordeWorkers: ['string'],
+  hordeWorkers: ['string?'],
   oaiKey: 'string?',
   mistralKey: 'string?',
   featherlessApiKey: 'string?',
+  arliApiKey: 'string?',
   scaleUrl: 'string?',
   scaleApiKey: 'string?',
   claudeApiKey: 'string?',
@@ -176,8 +192,12 @@ const validConfig = {
   speechtotext: 'any?',
   texttospeech: 'any?',
   images: 'any?',
+
   defaultPreset: 'string?',
   chargenPreset: 'string?',
+  summaryPreset: 'string?',
+  jsonPreset: 'string?',
+
   adapterConfig: 'any?',
   disableLTM: 'boolean?',
 } as const
@@ -185,9 +205,10 @@ const validConfig = {
 /**
  * Just for updating keys at the moment
  */
-export const updatePartialConfig = handle(async ({ userId, body }) => {
+export const updatePartialConfig = handle(async ({ userId, body, authed }) => {
   assertValid(
     {
+      imageProviderId: 'string?',
       novelApiKey: 'string?',
       thirdPartyPassword: 'string?',
       hordeKey: 'string?',
@@ -195,12 +216,16 @@ export const updatePartialConfig = handle(async ({ userId, body }) => {
       scaleApiKey: 'string?',
       claudeApiKey: 'string?',
       elevenLabsApiKey: 'string?',
+      arliApiKey: 'string?',
       patreonToken: 'string?',
       announcement: 'string?',
       defaultPreset: 'string?',
       chargenPreset: 'string?',
+      summaryPreset: 'string?',
+      jsonPreset: 'string?',
       images: 'any?',
       disableLTM: 'boolean?',
+      imageDefaults: 'any?',
     },
     body
   )
@@ -208,23 +233,41 @@ export const updatePartialConfig = handle(async ({ userId, body }) => {
   const update: Partial<AppSchema.User> = {}
 
   if (body.defaultPreset) {
-    const preset = await store.presets.getUserPreset(body.defaultPreset)
+    const preset = await store.presets.getUserPresetInternal(body.defaultPreset)
     if (!preset || preset.userId !== userId) {
       throw new StatusError(`Invalid preset`, 403)
     }
     update.defaultPreset = body.defaultPreset
   }
 
+  if (body.imageProviderId !== undefined) {
+    update.imageProviderId = body.imageProviderId
+  }
+
+  if (body.imageDefaults) {
+    update.imageDefaults = body.imageDefaults
+  }
+
   if (body.disableLTM !== undefined) {
     update.disableLTM = body.disableLTM
   }
 
-  if (body.chargenPreset) {
-    const preset = await store.presets.getUserPreset(body.chargenPreset)
-    if (!preset || preset.userId !== userId) {
-      throw new StatusError(`Invalid preset`, 403)
-    }
+  if (body.chargenPreset && body.chargenPreset !== authed?.chargenPreset) {
+    const preset = await store.presets.getUserPresetInternal(body.chargenPreset)
+    if (!preset || preset.userId !== userId) throw new StatusError(`Invalid preset - Chargen`, 403)
     update.chargenPreset = body.chargenPreset
+  }
+
+  if (body.jsonPreset && body.jsonPreset !== authed?.jsonPreset) {
+    const preset = await store.presets.getUserPresetInternal(body.jsonPreset)
+    if (!preset || preset.userId !== userId) throw new StatusError(`Invalid preset - Json`, 403)
+    update.jsonPreset = body.jsonPreset
+  }
+
+  if (body.summaryPreset && body.summaryPreset !== authed?.summaryPreset) {
+    const preset = await store.presets.getUserPresetInternal(body.summaryPreset)
+    if (!preset || preset.userId !== userId) throw new StatusError(`Invalid preset - Summary`, 403)
+    update.summaryPreset = body.summaryPreset
   }
 
   if (body.announcement) {
@@ -272,7 +315,92 @@ export const updatePartialConfig = handle(async ({ userId, body }) => {
   return next
 })
 
-export const updateConfig = handle(async ({ userId, body }) => {
+export const removeProviderKey = handle(async ({ userId, body }) => {
+  assertValid({ id: 'string' }, body)
+  const user = await getUser(userId)
+  if (!user) throw errors.Forbidden
+
+  const provider = user.providers?.find((p) => p._id === body.id)
+
+  if (!provider) {
+    return toSafeUser(user)
+  }
+
+  const update = { ...provider, key: '' }
+  const next = await store.users.saveUserProvider(userId, update, true)
+  return next
+})
+
+const imgProviderGuard = {
+  _id: 'string',
+  name: 'string',
+  type: ['agnai', 'swarm', 'sd', 'openai', 'horde', 'novel'],
+  url: 'string',
+  sampler: 'string',
+  scheduler: 'string?',
+  model: 'string',
+  providerId: 'string?',
+  draftMode: 'boolean?',
+  local: 'boolean?',
+  loras: ['any?'],
+  ucPreset: 'string?',
+  qualityTags: 'boolean?',
+} as const
+
+export const upsertImageProvider = handle(async (req) => {
+  assertValid(imgProviderGuard, req.body)
+  const user = await getSafeUserConfig(req.userId)
+  if (!user) {
+    throw new StatusError('Not found', 404)
+  }
+
+  const update = {
+    ...req.body,
+    scheduler: req.body.scheduler || '',
+  }
+
+  const next = await store.users.upsertImageProvider(user, update)
+  return next
+})
+
+export const saveProvider = handle(async ({ userId, body }) => {
+  assertStrict(
+    {
+      type: {
+        _id: 'string',
+        name: 'string',
+        provider: 'string',
+        url: 'string',
+        key: 'string',
+        subFormat: 'string?',
+        format: optional({
+          type: ['service', 'format'],
+          name: 'string?',
+          value: 'string',
+          url: 'string?',
+        }),
+      },
+    },
+    body
+  )
+
+  const user = await store.users.saveUserProvider(userId, body as any)
+  return user
+})
+
+export const deleteProvider = handle(async ({ userId, body }) => {
+  assertValid({ id: 'string?', providerId: 'string?' }, body)
+  const providerId = body.id || body.providerId
+
+  if (!providerId) {
+    throw errors.BadRequest
+  }
+
+  const next = await store.users.deleteUserProvider({ userId, providerId })
+  return next
+})
+
+export const updateConfig = handle(async ({ userId, body, authed }) => {
   assertValid(validConfig, body)
 
   const prevUser = await store.users.getUser(userId!)
@@ -281,10 +409,13 @@ export const updateConfig = handle(async ({ userId, body }) => {
   }
 
   const update: Partial<AppSchema.User> = {
-    hordeWorkers: body.hordeWorkers,
     hordeUseTrusted: body.hordeUseTrusted ?? false,
     defaultPreset: body.defaultPreset || '',
     useLocalPipeline: body.useLocalPipeline,
+  }
+
+  if (body.hordeWorkers) {
+    update.hordeWorkers = toArray(body.hordeWorkers)
   }
 
   if (body.disableLTM !== undefined) {
@@ -306,9 +437,27 @@ export const updateConfig = handle(async ({ userId, body }) => {
     update.hordeKey = encryptText(incomingKey)
   }
 
+  if (body.chargenPreset && body.chargenPreset !== authed?.chargenPreset) {
+    const preset = await store.presets.getUserPresetInternal(body.chargenPreset)
+    if (!preset || preset.userId !== userId) throw new StatusError(`Invalid preset - Chargen`, 403)
+    update.chargenPreset = body.chargenPreset
+  }
+
+  if (body.jsonPreset && body.jsonPreset !== authed?.jsonPreset) {
+    const preset = await store.presets.getUserPresetInternal(body.jsonPreset)
+    if (!preset || preset.userId !== userId) throw new StatusError(`Invalid preset - Json`, 403)
+    update.jsonPreset = body.jsonPreset
+  }
+
+  if (body.summaryPreset && body.summaryPreset !== authed?.summaryPreset) {
+    const preset = await store.presets.getUserPresetInternal(body.summaryPreset)
+    if (!preset || preset.userId !== userId) throw new StatusError(`Invalid preset - Summary`, 403)
+    update.summaryPreset = body.summaryPreset
+  }
+
   const validatedThirdPartyUrl =
     body.thirdPartyFormat === 'kobold'
-      ? await verifyKobldUrl(prevUser, body.koboldUrl)
+      ? await verifyThirdPartyURL(prevUser, body.koboldUrl)
       : body.koboldUrl
 
   if (validatedThirdPartyUrl) {
@@ -366,6 +515,10 @@ export const updateConfig = handle(async ({ userId, body }) => {
 
   if (body.featherlessApiKey) {
     update.featherlessApiKey = encryptText(body.featherlessApiKey)
+  }
+
+  if (body.arliApiKey) {
+    update.arliApiKey = encryptText(body.arliApiKey)
   }
 
   if (body.scaleUrl !== undefined) update.scaleUrl = body.scaleUrl
@@ -443,14 +596,18 @@ export const updateProfile = handle(async (req) => {
   return profile
 })
 
-async function verifyKobldUrl(user: AppSchema.User, incomingUrl?: string) {
+/**
+ * @deprecated
+ * We no longer support third-party URLs in user settings
+ */
+async function verifyThirdPartyURL(user: AppSchema.User, incomingUrl?: string) {
   if (!incomingUrl) return incomingUrl
   if (user.koboldUrl === incomingUrl) return incomingUrl
 
   const url = incomingUrl.match(/(http(s{0,1})\:\/\/)([a-z0-9\.\-]+)(\:[0-9]+){0,1}/gm)
   if (!url || !url[0]) {
     throw new StatusError(
-      `Kobold URL provided could not be verified: Invalid URL format. Use a fully qualified URL. E.g.: https://local-tunnel-url-10-20-30-40.loca.lt`,
+      `Third-Party URL provided could not be verified: Invalid URL format. Use a fully qualified URL. E.g.: https://local-tunnel-url-10-20-30-40.loca.lt`,
       400
     )
   }
@@ -481,9 +638,48 @@ async function verifyHordeKey(key: string) {
   return user.result?.username
 }
 
-export async function getSafeUserConfig(userId: string) {
+export async function getSafeUserConfig(userId: string, seed?: string) {
   const user = await store.users.getUser(userId!)
   if (!user) return
 
-  return toSafeUser(user)
+  const sub = getUserSubscriptionTier(user, getCachedTiers())
+  const next = sub ? { type: sub?.type, level: sub?.level, tierId: sub.tier._id } : undefined
+
+  if (!user.imageProviders) {
+    const list: ImageProviderSettings[] = []
+    user.imageProviderId = user.images?.type || ''
+    addImageProvider(list, 'agnai', 'Agnaistic', user.images?.agnai)
+    addImageProvider(list, 'novel', 'Novel', user.images?.novel)
+    addImageProvider(list, 'horde', 'Horde', user.images?.horde)
+    addImageProvider(list, 'swarm', 'SwarmUI', user.images?.swarm)
+    addImageProvider(list, 'sd', 'Stable Diffusion', user.images?.sd)
+    user.imageProviders = list
+  }
+
+  await store.users.updateUser(userId, {
+    sub: next,
+    imageProviders: user.imageProviders,
+    imageProviderId: user.imageProviderId,
+  })
+  user.sub = next
+
+  return toSafeUser(user, seed)
+}
+
+function addImageProvider(
+  list: ImageProviderSettings[],
+  id: ImageProviderType,
+  name: string,
+  prv: ImageProviderSettings | undefined
+) {
+  if (!prv) return list
+
+  list.push({
+    ...prv,
+    _id: id,
+    type: id,
+    name,
+  })
+
+  return list
 }

@@ -1,6 +1,6 @@
 import { A, useNavigate } from '@solidjs/router'
 import { Copy, Plus, Trash } from 'lucide-solid'
-import { Component, createSignal, For, onMount, Show } from 'solid-js'
+import { Component, createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import Button from '../../shared/Button'
 import { ConfirmModal } from '../../shared/Modal'
 import PageHeader from '../../shared/PageHeader'
@@ -10,7 +10,7 @@ import { getServiceName, sortByLabel } from '/web/shared/adapter'
 import Divider from '/web/shared/Divider'
 import { Pill, SolidCard } from '/web/shared/Card'
 import { Page } from '/web/Layout'
-import { SubscriptionModelLevel } from '/common/types/presets'
+import { SubscriptionModel, SubscriptionModelLevel } from '/common/types/presets'
 
 const SubscriptionList: Component = () => {
   setComponentPageTitle('Subscriptions')
@@ -28,9 +28,42 @@ const SubscriptionList: Component = () => {
     }
   })
 
-  const cfg = userStore()
+  const cfg = userStore((s) => ({ tiers: s.tiers }))
 
   const [deleting, setDeleting] = createSignal<string>()
+  const subCats = createMemo(() => {
+    const cats = new Map<number, Array<SubscriptionModel & { label: string }>>()
+
+    for (const sub of state.enabled) {
+      const levels = sub.levels || []
+      let level = levels.reduce<number | null>(
+        (prev, curr) => (prev === null ? curr.level : curr.level < prev ? curr.level : prev),
+        null
+      )
+
+      if (level === null) {
+        level = sub.subLevel
+      }
+
+      if (!cats.has(level)) {
+        cats.set(level, [])
+      }
+
+      const list = cats.get(level)
+      list!.push(sub)
+      cats.set(level, list!)
+    }
+
+    const all = Array.from(cats.entries())
+      .sort((l, r) => l[0] - r[0])
+      .map(([level, list]) => ({
+        name: `Tier ${level}`,
+        list: list.sort((l, r) => l.name.localeCompare(r.name)),
+      }))
+
+    all.push({ name: 'Disabled', list: state.disabled })
+    return all
+  })
 
   const deleteSub = () => {
     const presetId = deleting()
@@ -52,18 +85,15 @@ const SubscriptionList: Component = () => {
         ← Back to Manage
       </A>
       <div class="mb-4 flex w-full justify-end gap-2">
-        <A href="/admin/tiers/new">
-          <Button>
-            <Plus />
-            Tier
-          </Button>
-        </A>
-        <A href="/admin/subscriptions/new">
-          <Button>
-            <Plus />
-            Model
-          </Button>
-        </A>
+        <Button href="/admin/tiers/new">
+          <Plus />
+          Tier
+        </Button>
+
+        <Button href="/admin/subscriptions/new">
+          <Plus />
+          Model
+        </Button>
       </div>
       <div class="flex flex-col items-center gap-2">
         <Show when={cfg.tiers.length === 0}>
@@ -122,62 +152,86 @@ const SubscriptionList: Component = () => {
         </Show>
         <Divider />
         <div class="flex justify-center font-bold">Models</div>
-        <For each={state.enabled.concat(state.disabled)}>
-          {(sub) => (
-            <div class="flex w-full items-center gap-2">
-              <A
-                href={`/admin/subscriptions/${sub._id}`}
-                class="flex h-12 w-full gap-2 rounded-xl hover:bg-[var(--bg-600)]"
-                classList={{
-                  'bg-red-900': sub.subDisabled && !sub.isDefaultSub,
-                  'text-500': sub.subDisabled && !sub.isDefaultSub,
-                  'bg-800': !sub.subDisabled && !sub.isDefaultSub,
-                  'bg-[var(--hl-800)]': sub.isDefaultSub,
-                }}
-              >
-                <div class="ml-4 flex w-full items-center">
-                  <div class="flex gap-1">
-                    <span class="mr-1 text-xs italic text-[var(--text-600)]">
-                      [Level: {sub.subLevel}] {getServiceName(sub.service)}
-                    </span>
-                    {sub.name}
-                    <Show when={sub.description}>
-                      <span class="text-500 ml-1 text-xs">{sub.description}</span>
-                    </Show>
-                    <span class="mr-1 text-xs italic text-[var(--text-600)]">
-                      {sub.isDefaultSub ? ' default' : ''}
-                      {sub.subDisabled ? ' (disabled)' : ''}
-                    </span>
-                    <Contexts
-                      levels={[
-                        {
-                          level: sub.subLevel,
-                          maxContextLength: sub.maxContextLength!,
-                          maxTokens: sub.maxTokens!,
-                        },
-                      ]}
-                    />
-                    <Contexts levels={sub.levels || []} />
+        <For each={subCats()}>
+          {(item) => (
+            <>
+              <div class="bold flex justify-start">{item.name}</div>
+              <For each={item.list}>
+                {(sub) => (
+                  <div class="flex w-full items-center gap-2">
+                    <A
+                      href={`/admin/subscriptions/${sub._id}`}
+                      class="flex h-12 w-full items-center gap-2 rounded-xl hover:bg-[var(--bg-600)]"
+                      classList={{
+                        'bg-red-900': sub.subDisabled && !sub.isDefaultSub,
+                        'text-500': sub.subDisabled && !sub.isDefaultSub,
+                        'bg-800': !sub.subDisabled && !sub.isDefaultSub,
+                        'bg-[var(--hl-800)]': sub.isDefaultSub,
+                      }}
+                    >
+                      <div class="ml-4 flex w-full items-center">
+                        <div class="flex items-center gap-1">
+                          <span class="mr-1 text-xs italic text-[var(--text-600)]">
+                            <Pill small inverse type={sub.allowGuestUsage ? 'green' : 'premium'}>
+                              {sub.subLevel}
+                            </Pill>
+                          </span>
+                          <div class="flex flex-col gap-0">
+                            <div>{sub.name}</div>
+                            <div class="text-xs leading-3 text-[var(--text-600)]">
+                              {sub.subModel}
+                            </div>
+                          </div>
+                          <Show when={sub.description}>
+                            <Pill small inverse type="hl">
+                              {sub.description}
+                            </Pill>
+                          </Show>
+                          <span class="mr-1 text-xs italic text-[var(--text-600)]">
+                            <Show when={sub.isDefaultSub}>
+                              <Pill inverse small>
+                                default
+                              </Pill>
+                            </Show>
+                            <Show when={sub.subDisabled}>
+                              <Pill inverse small type="rose">
+                                disabled
+                              </Pill>
+                            </Show>
+                          </span>
+                          <Contexts
+                            levels={[
+                              {
+                                level: sub.subLevel,
+                                maxContextLength: sub.maxContextLength!,
+                                maxTokens: sub.maxTokens!,
+                              },
+                            ]}
+                          />
+                          <Contexts levels={sub.levels || []} />
+                        </div>
+                      </div>
+                    </A>
+                    <Button
+                      schema="clear"
+                      size="sm"
+                      onClick={() => nav(`/admin/subscriptions/new?preset=${sub._id}`)}
+                      class="icon-button"
+                    >
+                      <Copy />
+                    </Button>
+                    <Button
+                      schema="clear"
+                      size="sm"
+                      onClick={() => setDeleting(sub._id)}
+                      class="icon-button"
+                    >
+                      <Trash />
+                    </Button>
                   </div>
-                </div>
-              </A>
-              <Button
-                schema="clear"
-                size="sm"
-                onClick={() => nav(`/admin/subscriptions/new?preset=${sub._id}`)}
-                class="icon-button"
-              >
-                <Copy />
-              </Button>
-              <Button
-                schema="clear"
-                size="sm"
-                onClick={() => setDeleting(sub._id)}
-                class="icon-button"
-              >
-                <Trash />
-              </Button>
-            </div>
+                )}
+              </For>
+            </>
           )}
         </For>
       </div>

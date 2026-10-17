@@ -39,7 +39,7 @@ const init: SagaState = {
   },
   showModal: 'none',
   state: {
-    format: 'Alpaca',
+    format: 'None',
     _id: '',
     userId: '',
     templateId: '',
@@ -113,7 +113,7 @@ export const sagaStore = createStore<SagaState>(
         state: {
           _id: 'new',
           userId: '',
-          format: state.format || 'Alpaca',
+          format: state.format || 'None',
           overrides: {},
           templateId: template._id,
           responses: [],
@@ -241,7 +241,7 @@ export const sagaStore = createStore<SagaState>(
       }
 
       if (!session.format) {
-        session.format = 'Alpaca'
+        session.format = 'None'
       }
 
       const template = templates.find((t) => t._id === session.templateId)
@@ -519,7 +519,7 @@ subscribe(
 function blankSession(templateId: string, overrides: Partial<Saga.Session> = {}): Saga.Session {
   return {
     _id: v4(),
-    format: 'Alpaca',
+    format: 'None',
     userId: '',
     templateId,
     overrides: {},
@@ -581,7 +581,7 @@ function newTemplate() {
     <user>{{main_char}}: {{input}}</user>
 
     <bot>[response | temp=0.4 | tokens=300 | stop=USER | stop=ASSISTANT | stop=</ | stop=<| | stop=### ]</bot>
-    
+
     <user>`,
   }
 }
@@ -620,9 +620,9 @@ function exampleTemplate(): Saga.Template {
       Write the main character's main objective: "Your goal [goal | temp=0.4 | stop="]"
 
       Write the introduction to the game: "You are [intro | temp=0.4 | stop="]"
-      
+
       Write the opening scene of the game to begin the game: "[scene | temp=0.4 | tokens=300 | stop="]"
-      
+
       Write a brief image caption describing the scene and appearances of the characters: "[image_caption | tokens=200 | stop="]"
       `,
 

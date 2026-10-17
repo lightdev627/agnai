@@ -6,6 +6,8 @@ import { getCachedTiers } from '/srv/db/subscriptions'
 import { store } from '/srv/db'
 import { command } from '/srv/domains'
 import { sendOne } from '../ws'
+import { getPatreonEntitledTierByCost } from '/common/util'
+import { logger } from '/srv/middleware'
 
 export const patreon = {
   authorize,
@@ -34,6 +36,10 @@ async function authorize(code: string, refresh?: boolean) {
   })
 
   if (result.statusCode && result.statusCode > 200) {
+    logger.error(
+      { result: result.body, status: result.statusCode, message: result.statusMessage },
+      'Patreon validation failed'
+    )
     throw new StatusError(`Unable to verify Patreon account`, 400)
   }
 
@@ -44,6 +50,7 @@ async function authorize(code: string, refresh?: boolean) {
 const memberProps = [
   'patron_status',
   'last_charge_date',
+  'is_gifted',
   'last_charge_status',
   'next_charge_date',
   'currently_entitled_amount_cents',
@@ -80,10 +87,10 @@ async function identity(token: string) {
     }) || []
 
   const tier = tiers.length
-    ? tiers.reduce((prev, curr) => {
+    ? tiers.reduce<Patreon.Tier | undefined>((prev, curr) => {
         if (!prev) return curr
         return curr.attributes.amount_cents > prev.attributes.amount_cents ? curr : prev
-      })
+      }, undefined)
     : undefined
 
   if (!tier) return { user }
@@ -94,8 +101,10 @@ async function identity(token: string) {
     return match
   })
 
-  const contrib = tier.attributes.amount_cents
-  const sub = getPatronSubscriptionTier(contrib)
+  let contrib = tier.attributes.amount_cents
+  if (!contrib) {
+  }
+  const sub = getPatreonEntitledTierByCost(contrib, getCachedTiers())
 
   return { tier, sub, user, member }
 }
@@ -148,20 +157,6 @@ async function revalidatePatron(userId: string | AppSchema.User) {
   })
   await command.patron.link(patron.user.id, { userId: user._id })
   return next
-}
-
-function getPatronSubscriptionTier(contrib: number) {
-  const sub = getCachedTiers().reduce((prev, curr) => {
-    if (!curr.enabled || curr.deletedAt) return prev
-    if (!curr.patreon?.tierId) return prev
-    if (curr.patreon.cost > contrib) return prev
-
-    if (!prev) return curr
-    if (prev.patreon?.cost! > curr.patreon.cost) return prev
-    return curr
-  })
-
-  return sub
 }
 
 async function initialVerifyPatron(userId: string, code: string) {

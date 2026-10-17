@@ -4,13 +4,13 @@ import TextInput from '/web/shared/TextInput'
 import { Toggle } from '/web/shared/Toggle'
 import Select from '/web/shared/Select'
 import { userStore } from '/web/store'
-import { AppSchema } from '/common/types/index'
 import { SetStoreFunction } from 'solid-js/store'
+import { UserSettings } from '../util'
 
 const RegisteredSettings: Component<{
   service: RegisteredAdapter
-  state: AppSchema.User
-  setter: SetStoreFunction<AppSchema.User>
+  state: UserSettings
+  setter: SetStoreFunction<UserSettings>
 }> = (props) => {
   return (
     <>
@@ -23,10 +23,10 @@ const RegisteredSettings: Component<{
               value={props.state.adapterConfig?.[props.service.name]?.[each.field]}
               config={props.state.adapterConfig?.[props.service.name]}
               onChange={(ev) => {
-                const prev = { ...(props.state.adapterConfig as any)[props.service.name] }
+                const prev = { ...(props.state.adapterConfig as any)?.[props.service.name] }
                 prev[each.field] = ev
                 const next = { ...props.state.adapterConfig, [props.service.name]: prev }
-                props.setter('adapterConfig', next)
+                props.setter({ adapterConfig: next })
               }}
             />
           </Show>

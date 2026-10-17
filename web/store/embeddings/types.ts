@@ -1,6 +1,6 @@
 import { AppSchema } from '/common/types'
 
-export type CacheDocument = Extract<WorkerRequest, { type: 'embedDocument' }>
+export type EmbeddedDocument = { documentId: string; name: string; documents: EmbedDocument[] }
 
 export type EmbedDocument = {
   msg: string
@@ -11,18 +11,18 @@ export type RequestChatEmbed = {
   type: 'embedChat'
   chatId: string
   messages: AppSchema.ChatMessage[]
+  auth: any
 }
 export type RequestDocEmbed = {
   type: 'embedDocument'
-  documentId: string
-  documents: EmbedDocument[]
-}
+  auth: any
+} & EmbeddedDocument
 
 export type WorkerRequest =
   | { type: 'encode'; id: string; text: string }
   | { type: 'decode'; id: string; tokens: number[] }
-  | { type: 'initSimilarity'; model: string }
-  | { type: 'initCaptioning'; model: string }
+  | { type: 'initSimilarity'; model: string; dtype: string }
+  | { type: 'initCaptioning'; model: string; dtype: string }
   | { type: 'captionImage'; image: string; requestId: string }
   | {
       type: 'queryChat'
@@ -33,6 +33,7 @@ export type WorkerRequest =
       path: string[]
     }
   | { type: 'query'; chatId: string; text: string; requestId: string; beforeDate?: string }
+  | { type: 'deleteChatCache'; chatId: string }
   | RequestChatEmbed
   | RequestDocEmbed
 
@@ -46,7 +47,14 @@ export type WorkerResponse =
     }
   | { type: 'embedLoaded' }
   | { type: 'captionLoaded' }
-  | { type: 'progress'; progress: number }
+  | {
+      type: 'progress'
+      status?: 'initiate' | 'progress' | 'done' | 'ready'
+      progress: number
+      total?: number
+      file?: string
+      name?: string
+    }
   | { type: 'init' }
   | { type: 'embedded'; kind: 'chat' | 'document'; id: string }
   | { type: 'caption'; requestId: string; caption: string }

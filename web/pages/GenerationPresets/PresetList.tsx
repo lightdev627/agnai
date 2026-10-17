@@ -1,41 +1,47 @@
-import { A, useNavigate } from '@solidjs/router'
+import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { Copy, Download, Import, Plus, Trash } from 'lucide-solid'
 import { Component, createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import Button from '../../shared/Button'
 import Modal, { ConfirmModal } from '../../shared/Modal'
 import PageHeader from '../../shared/PageHeader'
-import { defaultPresets, presetValidator } from '../../../common/presets'
-import { exportPreset, presetStore, settingStore, toastStore } from '../../store'
-import { getUsableServices, setComponentPageTitle } from '../../shared/util'
-import { getServiceName, sortByLabel } from '/web/shared/adapter'
+import { presetValidator } from '../../../common/presets'
+import { exportPreset, presetStore, toastStore, userStore } from '../../store'
+import { capitalize, setComponentPageTitle, tryParseImport } from '../../shared/util'
+import { getPresetLabel, getServiceName, sortByLabel } from '/web/shared/adapter'
 import FileInput, { FileInputResult, getFileAsString } from '/web/shared/FileInput'
 import { validateBody } from '/common/valid'
 import { Page } from '/web/Layout'
+import TextInput from '/web/shared/TextInput'
+import { ProviderList } from './ProviderList'
+import { useStrictTabs } from '/web/shared/Tabs'
+import Divider from '/web/shared/Divider'
 
 const PresetList: Component = () => {
   setComponentPageTitle('Presets')
+
+  const [params] = useSearchParams()
+
   const nav = useNavigate()
   const state = presetStore((s) => ({
     presets: s.presets
       .map((pre) => ({ ...pre, label: `[${getServiceName(pre.service)}] ${pre.name}` }))
       .sort(sortByLabel),
   }))
-  const cfg = settingStore((s) => s.config)
 
-  const useableServices = createMemo(() => getUsableServices())
+  const tabs = useStrictTabs(['presets', 'providers'] as const, +(params.preset_tab || '0'))
 
-  const defaults = Object.entries(defaultPresets)
-    .filter(([_, pre]) => {
-      if (!cfg.adapters.includes(pre.service)) return false
-      if (!useableServices().includes(pre.service)) return false
-      if (pre.service !== 'agnaistic') return true
-      return cfg.subs.length > 0
-    })
-    .map(([id, cfg]) => ({ ...cfg, label: `[${cfg.service}] ${cfg.name}`, _id: id }))
-    .sort(sortByLabel)
+  const self = userStore((s) => ({ user: s.user }))
 
   const [deleting, setDeleting] = createSignal<string>()
   const [importing, setImporting] = createSignal(false)
+  const [filter, setFilter] = createSignal('')
+
+  const presets = createMemo(() => {
+    const search = filter().trim().toLocaleUpperCase()
+    if (!search) return state.presets
+
+    return state.presets.filter((p) => p.name.toLocaleUpperCase().includes(search))
+  })
 
   const deletePreset = () => {
     const presetId = deleting()
@@ -51,79 +57,102 @@ const PresetList: Component = () => {
 
   return (
     <Page>
-      <PageHeader title="Generation Presets" />
-      <div class="mb-4 flex w-full justify-end gap-2">
-        <A href="/presets/new">
-          <Button>
-            <Plus />
-            New
-          </Button>
-        </A>
-        <Button onClick={() => setImporting(true)}>
-          <Import size={20} /> Import
+      <PageHeader title={capitalize(tabs.current())} />
+      <div class="flex gap-1">
+        <Button
+          size="sm"
+          schema={tabs.current() === 'presets' ? 'primary' : 'secondary'}
+          onClick={() => tabs.set('presets')}
+        >
+          Presets
+        </Button>
+
+        <Button
+          size="sm"
+          schema={tabs.current() === 'providers' ? 'primary' : 'secondary'}
+          onClick={() => tabs.set('providers')}
+        >
+          Providers
         </Button>
       </div>
+      <Divider class="!my-2" />
 
-      <div class="flex flex-col items-center gap-2">
-        <For each={state.presets}>
-          {(preset) => (
-            <div class="bg-800 flex w-full items-center gap-2 rounded-xl py-1 hover:bg-[var(--bg-600)]">
-              <A href={`/presets/${preset._id}`} class=" flex w-full">
-                <div class="ml-4 flex w-full flex-col items-start">
-                  <div>
-                    <div>{preset.name}</div>
-                    <div class="mr-1 text-xs italic text-[var(--text-600)]">
-                      {getServiceName(preset.service)}
+      <Show when={tabs.current() === 'providers'}>
+        <ProviderList />
+      </Show>
+
+      <div
+        class="flex flex-col items-center gap-2"
+        classList={{ hidden: tabs.current() !== 'presets' }}
+      >
+        <div class="flex w-full justify-between">
+          <div>
+            <TextInput
+              placeholder="Filter..."
+              onChange={(ev) => setFilter(ev.currentTarget.value)}
+            />
+          </div>
+          <div class="flex w-full justify-end gap-2">
+            <Button href="/presets/new">
+              <Plus />
+              New
+            </Button>
+
+            <Button onClick={() => setImporting(true)}>
+              <Import size={20} /> Import
+            </Button>
+          </div>
+        </div>
+
+        <For each={presets()}>
+          {(preset) => {
+            const label = getPresetLabel(preset)
+            return (
+              <div
+                class="flex w-full items-center gap-1 rounded-xl py-1 "
+                classList={{
+                  'bg-800 hover:bg-[var(--bg-600)]': self.user?.defaultPreset !== preset._id,
+                  'bg-[var(--hl-800)] hover:bg-[var(--hl-600)]':
+                    self.user?.defaultPreset === preset._id,
+                }}
+              >
+                <A href={`/presets/${preset._id}`} class=" flex w-full">
+                  <div class="ml-4 flex w-full flex-col items-start">
+                    <div>
+                      <div>{preset.name}</div>
+                      <div class="mr-1 text-xs text-[var(--text-600)]">
+                        {label.category} | {label.prefix}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </A>
-              <Button
-                schema="clear"
-                size="sm"
-                onClick={() => exportPreset(preset)}
-                class="icon-button"
-              >
-                <Download size={20} />
-              </Button>
-              <Button
-                schema="clear"
-                size="sm"
-                onClick={() => nav(`/presets/new?preset=${preset._id}`)}
-                class="icon-button"
-              >
-                <Copy size={20} />
-              </Button>
-              <Button
-                schema="clear"
-                size="sm"
-                onClick={() => setDeleting(preset._id)}
-                class="icon-button"
-              >
-                <Trash size={20} />
-              </Button>
-            </div>
-          )}
-        </For>
-
-        <div>Built-in Presets</div>
-        <For each={defaults}>
-          {(preset) => (
-            <div class="flex w-full items-center gap-2">
-              <A
-                href={`/presets/new?preset=${preset._id}`}
-                class="bg-800 flex w-full gap-2 rounded-xl hover:bg-[var(--bg-600)]"
-              >
-                <div class="x ml-4 flex w-full flex-col items-start">
-                  {' '}
-                  <div class="text-md">{preset.name}</div>
-                  <div class="mr-1 text-xs italic text-[var(--text-600)]">
-                    {getServiceName(preset.service)}
-                  </div>
-                </div>
-              </A>
-            </div>
-          )}
+                </A>
+                <Button
+                  schema="clear"
+                  size="sm"
+                  onClick={() => exportPreset(preset)}
+                  class="icon-button"
+                >
+                  <Download size={20} />
+                </Button>
+                <Button
+                  schema="clear"
+                  size="sm"
+                  onClick={() => nav(`/presets/new?preset=${preset._id}`)}
+                  class="icon-button"
+                >
+                  <Copy size={20} />
+                </Button>
+                <Button
+                  schema="clear"
+                  size="sm"
+                  onClick={() => setDeleting(preset._id)}
+                  class="icon-button"
+                >
+                  <Trash size={20} />
+                </Button>
+              </div>
+            )
+          }}
         </For>
       </div>
 
@@ -143,8 +172,8 @@ const PresetList: Component = () => {
 
 const importValid = {
   ...presetValidator,
-  order: 'any',
-  disabledSamplers: 'any',
+  order: 'any?',
+  disabledSamplers: 'any?',
   name: 'string?',
   oaiModel: 'string?',
   claudeModel: 'string?',
@@ -162,19 +191,19 @@ const ImportPreset: Component<{ close: () => void; success: () => void }> = (pro
 
     try {
       const content = await getFileAsString(files[0])
-      const parsed = JSON.parse(content)
+      const parsed = tryParseImport(content)
 
-      const { errors, actual } = validateBody(importValid, parsed, { notThrow: true })
+      const { errors, original } = validateBody(importValid, parsed, { notThrow: true })
       if (errors.length) {
         toastStore.error(`Preset is not valid: ${errors.join(', ')}`)
         console.log(errors)
         return
       }
 
-      presetStore.setImportPreset(actual as any)
+      presetStore.setImportPreset(original as any)
       props.success()
     } catch (ex: any) {
-      toastStore.error(`Could not parse preset: ${ex.message}`)
+      toastStore.error(ex, { prefix: `Could not parse preset` })
       return
     }
   }

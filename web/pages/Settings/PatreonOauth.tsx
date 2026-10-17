@@ -1,5 +1,5 @@
 import { Component, Match, Show, Switch, createSignal, onMount } from 'solid-js'
-import { settingStore, userStore } from '/web/store'
+import { adminStore, settingStore, userStore } from '/web/store'
 import Button from '/web/shared/Button'
 import { useNavigate } from '@solidjs/router'
 import { Pill, SolidCard } from '/web/shared/Card'
@@ -64,11 +64,12 @@ const PatreonOauth: Component = () => {
 }
 
 export const PatreonControls: Component = () => {
-  const config = settingStore((s) => s.config)
-  const state = userStore()
+  const config = settingStore((s) => ({ config: s.config }))
+  const state = userStore((s) => ({ user: s.user }))
+  const admin = adminStore((s) => ({ impersonating: s.impersonating }))
 
   return (
-    <Show when={config.patreonAuth}>
+    <Show when={config.config.patreonAuth}>
       <div class="flex w-full justify-center">
         <Show when={!state.user?.patreon}>
           <div class="flex flex-col items-center gap-1">
@@ -84,6 +85,11 @@ export const PatreonControls: Component = () => {
               Unlink Patreon Account
             </Button>
           </div>
+        </Show>
+        <Show when={state.user?.admin || admin.impersonating}>
+          <Button class="ml-2" onClick={() => userStore.validateSubscription()}>
+            Re-validate
+          </Button>
         </Show>
       </div>
     </Show>

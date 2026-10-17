@@ -9,10 +9,11 @@ import { PatreonControls } from '../Settings/PatreonOauth'
 import { getUserSubscriptionTier } from '/common/util'
 import { isLoggedIn } from '/web/store/api'
 import { useNavigate } from '@solidjs/router'
+import { ModelList } from '/web/shared/PresetSettings/Agnaistic'
 
 export const SubscriptionPage: Component<{}> = (props) => {
   const settings = settingStore((s) => s.config)
-  const user = userStore()
+  const user = userStore((s) => ({ user: s.user, sub: s.sub, billingLoading: s.billingLoading }))
   const cfg = userStore((s) => {
     const tier = s.user ? getUserSubscriptionTier(s.user, s.tiers) : null
 
@@ -29,6 +30,7 @@ export const SubscriptionPage: Component<{}> = (props) => {
   const [showUnsub, setUnsub] = createSignal(false)
   const [showUpgrade, setUpgrade] = createSignal<AppSchema.SubscriptionTier>()
   const [showDowngrade, setDowngrade] = createSignal<AppSchema.SubscriptionTier>()
+  const [showModels, setShowModels] = createSignal(false)
 
   const hasExpired = createMemo(() => {
     // We should leave this out. It's possible a user can subscribe multiple ways
@@ -106,9 +108,9 @@ export const SubscriptionPage: Component<{}> = (props) => {
               contexts.
             </p>
             <p>
-              In the future you'll also have access to additional features! Such as: Image
-              generation, image storage, and with third-party apps like Discord, Slack, and
-              WhatsApp, and more!
+              In the future you'll also have access to additional features! Such as: voice
+              generation, image storage, and with integration third-party apps like Discord, Slack,
+              and WhatsApp, and more!
             </p>
             <p>Subscribing allows me to spend more time developing and enhancing Agnaistic.</p>
           </SolidCard>
@@ -117,15 +119,24 @@ export const SubscriptionPage: Component<{}> = (props) => {
             <SolidCard>
               If you require billing or subscription support contact{' '}
               <a class="link" href={`mailto:${settings.serverConfig?.supportEmail}`}>
-                {settings.serverConfig?.supportEmail}
+                {settings.serverConfig?.supportEmail?.split(',')[0]}
               </a>
             </SolidCard>
           </Show>
+
+          <Button schema="primary" onClick={() => setShowModels(true)}>
+            View Available Models
+          </Button>
 
           <PatreonControls />
 
           <Show when={user.sub?.level! > 0}>
             <h3 class="font-bold">Current Subscription</h3>
+            <Show when={user.user?.billing}>
+              <a class="link" href={settings.serverConfig?.stripeCustomerPortal} target="_blank">
+                Update Payment Method
+              </a>
+            </Show>
             <TierCard tier={cfg.tier!}>
               <div class="flex flex-col items-center gap-2">
                 <div class="text-700 text-sm italic">
@@ -202,7 +213,7 @@ export const SubscriptionPage: Component<{}> = (props) => {
               {(each) => (
                 <>
                   <TierCard tier={each} class="sm:w-1/3">
-                    <Show when={user.user?.manualSub?.tierId === each._id}>
+                    <Show when={user.user?.manualSub?.tierId === each._id && !!each._id}>
                       <Pill type="green">This tier is currently gifted to you</Pill>
                     </Show>
                     <div class="mt-4 flex justify-center">
@@ -331,6 +342,8 @@ export const SubscriptionPage: Component<{}> = (props) => {
         }
         confirm={() => userStore.modifySubscription(showDowngrade()!._id)}
       />
+
+      <ModelList show={showModels()} close={() => setShowModels(false)} />
     </>
   )
 }

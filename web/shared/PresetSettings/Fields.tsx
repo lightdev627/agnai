@@ -1,23 +1,20 @@
-import { Component, Show, createMemo, createSignal, onMount } from 'solid-js'
-import { FLAI_CONTEXTS, GOOGLE_MODELS } from '/common/adapters'
-import { PresetTabProps } from './types'
+import { Component, Show, createMemo } from 'solid-js'
 import TextInput from '../TextInput'
-import Button, { ToggleButton } from '../Button'
-import { getStore } from '/web/store/create'
+import { ToggleButton } from '../Button'
 import RangeInput from '../RangeInput'
-import { settingStore } from '/web/store'
 import Select from '../Select'
 import { MODEL_FORMATS } from './General'
-import { defaultPresets } from '/common/default-preset'
 import { FormLabel } from '../FormLabel'
 import { SubscriptionModelLevel } from '/common/types/presets'
-import { hidePresetSetting } from '../util'
 import { Card } from '../Card'
 import PromptEditor from '../PromptEditor'
-import { CustomSelect } from '../CustomSelect'
-import { FeatherlessModel } from '/srv/adapter/featherless'
+import { ThirdPartyFormat } from '/common/adapters'
+import { PresetTabProps } from '/web/store/preset-context'
 
-export type Field<T = {}> = Component<Omit<PresetTabProps, 'tab'> & T>
+export type FieldProps = Omit<PresetTabProps, 'tab'>
+export type Field<T = {}, TOnly extends keyof FieldProps = keyof FieldProps> = Component<
+  Pick<FieldProps, TOnly> & T
+>
 
 export const PresetMode: Field = (props) => {
   return (
@@ -31,7 +28,7 @@ export const PresetMode: Field = (props) => {
           { label: 'Advanced', value: 'advanced' },
           { label: 'Simple', value: 'simple' },
         ]}
-        onChange={(ev) => props.setter('presetMode', ev.value as any)}
+        onChange={(ev) => props.setters.setState('presetMode', ev.value as any)}
       />
     </div>
   )
@@ -46,11 +43,11 @@ export const ResponseLength: Field<{
       label="Response Length"
       helperText="Maximum length of the response. Measured in 'tokens'"
       min={16}
-      max={1024}
+      max={2048}
       step={1}
       value={props.state.maxTokens}
       disabled={props.state.disabled}
-      onChange={(val) => props.setter('maxTokens', val)}
+      onChange={(val) => props.setters.setState('maxTokens', val)}
       recommended={props.subMax.maxTokens}
       recommendLabel="Max"
     />
@@ -62,7 +59,7 @@ export const ContextSize: Field<{ subMax: Partial<SubscriptionModelLevel> }> = (
     const ctx = props.subMax.maxContextLength
     if (!ctx) return
 
-    const max = Math.floor(ctx / 1000)
+    const max = Math.round(ctx / 1000)
     return `${max}K`
   })
 
@@ -85,7 +82,7 @@ export const ContextSize: Field<{ subMax: Partial<SubscriptionModelLevel> }> = (
               onText="On"
               offText="Off"
               value={props.state.useMaxContext}
-              onChange={(ev) => props.setter('useMaxContext', ev)}
+              onChange={(ev) => props.setters.setState('useMaxContext', ev)}
             >
               Use Max If Known:
             </ToggleButton>
@@ -95,26 +92,66 @@ export const ContextSize: Field<{ subMax: Partial<SubscriptionModelLevel> }> = (
           <>
             <p>
               The amount of infomation sent to the model to generate a response.{' '}
-              <Show when={props.state.service !== 'agnaistic'}>
+              <Show when={props.setters.context.service !== 'agnaistic'}>
                 Check your AI service for the maximum context size.
               </Show>
             </p>
           </>
         }
         min={16}
-        max={props.state.service === 'claude' ? 200000 : 32000}
+        max={props.setters.context.service === 'claude' ? 200000 : 32000}
         step={1}
-        value={props.state.maxContextLength || 4096}
+        value={props.state.maxContextLength || 8192}
         disabled={props.state.disabled}
-        onChange={(ev) => props.setter('maxContextLength', ev)}
+        onChange={(ev) => props.setters.setState('maxContextLength', ev)}
       />
     </>
   )
 }
 
+export const ReasoningTags: Field = (props) => {
+  return (
+    <div class="flex flex-col gap-1">
+      <FormLabel
+        label="Reasoning Tags"
+        helperText="For collapsing reasoning sections in the UI: "
+      />
+
+      <div class="flex gap-2">
+        <TextInput
+          prelabel="Start"
+          parentClass="w-1/2"
+          fieldName="reasoning.start"
+          placeholder="<think>"
+          value={props.state.reasoning?.start || ''}
+          onChange={(ev) =>
+            props.setters.setState('reasoning', {
+              ...props.state.reasoning,
+              start: ev.currentTarget.value,
+            })
+          }
+        />
+        <TextInput
+          prelabel="End"
+          parentClass="w-1/2"
+          fieldName="reasoning.end"
+          placeholder="</think>"
+          value={props.state.reasoning?.end || ''}
+          onChange={(ev) =>
+            props.setters.setState('reasoning', {
+              ...props.state.reasoning,
+              end: ev.currentTarget.value,
+            })
+          }
+        />
+      </div>
+    </div>
+  )
+}
+
 export const SystemPrompt: Field = (props) => {
   return (
-    <Card classList={{ hidden: hidePresetSetting(props.state, 'systemPrompt') }}>
+    <Card classList={{ hidden: props.setters.context.hides.systemPrompt ?? false }}>
       <FormLabel
         label="System Prompt"
         helperText={<>The task the AI is performing. Leave blank if uncertain.</>}
@@ -125,7 +162,7 @@ export const SystemPrompt: Field = (props) => {
         placeholder="Write {{char}}'s next reply in a fictional chat between {{char}} and {{user}}. Write 1 reply only in internet RP style, italicize actions, and avoid quotation marks. Use markdown. Be proactive, creative, and drive the plot and conversation forward. Write at least 1 paragraph, up to 4. Always stay in character and avoid repetition."
         value={props.state.systemPrompt ?? ''}
         disabled={props.state.disabled}
-        onChange={(ev) => props.setter('systemPrompt', ev.prompt!)}
+        onChange={(ev) => props.setters.setState('systemPrompt', ev.prompt!)}
       />
     </Card>
   )
@@ -133,13 +170,13 @@ export const SystemPrompt: Field = (props) => {
 
 export const Jailbreak: Field = (props) => {
   return (
-    <Card classList={{ hidden: hidePresetSetting(props.state, 'ultimeJailbreak') }}>
+    <Card classList={{ hidden: props.setters.context.hides.ultimeJailbreak ?? false }}>
       <FormLabel
         label="Jailbreak (UJB)"
         helperText={
           <>
             <p>
-              <b>Uncensored Models</b>: Typically stylstic instructions. E.g. "Respond succinctly
+              <b>Uncensored Models</b>: Typically stylistic instructions. E.g. "Respond succinctly
               using slang"
             </p>
             <p>
@@ -156,58 +193,50 @@ export const Jailbreak: Field = (props) => {
         placeholder="Respond succinctly using slang"
         value={props.state.ultimeJailbreak ?? ''}
         disabled={props.state.disabled}
-        onChange={(ev) => props.setter('ultimeJailbreak', ev.prompt!)}
+        onChange={(ev) => props.setters.setState('ultimeJailbreak', ev.prompt!)}
       />
     </Card>
   )
 }
 
-export const ThirdPartyUrl: Field = (props) => {
+export const JinjaTemplate: Field = (props) => {
+  const allowed: { [format in ThirdPartyFormat]?: boolean } = {
+    'openai-chatv2': true,
+    'openai-chat': true,
+    koboldcpp: true,
+    tabby: true,
+    aphrodite: true,
+    vllm: true,
+    ollama: true,
+    llamacpp: true,
+    ooba: true,
+    kobold: true,
+    exllamav2: true,
+  }
+
   return (
     <TextInput
-      fieldName="thirdPartyUrl"
-      label="Third Party URL"
-      helperText="API URL for third-party or self-hosted service"
-      placeholder="E.g. https://some-tunnel-url.loca.lt"
-      value={props.state.thirdPartyUrl || ''}
-      disabled={props.state.disabled}
-      hide={
-        hidePresetSetting(props.state, 'thirdPartyUrl') ||
-        props.state.thirdPartyFormat === 'featherless' ||
-        props.state.thirdPartyFormat === 'mistral' ||
-        props.state.thirdPartyFormat === 'gemini'
+      fieldName="jinjaTemplate"
+      label={
+        <div class="flex w-full justify-between">
+          <div>Jinja Template</div>
+          <ToggleButton
+            size="sm"
+            onText="Enabled"
+            offText="Disabled"
+            value={props.state.jinjaEnabled ?? false}
+            onChange={(ev) => props.setters.setState('jinjaEnabled', ev)}
+          />
+        </div>
       }
-      onChange={(ev) => props.setter('thirdPartyUrl', ev.currentTarget.value)}
+      helperMarkdown="For overriding third-party chat completion templates. Only sent when **Enabled**.
+      If left blank, one will be generated for you."
+      value={props.state.jinjaTemplate || ''}
+      disabled={props.state.disabled}
+      hide={!props.setters.context.format || !allowed[props.setters.context.format]}
+      onChange={(ev) => props.setters.setState('jinjaTemplate', ev.currentTarget.value)}
+      isMultiline
     />
-  )
-}
-
-export const ThirdPartyKey: Field = (props) => {
-  return (
-    <>
-      <TextInput
-        fieldName="thirdPartyKey"
-        label={
-          <div class="mt-1 flex gap-4">
-            <div>Third Party API Key</div>
-            <Show when={props.state._id}>
-              <Button
-                size="pill"
-                onClick={() => getStore('presets').deleteUserPresetKey(props.state._id!)}
-              >
-                Remove Key
-              </Button>
-            </Show>
-          </div>
-        }
-        helperText="Never enter your official OpenAI, Claude, Mistral keys here."
-        value={props.state.thirdPartyKey}
-        disabled={props.state.disabled}
-        type="password"
-        hide={hidePresetSetting(props.state, 'thirdPartyKey')}
-        onChange={(ev) => props.setter('thirdPartyKey', ev.currentTarget.value)}
-      />
-    </>
   )
 }
 
@@ -217,12 +246,11 @@ export const ModelFormat: Field = (props) => {
       <Select
         fieldName="modelFormat"
         label="Prompt Format"
-        helperMarkdown={`Which formatting method to use if using "universal tags" in your prompt template
+        helperMarkdown={`Formatting to use if using "Universal Tags" in your prompt template
       (I.e. \`<user>...</user>, <bot>...</bot>\`)`}
         items={MODEL_FORMATS}
-        value={props.state.modelFormat || 'Alpaca'}
-        recommend={props.sub?.preset.modelFormat}
-        onChange={(ev) => props.setter('modelFormat', ev.value as any)}
+        value={props.state.modelFormat || 'None'}
+        onChange={(ev) => props.setters.setState('modelFormat', ev.value as any)}
       />
     </>
   )
@@ -238,147 +266,14 @@ export const Temperature: Field = (props) => {
         min={0.1}
         max={props.state.presetMode === 'simple' ? 1.5 : 10}
         step={0.01}
-        value={props.state.temp || defaultPresets.basic.temp}
+        value={props.state.temp}
         disabled={props.state.disabled}
         aiSetting={'temp'}
         recommended={props.sub?.preset.temp}
-        onChange={(ev) => props.setter('temp', ev)}
+        onChange={(ev) => {
+          props.setters.setState('temp', ev)
+        }}
       />
     </>
   )
-}
-
-export const FeatherlessModels: Field = (props) => {
-  const state = settingStore((s) => s.featherless)
-  const [modelclass, setModelclass] = createSignal('')
-
-  const label = createMemo(() => {
-    const id = props.state.featherlessModel
-    const match = state.models.find((s) => s.id === id)
-    if (!match) return id || 'None selected'
-
-    return (
-      <span title={`${match.status}, ${(match.health || '...').toLowerCase()}`}>
-        {match.id}
-        <span class="text-500 text-xs">
-          {' '}
-          {flaiContext(match, state.classes)} {match.status}
-        </span>
-      </span>
-    )
-  })
-
-  const options = createMemo(() => {
-    return state.models
-      .filter((s) => {
-        const mclass = modelclass()
-        if (!mclass) return true
-        return s.model_class === mclass
-      })
-      .map((s) => ({
-        label: (
-          <div
-            class="flex w-full justify-between"
-            title={`${s.status}, ${(s.health || '...').toLowerCase()}`}
-          >
-            <div class="ellipsis">{s.id}</div>
-            <div class="text-500 text-xs">
-              {flaiContext(s, state.classes)} {s.status}
-            </div>
-          </div>
-        ),
-        value: s.id,
-      }))
-  })
-
-  onMount(() => {
-    if (!state.models.length) {
-      settingStore.getFeatherless()
-    }
-  })
-
-  const search = (value: string, input: string) => {
-    const res = input.split(' ').map((text) => new RegExp(text.replace(/\*/gi, '[a-z0-9]'), 'gi'))
-
-    for (const re of res) {
-      const match = value.match(re)
-      if (!match) return false
-    }
-
-    return true
-  }
-
-  const classes = createMemo(() => {
-    const list = Object.entries(state.classes)
-      .map(([label, { ctx }]) => ({ label: `${label} - ${Math.round(ctx / 1024)}k`, value: label }))
-      .sort((l, r) => l.label.localeCompare(r.label))
-    return [{ label: 'All', value: '' }].concat(list)
-  })
-
-  return (
-    <CustomSelect
-      modalTitle="Select a Model"
-      label="Featherless Model"
-      fieldName="featherlessModel"
-      value={props.state.featherlessModel}
-      options={options()}
-      search={search}
-      header={
-        <Select
-          items={classes()}
-          value={''}
-          label={'Filter: Model Class'}
-          fieldName="featherless.classFilter"
-          onChange={(ev) => setModelclass(ev.value)}
-          parentClass="text-sm"
-        />
-      }
-      onSelect={(opt) => {
-        props.setter('featherlessModel', opt.value)
-      }}
-      buttonLabel={label()}
-      selected={props.state.featherlessModel}
-      hide={props.state.service !== 'kobold' || props.state.thirdPartyFormat !== 'featherless'}
-    />
-  )
-}
-
-export const GoogleModels: Field = (props) => {
-  const label = createMemo(() => {
-    const id = props.state.googleModel
-    if (!id) return 'None Selected'
-    const match = Object.values(GOOGLE_MODELS).find((model) => model.id === id)
-    if (!match) return 'Invalid Model'
-    return match.label
-  })
-
-  const options = createMemo(() => {
-    const list = Object.values(GOOGLE_MODELS).map(({ label, id }) => ({ label, value: id }))
-    return list
-  })
-
-  return (
-    <CustomSelect
-      modalTitle="Select a Model"
-      label="Google Model"
-      fieldName="googleModel"
-      value={props.state.googleModel || GOOGLE_MODELS.GEMINI_15_PRO.id}
-      options={options()}
-      search={(value, search) => value.toLowerCase().includes(search.toLowerCase())}
-      onSelect={(opt) => props.setter('googleModel', opt.value)}
-      buttonLabel={label()}
-      selected={props.state.googleModel}
-      hide={props.state.service !== 'kobold' || props.state.thirdPartyFormat !== 'gemini'}
-    />
-  )
-}
-
-function flaiContext(
-  model: FeatherlessModel,
-  classes: Record<string, { ctx: number; res: number }>
-) {
-  const ctx = model.ctx || classes[model.model_class]?.ctx || FLAI_CONTEXTS[model.model_class]
-  if (!ctx) return ''
-
-  return `${Math.round(ctx / 1024)}K`
 }

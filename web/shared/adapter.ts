@@ -1,10 +1,13 @@
-import { getAdapter, getChatPreset } from '../../common/prompt'
+import { getContextLimit } from '../../common/prompt'
 import { presetStore, userStore } from '../store'
 import { AppSchema } from '../../common/types/schema'
-import { defaultPresets, isDefaultPreset } from '../../common/presets'
+import { defaultPresets, isDefaultPreset } from '../../common/default-preset'
 import { Option } from './Select'
-import { ADAPTER_LABELS, AIAdapter, AdapterSetting } from '../../common/adapters'
+import { ADAPTER_LABELS, AIAdapter, AdapterSetting, getAdapter } from '../../common/adapters'
 import { storage } from './util'
+import { getPresetConnection, getProviderCategoryLabel, getProviderLabel } from '/common/providers'
+import { getStore } from '../store/create'
+import { getChatPreset } from '../pages/Chat/util'
 
 const tempSettings: { [key in AIAdapter]?: Array<AdapterSetting> } = {
   novel: [
@@ -30,10 +33,16 @@ export const AutoPreset = {
   service: 'horde',
 }
 
-export type PresetOption = Option & { custom: boolean }
+export type PresetOption = Option & { custom: boolean; name: string; provider: string }
 
 export const BasePresetOptions: PresetOption[] = [
-  { label: 'System Built-in Preset (Horde)', value: AutoPreset.service, custom: false },
+  {
+    label: 'System Built-in Preset (Horde)',
+    value: AutoPreset.service,
+    custom: false,
+    name: 'System Built-in Preset',
+    provider: 'Horde',
+  },
 ]
 
 export type PresetInfo = {
@@ -62,18 +71,13 @@ export function getUserPreset(presetId?: string): Partial<AppSchema.GenSettings>
 
 export function getClientPreset(chat?: AppSchema.Chat): PresetInfo | undefined {
   const user = userStore.getState()
-  const presets = presetStore((s) => s.presets)
+  const presets = presetStore.getState().presets
 
   if (!chat || !user.user) return
 
   const preset = getChatPreset(chat, user.user, presets)
-  const {
-    adapter,
-    isThirdParty,
-    model,
-    contextLimit,
-    preset: presetLabel,
-  } = getAdapter(chat, user.user, preset)
+  const { adapter, isThirdParty, model, preset: presetLabel } = getAdapter(chat, user.user, preset)
+  const contextLimit = getContextLimit(user.user, preset)
 
   const name = preset && 'name' in preset ? preset.name : ''
   return { preset, adapter, model, isThirdParty, contextLimit, presetLabel, name }
@@ -83,13 +87,15 @@ export function getPresetOptions(
   userPresets: AppSchema.UserGenPreset[],
   includes: { builtin?: boolean; base?: boolean }
 ): PresetOption[] {
-  const user = userStore.getState().user || { defaultPreset: '' }
+  const user = userStore.getState().user || { defaultPreset: '', providers: [] }
   const presets = userPresets.slice().map((preset) => ({
-    label: `[${getServiceName(preset.service)}] ${preset.name} ${
-      user.defaultPreset === preset._id ? '(*) ' : ''
+    label: `[${getPresetProviderName(preset, user.providers)}] ${preset.name} ${
+      user.defaultPreset === preset._id ? '★' : ''
     }`,
     value: preset._id,
     custom: true,
+    name: preset.name,
+    provider: getPresetProviderName(preset, user.providers),
   }))
 
   const defaults = Object.entries(defaultPresets).map(([_id, preset]) => ({
@@ -103,6 +109,8 @@ export function getPresetOptions(
       label: `[${getServiceName(preset.service)}] ${preset.name}`,
       value: preset._id,
       custom: false,
+      name: preset.name,
+      provider: getServiceName(preset.service),
     }))
 
     presets.push(...builtinOptions)
@@ -123,6 +131,22 @@ export function getInitialPresetValue(chat?: AppSchema.Chat) {
 export function getServiceName(service?: AIAdapter) {
   if (!service) return 'Unset'
   return `${ADAPTER_LABELS[service]}`
+}
+
+export function getPresetLabel(preset: AppSchema.GenSettings) {
+  const providers = getStore('user').getState().user?.providers
+  const conn = getPresetConnection(preset, providers)
+
+  const prefix = conn.provider?.name || conn.detail?.name || ADAPTER_LABELS[conn.service!]
+  const catLabel = getProviderCategoryLabel(conn.category)
+
+  return {
+    prefix,
+    type: conn.category,
+    category: catLabel,
+    desc: preset.name || 'Unnamed',
+    conn,
+  }
 }
 
 export function sortByName(left: { name: string }, right: { name: string }) {
@@ -146,4 +170,15 @@ export function getServiceTempConfig(service?: AIAdapter) {
   }
 
   return values
+}
+
+function getPresetProviderName(preset: AppSchema.GenSettings, providers?: AppSchema.Provider[]) {
+  if (preset.providerId) {
+    if (preset.providerId === 'agnaistic') return 'Agnaistic'
+    const provider = providers?.find((p) => p._id === preset.providerId)
+    const label = provider ? getProviderLabel(provider) : 'Unknown'
+    return label
+  }
+
+  return getServiceName(preset.service)
 }

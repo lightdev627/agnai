@@ -5,11 +5,29 @@ import type {
   OpenRouterModel,
   RegisteredAdapter,
 } from '../adapters'
-import { JsonField } from '../prompt'
 import { SubscriptionModelOption, SubscriptionTier } from './presets'
 import { ThemeColor } from './ui'
 
 export type UserType = 'guests' | 'all' | 'users' | 'subscribers' | 'moderators' | 'admins'
+export type FeatureAccess = 'off' | 'all' | 'users' | 'subscribers' | 'admins'
+
+export type ServerEmbedding = {
+  _id: string
+
+  /** Fully qualified URL, will not be modified */
+  url: string
+
+  /** API key, encrypted */
+  key: string
+
+  /** Is batching supported */
+  batch: boolean
+
+  model: string
+
+  /** Optional: Some APIs use slight variations of the `input` prop when batching supported */
+  inputProp: string
+}
 export interface AppConfig {
   adapters: AIAdapter[]
   version: string
@@ -22,6 +40,8 @@ export interface AppConfig {
   patreon?: boolean
   policies?: boolean
   apiAccess?: boolean
+  serverEmbeddings?: boolean
+  embeddingsAccess?: boolean
   guidanceAccess?: boolean
   flags?: string
   patreonAuth?: {
@@ -48,7 +68,20 @@ export type ImageModel = {
   desc: string
   override: string
   level: number
-  init: { clipSkip?: number; steps: number; cfg: number; height: number; width: number }
+  host: string
+  lora: boolean
+  init: {
+    clipSkip?: number
+    steps: number
+    cfg: number
+    height: number
+    width: number
+    suffix: string
+    prefix: string
+    negative: string
+    sampler: string
+    denoise: number
+  }
   limit: { clipSkip?: number; steps: number; cfg: number; height: number; width: number }
 }
 
@@ -82,11 +115,12 @@ export interface Configuration {
   slots: string
 
   /** Determines who can use API access for inferencing */
-  apiAccess: 'off' | 'users' | 'subscribers' | 'admins'
+  apiAccess: FeatureAccess
 
   maintenance: boolean
 
   supportEmail: string
+  stripeCustomerPortal: string
 
   /** Markdown */
   maintenanceMessage: string
@@ -113,26 +147,24 @@ export interface Configuration {
   imagesEnabled: boolean
   imagesHost: string
   imagesModels: ImageModel[]
+  imagesLoraUrl: string
+  defaultImageModel: string
 
   googleClientId: string
   googleEnabled: boolean
 
   ttsHost: string
   ttsApiKey: string
-  ttsAccess: 'off' | 'users' | 'subscribers' | 'admins'
+  ttsAccess: FeatureAccess
 
   maxGuidanceTokens: number
   maxGuidanceVariables: number
 
-  modPresetId: string
-  modPrompt: string
-  modFieldPrompt: string
-  modSchema: JsonField[]
-
-  charlibPublish: 'off' | 'users' | 'subscribers' | 'moderators' | 'admins'
-  charlibGuidelines: string
-
   actionCalls: ActionCall[]
+
+  embeddings: ServerEmbedding[]
+  embedding: string
+  embeddingsAccess?: FeatureAccess
 }
 
 export interface ActionCall {

@@ -1,30 +1,46 @@
-import type { GenerateRequestV2 } from '../srv/adapter/type'
+import type { GenerateRequestV2, HistoryLine } from '../srv/adapter/type'
 import type { AppSchema, TokenCounter } from './types'
-import {
-  AIAdapter,
-  GOOGLE_LIMITS,
-  NOVEL_MODELS,
-  OPENAI_CONTEXTS,
-  THIRDPARTY_HANDLERS,
-} from './adapters'
+import { AIAdapter, GOOGLE_LIMITS, MODE_SETTINGS } from './adapters'
 import { formatCharacter } from './characters'
 import { defaultTemplate } from './mode-templates'
 import { buildMemoryPrompt } from './memory'
-import { defaultPresets, getFallbackPreset, isDefaultPreset } from './presets'
+import { getFallbackPreset } from './presets'
 import { parseTemplate } from './template-parser'
 import { getMessageAuthor, getBotName, trimSentence, neat } from './util'
 import { Memory } from './types'
 import { promptOrderToTemplate, SIMPLE_ORDER } from './prompt-order'
-import { ModelFormat, replaceTags } from './presets/templates'
+import { ModelFormat, replaceArrayTags, replaceTags } from './presets/templates'
+import { OPENAI_CONTEXTS } from './presets/openai'
+import { NOVEL_MODELS } from './presets/novel'
+import { extractReasoning } from './reasoning'
+import { runPresetParsers } from './chat'
+export type JsonOutput = { values: any; response: string; history: string; imageCaption: string }
+export type TickHandler<T = JsonOutput> = (
+  response: string,
+  state: InferenceState,
+  json?: T
+) => void
 
-export type TickHandler<T = any> = (response: string, state: InferenceState, json?: T) => void
-
-export type InferenceState = 'partial' | 'done' | 'error' | 'warning'
+export type InferenceState =
+  | 'partial'
+  | 'done'
+  | 'error'
+  | 'warning'
+  | 'headers'
+  | 'meta'
+  | 'thought'
 
 export const SAMPLE_CHAT_MARKER = `System: New conversation started. Previous conversations are examples only.`
 export const SAMPLE_CHAT_PREAMBLE = `How {{char}} speaks:`
 
-export type PromptParts = {
+export type PromptLine = {
+  type: 'insert' | 'history'
+  line: string
+  id?: string
+  role: 'user' | 'model'
+}
+
+export type PromptPlaceholders = {
   scenario?: string
   greeting?: string
   sampleChat?: string[]
@@ -32,6 +48,7 @@ export type PromptParts = {
   allPersonas: string[]
   ujb?: string
   post: string[]
+  prefill?: string
   memory?: string
   systemPrompt?: string
 
@@ -40,6 +57,9 @@ export type PromptParts = {
 
   chatEmbeds: string[]
   userEmbeds: string[]
+
+  /** User-specified extras */
+  props?: Record<string, string>
 }
 
 export type Prompt = {
@@ -48,8 +68,8 @@ export type Prompt = {
     inserts: Map<number, string>
     linesAddedCount: number
   }
-  lines: string[]
-  parts: PromptParts
+  lines: HistoryLine[]
+  parts: PromptPlaceholders
   shown: boolean
 }
 
@@ -72,6 +92,7 @@ export type PromptOpts = {
   retry?: AppSchema.ChatMessage
   continue?: string
   book?: AppSchema.MemoryBook
+  books?: AppSchema.MemoryBook[]
   replyAs: AppSchema.Character
   characters: GenerateRequestV2['characters']
   impersonate?: AppSchema.Character
@@ -82,6 +103,9 @@ export type PromptOpts = {
   resolvedScenario: string
   modelFormat?: ModelFormat
   jsonValues: Record<string, any> | undefined
+  contextBuffer?: number
+  props?: Record<string, string>
+  schema?: GenerateRequestV2['jsonSchema']
 }
 
 export type BuildPromptOpts = {
@@ -97,6 +121,8 @@ export type BuildPromptOpts = {
   impersonate?: AppSchema.Character
   chatEmbed?: Memory.UserEmbed<{ name: string }>[]
   userEmbed?: Memory.UserEmbed[]
+  history?: HistoryLine[]
+  schema?: GenerateRequestV2['jsonSchema']
 }
 
 /** {{user}}, <user>, {{char}}, <bot>, case insensitive */
@@ -200,43 +226,7 @@ function titlize(str: string) {
   return `${str[0].toUpperCase()}${str.slice(1).toLowerCase()}`
 }
 
-/**
- * This is only ever invoked client-side
- * @param opts
- * @returns
- */
-export async function createPromptParts(opts: PromptOpts, encoder: TokenCounter) {
-  if (opts.trimSentences) {
-    const nextMsgs = opts.messages.slice()
-    for (let i = 0; i < nextMsgs.length; i++) {
-      if (nextMsgs[i].userId) continue
-      nextMsgs[i] = { ...nextMsgs[i], msg: trimSentence(nextMsgs[i].msg) }
-    }
-
-    opts.messages = nextMsgs
-
-    if (opts.retry) {
-      opts.retry = { ...opts.retry, msg: trimSentence(opts.retry.msg) }
-    }
-  }
-
-  const sortedMsgs = opts.messages
-    .filter((msg) => msg.adapter !== 'image')
-    .slice()
-    .sort(sortMessagesDesc)
-
-  opts.messages = sortedMsgs
-
-  /**
-   * The lines from `getLinesForPrompt` are returned in time-descending order
-   */
-  let template = getTemplate(opts)
-  const templateSize = await encoder(template)
-
-  if (opts.modelFormat) {
-    template = replaceTags(template, opts.modelFormat)
-  }
-
+export async function getPromptHistory(opts: PromptOpts, encoder: TokenCounter) {
   /**
    * It's important for us to pass in a max context that is _realistic-ish_ as the embeddings
    * are retrieved based on the number of history messages we return here.
@@ -244,24 +234,80 @@ export async function createPromptParts(opts: PromptOpts, encoder: TokenCounter)
    * If we ambitiously include the entire history then embeddings will never be included.
    * The queryable embeddings are messages that are _NOT_ included in the context
    */
-  const maxContext = opts.settings
-    ? getContextLimit(opts.user, opts.settings) - templateSize - opts.settings.maxTokens!
-    : undefined
-  const lines = await getLinesForPrompt(opts, encoder, maxContext)
-  const parts = await buildPromptParts(opts, lines, encoder)
+  const contextBuffer = opts.contextBuffer ?? 0
+  const maxContext = opts.settings ? getContextLimit(opts.user, opts.settings) : undefined
+  /**
+   * The lines from `getLinesForPrompt` are returned in time-ascending order
+   */
+  const { lines } = await getLinesForPrompt(opts, encoder, (maxContext || 0) + contextBuffer)
+  return lines
+}
+
+/**
+ * This is only ever invoked client-side
+ * @param opts
+ * @returns
+ */
+export async function createPromptParts(
+  opts: PromptOpts,
+  encoder: TokenCounter,
+  history?: HistoryLine[]
+) {
+  if (opts.trimSentences || opts.user.ui?.trimSentences) {
+    const nextMsgs = opts.messages.slice()
+    for (let i = 0; i < nextMsgs.length; i++) {
+      if (nextMsgs[i].userId) continue
+      const text = trimSentence(nextMsgs[i].msg) || nextMsgs[i].msg
+
+      nextMsgs[i] = { ...nextMsgs[i], msg: text }
+    }
+
+    opts.messages = nextMsgs
+
+    if (opts.retry) {
+      opts.retry = { ...opts.retry, msg: trimSentence(opts.retry.msg) || opts.retry.msg }
+    }
+  }
+
+  const sortedMsgs = opts.messages.filter((msg) => msg.adapter !== 'image')
+
+  opts.messages = sortedMsgs
+  const template = getTemplate(opts)
+
+  const lines = history || (await getPromptHistory(opts, encoder))
+  const parts = await buildPromptPlaceholders(
+    opts,
+    lines.map((l) => l.msg),
+    encoder
+  )
+
+  parts.props = opts.props
 
   const prompt = await injectPlaceholders(template, {
     opts,
     parts,
-    history: { lines, order: 'desc' },
+    history: lines,
+    lines: lines.map((l) => l.msg),
+
     lastMessage: opts.lastMessage,
     characters: opts.characters,
     encoder,
-    jsonValues: opts.jsonValues,
+
+    // We want the template-parser to find the relevant JSON outputs on it's own from the message history
+    // We'll omit explicit JSON values for now
+    jsonValues: undefined, // opts.jsonValues
   })
 
-  return { lines: lines.reverse(), parts, template: prompt }
+  // parts.post = prompt.sections.sections.post.slice()
+
+  if (opts.modelFormat) {
+    prompt.parsed = replaceTags(prompt.parsed, opts.modelFormat)
+  }
+
+  return { lines, parts, template: prompt }
 }
+
+export type AssembledPrompt = Awaited<ReturnType<typeof assemblePrompt>>
 
 /**
  * This is only ever invoked server-side
@@ -271,30 +317,72 @@ export async function createPromptParts(opts: PromptOpts, encoder: TokenCounter)
  * @param lines Always in time-ascending order (oldest to newest)
  * @returns
  */
-export async function assemblePrompt(
-  opts: GenerateRequestV2,
-  parts: PromptParts,
-  lines: string[],
-  encoder: TokenCounter
-) {
+export async function assemblePrompt(opts: GenerateRequestV2, encoder: TokenCounter) {
   const post = createPostPrompt(opts)
   const template = getTemplate(opts)
 
-  const history = { lines, order: 'asc' } as const
-  let { parsed, inserts, length } = await injectPlaceholders(template, {
-    opts,
-    parts,
-    history,
-    characters: opts.characters,
-    lastMessage: opts.lastMessage,
-    encoder,
-    jsonValues: opts.jsonValues,
-  })
+  const parsers = opts.settings?.parsers || []
+  const parsedLines = opts.lines.map((line) => runPresetParsers(parsers, line, { preset: true }))
 
-  return { lines: history.lines, prompt: parsed, inserts, parts, post, length }
+  let { parsed, inserts, length, sections, linesAddedCount, history, addedLines, blocks } =
+    await injectPlaceholders(template, {
+      opts: { ...opts, schema: opts.jsonSchema },
+      parts: opts.parts,
+      lines: parsedLines,
+      history: opts.history,
+      characters: opts.characters,
+      lastMessage: opts.lastMessage,
+      encoder,
+      jsonValues: undefined,
+      format: getFormatOverride(opts),
+    })
+
+  return {
+    /** Parsed lines - Output of renderIterator if used */
+    lines: history,
+
+    /** Raw history lines in `Name: Message` format */
+    unparsedLines: addedLines,
+
+    /** New format when available */
+    // history: opts.history,
+
+    prompt: parsed,
+    inserts,
+    parts: opts.parts,
+    post,
+    length,
+    sections,
+    linesAddedCount,
+
+    blocks,
+  }
+}
+
+function getFormatOverride(
+  opts: Pick<GenerateRequestV2, 'settings' | 'subscription'>
+): ModelFormat | undefined {
+  switch (opts.settings?.service) {
+    case 'agnaistic':
+      return opts.settings.modelFormat || opts.subscription?.preset?.modelFormat
+
+    case 'openai':
+    case 'third-party':
+    case 'openrouter':
+    case 'openrouter-completion':
+      return 'None'
+
+    case 'kobold':
+      return opts.settings.modelFormat
+  }
 }
 
 export function getTemplate(opts: Pick<GenerateRequestV2, 'settings' | 'chat'>) {
+  if (opts.settings?.promptTemplateId) {
+    const template = _templateLocator(opts.settings?.promptTemplateId)
+    if (template) return template.template
+  }
+
   const fallback = getFallbackPreset(opts.settings?.service!)
   if (opts.settings?.useAdvancedPrompt === 'basic' || opts.settings?.presetMode === 'simple') {
     if (opts.settings.presetMode === 'simple') {
@@ -320,63 +408,55 @@ export function getTemplate(opts: Pick<GenerateRequestV2, 'settings' | 'chat'>) 
 
 type InjectOpts = {
   opts: BuildPromptOpts
-  parts: PromptParts
+  parts: PromptPlaceholders
   lastMessage?: string
   characters: Record<string, AppSchema.Character>
   jsonValues: Record<string, any> | undefined
-  history?: { lines: string[]; order: 'asc' | 'desc' }
+  lines?: string[]
+  history?: HistoryLine[]
   encoder: TokenCounter
+  format?: ModelFormat
 }
 
 export async function injectPlaceholders(template: string, inject: InjectOpts) {
-  const { opts, parts, history: hist, encoder, ...rest } = inject
+  const { opts, parts, lines, history, encoder, ...rest } = inject
 
-  template = replaceTags(template, opts.settings?.modelFormat || 'Alpaca')
-
-  // Basic templates can exclude example dialogue
-  const validate =
-    opts.settings?.useAdvancedPrompt !== 'no-validation' &&
-    opts.settings?.useAdvancedPrompt !== 'basic'
-
-  // Automatically inject example conversation if not included in the prompt
-  /** @todo assess whether or not this should be here -- it ignores 'unvalidated' prompt rules */
-  const sender = opts.impersonate?.name || inject.opts.sender?.handle || 'You'
-  const sampleChat = parts.sampleChat?.join('\n')
-  if (!template.match(HOLDERS.sampleChat) && sampleChat && hist && validate) {
-    const next = hist.lines.filter((line) => !line.includes(SAMPLE_CHAT_MARKER))
-
-    const svc = opts.settings?.service
-    const postSample =
-      svc === 'openai' || svc === 'openrouter' || svc === 'scale' ? SAMPLE_CHAT_MARKER : '<START>'
-
-    const msg = `${SAMPLE_CHAT_PREAMBLE}\n${sampleChat}\n${postSample}`
-      .replace(BOT_REPLACE, opts.replyAs.name)
-      .replace(SELF_REPLACE, sender)
-    if (hist.order === 'asc') next.unshift(msg)
-    else next.push(msg)
-
-    hist.lines = next
-  }
-
-  const lines = !hist
-    ? []
-    : hist.order === 'desc'
-    ? hist.lines.slice()
-    : hist.lines.slice().reverse()
-
-  const result = await parseTemplate(template, {
+  const templateOpts = {
     ...opts,
     continue: opts.kind === 'continue',
     sender: inject.opts.sender,
     parts,
-    lines,
+    lines: inject.lines || [],
+    history: inject.history,
     ...rest,
+  }
+
+  if (parts.prefill) {
+    parts.prefill = await parseTemplate(parts.prefill, { ...templateOpts }).then((t) => t.parsed)
+  }
+
+  const result = await parseTemplate(template, {
+    ...templateOpts,
     limit: {
       context: getContextLimit(opts.user, opts.settings),
       encoder,
     },
   })
+
+  const format = inject.format || opts.settings?.modelFormat || 'None'
+  result.parsed = replaceTags(result.parsed, format)
+  result.blockPrompt = replaceTags(result.blockPrompt, 'None')
+  result.sections.strictSystem = replaceArrayTags(result.sections.strictSystem, 'None')
+  replaceSectionTags(result.sections.sections, 'None')
+
   return result
+}
+
+function replaceSectionTags(sections: Record<string, string[] | any>, format: ModelFormat) {
+  for (const key in sections) {
+    if (!Array.isArray(sections[key])) continue
+    sections[key] = replaceArrayTags(sections[key], format)
+  }
 }
 
 /**
@@ -421,120 +501,144 @@ type PromptPartsOptions = Pick<
   | 'chatEmbeds'
   | 'userEmbeds'
   | 'resolvedScenario'
+  | 'props'
+  | 'books'
 >
 
-export async function buildPromptParts(
+export async function buildPromptPlaceholders(
   opts: PromptPartsOptions,
-  lines: string[],
+  lines: string[] | HistoryLine[],
   encoder: TokenCounter
 ) {
-  const { chat, char, replyAs } = opts
-  const sender = opts.impersonate ? opts.impersonate.name : opts.sender?.handle || 'You'
+  try {
+    const { chat, char, replyAs } = opts
+    const sender = opts.impersonate ? opts.impersonate.name : opts.sender?.handle || 'You'
 
-  const replace = (value: string) => placeholderReplace(value, opts.replyAs.name, sender)
+    const replace = (value: string, botName?: string) =>
+      placeholderReplace(value, botName || opts.replyAs.name, sender)
 
-  const parts: PromptParts = {
-    systemPrompt: opts.settings?.systemPrompt || '',
-    persona: formatCharacter(
-      replyAs.name,
-      replyAs._id === char._id ? chat.overrides ?? replyAs.persona : replyAs.persona
-    ),
-    post: [],
-    allPersonas: [],
-    chatEmbeds: [],
-    userEmbeds: [],
-  }
-
-  const personalities = new Set([replyAs._id])
-
-  if (opts.impersonate?.persona) {
-    parts.impersonality = formatCharacter(
-      opts.impersonate.name,
-      opts.impersonate.persona,
-      opts.impersonate.persona.kind
-    )
-  }
-
-  for (const bot of Object.values(opts.characters || {})) {
-    if (!bot) continue
-    if (personalities.has(bot._id)) continue
-
-    const temp = opts.chat.tempCharacters?.[bot._id]
-    if (temp?.deletedAt || temp?.favorite === false) continue
-
-    if (!bot._id.startsWith('temp-') && !chat.characters?.[bot._id]) {
-      continue
+    const parts: PromptPlaceholders = {
+      systemPrompt: opts.settings?.systemPrompt || '',
+      persona: replace(
+        formatCharacter(
+          replyAs.name,
+          replyAs._id === char._id ? chat.overrides ?? replyAs.persona : replyAs.persona
+        )
+      ),
+      prefill: replyAs.prefill || opts.settings?.prefill || '',
+      post: [],
+      allPersonas: [],
+      chatEmbeds: [],
+      userEmbeds: [],
+      props: opts.props,
     }
 
-    personalities.add(bot._id)
-    parts.allPersonas.push(
-      `${bot.name}'s personality: ${formatCharacter(bot.name, bot.persona, bot.persona.kind)}`
+    const personalities = new Set([replyAs._id])
+
+    if (opts.impersonate?.persona) {
+      parts.impersonality = replace(
+        formatCharacter(
+          opts.impersonate.name,
+          opts.impersonate.persona,
+          opts.impersonate.persona.kind
+        )
+      )
+    }
+
+    for (const bot of Object.values(opts.characters || {})) {
+      if (!bot) continue
+      if (personalities.has(bot._id)) continue
+
+      // We skip
+      if (bot._id === opts.replyAs._id) continue
+      if (bot._id === opts.impersonate?._id) continue
+
+      const temp = opts.chat.tempCharacters?.[bot._id]
+      if (temp?.deletedAt || temp?.favorite === false) continue
+
+      if (!bot._id?.startsWith('temp-') && !chat.characters?.[bot._id]) {
+        continue
+      }
+
+      personalities.add(bot._id)
+      parts.allPersonas.push(
+        `${bot.name}'s personality: ${replace(
+          formatCharacter(bot.name, bot.persona, bot.persona.kind),
+          bot.name
+        )}`
+      )
+    }
+
+    // we use the BOT_REPLACE here otherwise later it'll get replaced with the
+    // replyAs instead of the main character
+    // (we always use the main character's scenario, not replyAs)
+    parts.scenario = replace(opts.resolvedScenario, char.name)
+
+    const sampleChat =
+      replyAs._id === char._id && !!chat.overrides
+        ? chat.sampleChat ?? replyAs.sampleChat
+        : replyAs.sampleChat
+
+    parts.sampleChat = (sampleChat || '')
+      .split('\n')
+      .filter(removeEmpty)
+      // This will use the 'replyAs' character "if present", otherwise it'll defer to the chat.character.name
+      .map((text) => replace(text))
+
+    if (chat.greeting) {
+      parts.greeting = replace(chat.greeting)
+    } else {
+      parts.greeting = replace(char.greeting)
+    }
+
+    const post = createPostPrompt(opts)
+
+    // if (opts.continue) {
+    //   post.unshift(`${char.name}: ${opts.continue}`)
+    // }
+
+    const books: AppSchema.MemoryBook[] = []
+    if (opts.books) books.push(...opts.books)
+    if (replyAs.characterBook) books.push(replyAs.characterBook)
+    if (opts.book) books.push(opts.book)
+
+    parts.memory = await buildMemoryPrompt(
+      { ...opts, books, lines: lines.map((l) => (typeof l === 'string' ? l : l.msg)) },
+      encoder
     )
+
+    const supplementary = getSupplementaryParts(opts, replyAs)
+    parts.ujb = supplementary.ujb
+    parts.systemPrompt = supplementary.system
+
+    parts.post = post.map((post) => replace(post))
+
+    if (opts.userEmbeds) {
+      const embeds = opts.userEmbeds.map((line) => line.text)
+      const { adding: fit } = await fillPromptWithLines({
+        encoder,
+        tokenLimit: opts.settings?.memoryUserEmbedLimit || 500,
+        context: '',
+        lines: embeds,
+      })
+      parts.userEmbeds = fit.map((l) => l.line)
+    }
+
+    if (opts.chatEmbeds) {
+      const embeds = opts.chatEmbeds.map((line) => `${line.name}: ${line.text}`)
+      const { adding: fit } = await fillPromptWithLines({
+        encoder,
+        tokenLimit: opts.settings?.memoryChatEmbedLimit || 500,
+        context: '',
+        lines: embeds,
+      })
+      parts.chatEmbeds = fit.map((l) => l.line)
+    }
+
+    return parts
+  } catch (ex) {
+    throw ex
   }
-
-  // we use the BOT_REPLACE here otherwise later it'll get replaced with the
-  // replyAs instead of the main character
-  // (we always use the main character's scenario, not replyAs)
-  parts.scenario = opts.resolvedScenario.replace(BOT_REPLACE, char.name)
-
-  parts.sampleChat = (
-    replyAs._id === char._id && !!chat.overrides
-      ? chat.sampleChat ?? replyAs.sampleChat
-      : replyAs.sampleChat
-  )
-    .split('\n')
-    .filter(removeEmpty)
-    // This will use the 'replyAs' character "if present", otherwise it'll defer to the chat.character.name
-    .map(replace)
-
-  if (chat.greeting) {
-    parts.greeting = replace(chat.greeting)
-  } else {
-    parts.greeting = replace(char.greeting)
-  }
-
-  const post = createPostPrompt(opts)
-
-  if (opts.continue) {
-    post.unshift(`${char.name}: ${opts.continue}`)
-  }
-
-  const linesForMemory = [...lines].reverse()
-  const books: AppSchema.MemoryBook[] = []
-  if (replyAs.characterBook) books.push(replyAs.characterBook)
-  if (opts.book) books.push(opts.book)
-
-  parts.memory = await buildMemoryPrompt({ ...opts, books, lines: linesForMemory }, encoder)
-
-  const supplementary = getSupplementaryParts(opts, replyAs)
-  parts.ujb = supplementary.ujb
-  parts.systemPrompt = supplementary.system
-
-  parts.post = post.map(replace)
-
-  if (opts.userEmbeds) {
-    const embeds = opts.userEmbeds.map((line) => line.text)
-    const { adding: fit } = await fillPromptWithLines({
-      encoder,
-      tokenLimit: opts.settings?.memoryUserEmbedLimit || 500,
-      context: '',
-      lines: embeds,
-    })
-    parts.userEmbeds = fit
-  }
-
-  if (opts.chatEmbeds) {
-    const embeds = opts.chatEmbeds.map((line) => `${line.name}: ${line.text}`)
-    const { adding: fit } = await fillPromptWithLines({
-      encoder,
-      tokenLimit: opts.settings?.memoryChatEmbedLimit || 500,
-      context: '',
-      lines: embeds,
-    })
-    parts.chatEmbeds = fit
-  }
-
-  return parts
 }
 
 function getSupplementaryParts(opts: PromptPartsOptions, replyAs: AppSchema.Character) {
@@ -544,7 +648,7 @@ function getSupplementaryParts(opts: PromptPartsOptions, replyAs: AppSchema.Char
     system: '' as string | undefined,
   }
 
-  if (!settings?.service) return parts
+  if (!settings) return parts
 
   parts.ujb = settings.ultimeJailbreak
   parts.system = settings.systemPrompt
@@ -585,8 +689,8 @@ function createPostPrompt(
 ) {
   const post = []
 
-  if (opts.kind === 'chat-query') {
-    post.push(`Query Response:`)
+  if (opts.kind === 'chat-query' || opts.kind === 'summary') {
+    // post.push(`Query Response:`)
   } else {
     post.push(`${opts.replyAs.name}:`)
   }
@@ -609,10 +713,11 @@ function removeEmpty(value?: string) {
  * In `createPrompt()`, we trim this down to fit into the context with all of the chat and character context
  */
 export async function getLinesForPrompt(
-  { settings, members, messages, continue: cont, book, ...opts }: PromptOpts,
+  opts: PromptOpts,
   encoder: TokenCounter,
   maxContext?: number
-) {
+): Promise<{ lines: HistoryLine[] }> {
+  const { settings, members, messages } = opts
   maxContext = maxContext || getContextLimit(opts.user, settings)
 
   const profiles = new Map<string, AppSchema.Profile>()
@@ -620,7 +725,7 @@ export async function getLinesForPrompt(
     profiles.set(member.userId, member)
   }
 
-  const formatMsg = (msg: AppSchema.ChatMessage, i: number, all: AppSchema.ChatMessage[]) => {
+  const formatMsg = (msg: AppSchema.ChatMessage): HistoryLine => {
     const profile = msg.userId ? profiles.get(msg.userId) : opts.sender
     const sender = opts.impersonate
       ? opts.impersonate.name
@@ -633,6 +738,7 @@ export async function getLinesForPrompt(
       members: profiles,
       sender: opts.sender,
       impersonate: opts.impersonate,
+      replyAs: opts.replyAs,
     })
     const char = getBotName(
       opts.chat,
@@ -644,28 +750,82 @@ export async function getLinesForPrompt(
       opts.impersonate
     )
 
-    return fillPlaceholders({ msg, author, char, user: sender }).trim()
+    msg.msg = removeReasoning(msg.msg, settings?.reasoning)
+    const filled = fillPlaceholders({ msg, author: author.name, char, user: sender }).trim()
+
+    return { _id: msg._id, msg: filled, role: author.role, json: msg.json?.values || {} }
   }
 
-  const history = messages.slice().sort(sortMessagesDesc).map(formatMsg)
+  /**
+   * Message Visibility Filtering
+   */
+  const filtered = messages.filter((msg) => {
+    const invisible = isMessageInvisible(opts.chat, msg, opts.replyAs._id)
+    if (invisible) return false
+    return true
+  })
+
+  const history = filtered.map(formatMsg)
 
   const { adding: lines } = await fillPromptWithLines({
     encoder,
     tokenLimit: maxContext,
     context: '',
-    lines: history,
+    lines: history.map((h) => h.msg),
   })
 
   if (opts.trimSentences) {
-    return lines.map(trimSentence)
+    return { lines: history.slice(-lines.length).map(trimAddedLine) }
   }
 
-  return lines
+  return { lines: history.slice(-lines.length) }
+}
+
+export function isMessageInvisible(
+  chat: AppSchema.Chat,
+  msg: AppSchema.ChatMessage,
+  characterId: string
+): boolean {
+  const specific = msg.invisible?.[characterId]
+  const defaults = chat.invisible?.[characterId]
+  const charDefaults = chat.invisibleChars?.[characterId]?.[msg.characterId || 'none']
+
+  if (specific !== undefined) return specific
+  if (charDefaults !== undefined) return charDefaults
+  if (defaults !== undefined) return defaults
+  return false
+}
+
+export function isMessageVisible(
+  chat: AppSchema.Chat,
+  msg: AppSchema.ChatMessage,
+  characterId: string
+): boolean {
+  return !isMessageInvisible(chat, msg, characterId)
+}
+
+export function getMessageVisibility(
+  chat: AppSchema.Chat,
+  msg: AppSchema.ChatMessage,
+  characterId: string
+) {
+  const specific = msg.invisible?.[characterId]
+  const defaults = chat.invisible?.[characterId]
+  const charDefaults = chat.invisibleChars?.[characterId]?.[msg.characterId || 'none']
+
+  if (specific !== undefined) return specific ? 'invisible' : 'visible'
+  if (charDefaults !== undefined) return charDefaults ? 'invisible' : 'visible'
+  if (defaults !== undefined) return defaults ? 'invisible' : 'visible'
+  return 'default'
+}
+
+function trimAddedLine(added: HistoryLine): HistoryLine {
+  return { msg: trimSentence(added.msg), _id: added._id, role: added.role, json: added.json }
 }
 
 /** This function is not used for Claude or Chat */
-export function formatInsert(insert: string): string {
-  return `${insert}\n`
+export function formatInsert(insert: string): PromptLine {
+  return { type: 'insert' as const, line: `${insert}\n`, role: 'user' }
 }
 
 /**
@@ -681,11 +841,13 @@ export async function fillPromptWithLines(opts: {
   encoder: TokenCounter
   tokenLimit: number
   context: string
-  lines: string[]
+  lines: string[] | HistoryLine[]
+  unparsed?: HistoryLine[]
 
   /** Nodes to be inserted at a particular depth in the `lines` */
   inserts?: Map<number, string>
   optional?: Array<{ id: string; content: string }>
+  marker?: string
 }) {
   const { encoder, tokenLimit, context, lines, inserts = new Map(), optional = [] } = opts
   const insertsCost = await encoder(Array.from(inserts.values()).join(' '))
@@ -695,21 +857,42 @@ export async function fillPromptWithLines(opts: {
    * Optional placeholders do not count towards token counts.
    * They are optional after everything else has been inserted therefore we remove them from the prompt
    */
-  const cleanContext = optional.reduce((amble, { id }) => amble.replace(id, ''), context)
+  let cleanContext = optional.reduce((amble, { id }) => amble.replace(id, ''), context)
+  if (opts.marker) {
+    cleanContext = cleanContext.replace(opts.marker, '')
+  }
+
   let count = await encoder(cleanContext)
-  const adding: string[] = []
+  const adding: PromptLine[] = []
 
   let linesAddedCount = 0
-  for (const line of lines) {
-    const tokens = await encoder(line)
+
+  // We count from the bottom as lines are in natural order
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    const rawLine = Array.isArray(opts.unparsed) ? opts.unparsed[i] : undefined
+
+    const id = typeof line === 'string' ? rawLine?._id : line._id
+    const text = typeof line === 'string' ? line : line.msg
+    const tokens = await encoder(text)
     if (tokens + count > tokenLimitMinusInserts) {
       break
     }
     const insert = inserts.get(linesAddedCount)
-    if (insert) adding.push(formatInsert(insert))
+    if (insert) adding.unshift(formatInsert(insert))
 
     count += tokens
-    adding.push(line)
+
+    /**
+     * @TODO ~~Double check the role is correct here~~
+     * Role here is correct: If `lines` is `string[]` then we're filling embeds.
+     */
+    adding.unshift({
+      type: 'history',
+      line: text,
+      id,
+      role: typeof line === 'string' ? (rawLine ? rawLine.role : 'user') : line.role,
+    })
     linesAddedCount++
   }
 
@@ -717,7 +900,9 @@ export async function fillPromptWithLines(opts: {
   // instead we put them at the top of the conversation history
   const remainingInserts = insertsDeeperThanConvoHistory(inserts, linesAddedCount)
   if (remainingInserts) {
-    adding.push(formatInsert(remainingInserts))
+    // Unshift so they get added at the top
+    // They haven't been added due to the chat history length being smaller than the insert depth
+    adding.unshift(formatInsert(remainingInserts))
   }
 
   const unusedTokens = tokenLimitMinusInserts - count
@@ -747,114 +932,6 @@ function fillPlaceholders(opts: {
   return `${prefix}: ${msg}`
 }
 
-function sortMessagesDesc(l: AppSchema.ChatMessage, r: AppSchema.ChatMessage) {
-  return l.createdAt > r.createdAt ? -1 : l.createdAt === r.createdAt ? 0 : 1
-}
-
-export function getChatPreset(
-  chat: AppSchema.Chat,
-  user: AppSchema.User,
-  userPresets: AppSchema.UserGenPreset[]
-): Partial<AppSchema.UserGenPreset> {
-  /**
-   * Order of precedence:
-   * 1. chat.genPreset
-   * 2. chat.genSettings (Deprecated)
-   * 3. user.defaultPreset
-   * 4. user.servicePreset -- Deprecated: Service presets are completely removed apart from users that already have them.
-   * 5. built-in fallback preset (horde)
-   */
-
-  // #1
-  if (chat.genPreset) {
-    if (isDefaultPreset(chat.genPreset))
-      return { _id: chat.genPreset, ...defaultPresets[chat.genPreset] }
-
-    const preset = userPresets.find((preset) => preset._id === chat.genPreset)
-    if (preset) return preset
-  }
-
-  // #2
-  if (chat.genSettings) {
-    return chat.genSettings
-  }
-
-  // #3
-  const defaultId = user.defaultPreset
-  if (defaultId) {
-    if (isDefaultPreset(defaultId)) return { _id: defaultId, ...defaultPresets[defaultId] }
-    const preset = userPresets.find((preset) => preset._id === defaultId)
-    if (preset) return preset
-  }
-
-  // #4
-  const { adapter, isThirdParty } = getAdapter(chat, user, undefined)
-  const fallbackId = user.defaultPresets?.[isThirdParty ? 'kobold' : adapter]
-
-  if (fallbackId) {
-    if (isDefaultPreset(fallbackId)) return { _id: fallbackId, ...defaultPresets[fallbackId] }
-    const preset = userPresets.find((preset) => preset._id === fallbackId)
-    if (preset) return preset
-  }
-
-  // #5
-  return getFallbackPreset(adapter || 'horde')
-}
-
-/**
- * Order of Precedence:
- * 1. chat.genPreset -> service
- * 2. chat.genSettings -> service
- * 3. chat.adapter
- * 4. user.defaultAdapter
- */
-export function getAdapter(
-  chat: AppSchema.Chat,
-  user: AppSchema.User,
-  preset: Partial<AppSchema.GenSettings> | undefined
-) {
-  let adapter = preset?.service!
-
-  const thirdPartyFormat = preset?.thirdPartyFormat || user.thirdPartyFormat
-  const isThirdParty = thirdPartyFormat in THIRDPARTY_HANDLERS && adapter === 'kobold'
-
-  if (adapter === 'kobold') {
-    adapter = THIRDPARTY_HANDLERS[user.thirdPartyFormat]
-  }
-
-  let model = ''
-  let presetName = 'Fallback Preset'
-
-  if (adapter === 'replicate') {
-    model = preset?.replicateModelType || 'llama'
-  }
-
-  if (adapter === 'novel') {
-    model = user.novelModel
-  }
-
-  if (adapter === 'openai') {
-    model = preset?.thirdPartyModel || preset?.oaiModel || defaultPresets.openai.oaiModel
-  }
-
-  if (chat.genPreset) {
-    if (isDefaultPreset(chat.genPreset)) {
-      presetName = 'Built-in Preset'
-    } else presetName = 'User Preset'
-  } else if (chat.genSettings) {
-    presetName = 'Chat Settings'
-  } else if (user.defaultPresets) {
-    const servicePreset = user.defaultPresets[adapter]
-    if (servicePreset) {
-      presetName = `Service Preset`
-    }
-  }
-
-  const contextLimit = getContextLimit(user, preset)
-
-  return { adapter, model, preset: presetName, contextLimit, isThirdParty }
-}
-
 type LimitStrategy = (
   user: AppSchema.User,
   gen: Partial<AppSchema.GenSettings> | undefined
@@ -873,9 +950,9 @@ export function getContextLimit(
   user: AppSchema.User,
   gen: Partial<AppSchema.GenSettings> | undefined
 ): number {
-  const genAmount = gen?.maxTokens || getFallbackPreset(gen?.service || 'horde')?.maxTokens || 80
+  const genAmount = gen?.maxTokens || getFallbackPreset(gen?.service || 'horde')?.maxTokens || 300
   const configuredMax =
-    gen?.maxContextLength || getFallbackPreset(gen?.service || 'horde')?.maxContextLength || 4096
+    gen?.maxContextLength || getFallbackPreset(gen?.service || 'horde')?.maxContextLength || 8192
 
   if (!gen?.service) return configuredMax - genAmount
 
@@ -896,11 +973,12 @@ export function getContextLimit(
     case 'horde':
       return configuredMax - genAmount
 
+    case 'third-party':
     case 'kobold': {
       if (!gen.useMaxContext) return configuredMax - genAmount
       switch (gen.thirdPartyFormat) {
         case 'gemini': {
-          const max = GOOGLE_LIMITS[gen.googleModel!]
+          const max = GOOGLE_LIMITS[gen.googleModel!] || GOOGLE_LIMITS.fallback
           return max ? max - genAmount : configuredMax - genAmount
         }
 
@@ -912,7 +990,11 @@ export function getContextLimit(
     case 'novel': {
       const model = gen?.novelModel || NOVEL_MODELS.kayra_v1
       if (model === NOVEL_MODELS.clio_v1 || model === NOVEL_MODELS.kayra_v1) {
-        return Math.min(8000, configuredMax) - genAmount
+        return configuredMax - genAmount
+      }
+
+      if (model === NOVEL_MODELS.glm_46) {
+        return 27500 - genAmount // 28k with the correct tokenizer
       }
 
       return configuredMax - genAmount
@@ -931,25 +1013,25 @@ export function getContextLimit(
       return configuredMax - genAmount
 
     case 'claude':
+    case 'claude-v2':
       return configuredMax - genAmount
 
     case 'goose':
-      return Math.min(configuredMax, 2048) - genAmount
+      return configuredMax - genAmount
 
+    case 'openrouter-completion':
     case 'openrouter':
-      if (gen?.openRouterModel) {
-        if (gen.useMaxContext) return gen.openRouterModel.context_length - genAmount
-
-        return Math.min(gen.openRouterModel.context_length, configuredMax) - genAmount
+      if (gen?.openRouterModel?.context_length && gen.useMaxContext) {
+        return gen.openRouterModel.context_length * 0.98 - genAmount
       }
 
-      return Math.min(configuredMax, 4096) - genAmount
+      return configuredMax - genAmount
 
     case 'mancer':
-      return Math.min(configuredMax, 8000) - genAmount
+      return configuredMax - genAmount
 
     case 'venus':
-      return Math.min(configuredMax, 7800) - genAmount
+      return configuredMax - genAmount
   }
 }
 
@@ -966,27 +1048,6 @@ export type TrimOpts = {
   start: 'top' | 'bottom'
   encoder: TokenCounter
   tokenLimit: number
-}
-
-/**
- * Remove lines from a body of text that contains line breaks
- */
-export async function trimTokens(opts: TrimOpts) {
-  const text = Array.isArray(opts.input) ? opts.input.slice() : opts.input.split('\n')
-  if (opts.start === 'bottom') text.reverse()
-
-  let tokens = 0
-  let output: string[] = []
-
-  for (const line of text) {
-    tokens += await opts.encoder(line)
-    if (tokens > opts.tokenLimit) break
-
-    if (opts.start === 'top') output.push(line)
-    else output.unshift(line)
-  }
-
-  return output
 }
 
 /**
@@ -1014,6 +1075,9 @@ export function resolveScenario(
     }
   }
 
+  // The scenario `{{char}}` placeholders must always refer to the owner of the scenario
+  result.replace(/{{char}}/gi, mainChar.name)
+
   return result.trim()
 }
 
@@ -1035,6 +1099,7 @@ export interface JsonField {
   name: string
   disabled: boolean
   type: JsonType
+  alias?: string
 }
 
 export const schema = {
@@ -1097,7 +1162,7 @@ export function toJsonSchema(body: JsonField[]): JsonSchema | undefined {
 
       case 'bool': {
         props[name] = schema.bool(type)
-        props[name].type = 'enum'
+        props[name].type = 'enum' as any
         break
       }
 
@@ -1210,4 +1275,79 @@ export function onJsonTickHandler(
   }
 
   return parser
+}
+
+function removeReasoning(msg: string, reasoning: AppSchema.GenSettings['reasoning']) {
+  const start = (reasoning?.start || '<think>').trim()
+  const end = (reasoning?.end || '</think>').trim()
+
+  if (!start || !end) return msg
+
+  const { content } = extractReasoning(msg, { tags: reasoning })
+  return content
+
+  // while (true) {
+  //   let startIndex = msg.indexOf(start)
+  //   const endIndex = msg.indexOf(end)
+  //   if (startIndex < 0) {
+  //     if (endIndex >= 0) {
+  //       startIndex = 0
+  //     } else {
+  //       break
+  //     }
+  //   }
+
+  //   if (endIndex > startIndex) {
+  //     const thought = msg.slice(startIndex, endIndex + end.length)
+  //     msg = msg.replace(thought, '')
+  //     continue
+  //   }
+
+  //   const thought = msg.slice(startIndex)
+  //   if (thought) {
+  //     msg = msg.replace(thought, '')
+  //   }
+  // }
+
+  // return msg.trim()
+}
+
+export function simplifyPreset(
+  user: AppSchema.User,
+  gen: Partial<AppSchema.GenSettings>,
+  sub?: Partial<Omit<AppSchema.SubscriptionModel, 'kind'>>
+): Partial<AppSchema.GenSettings> {
+  const next: Partial<AppSchema.GenSettings> = { ...gen }
+
+  if (gen.useMaxContext || gen.presetMode === 'simple') {
+    gen.useMaxContext = true
+    next.maxContextLength = getContextLimit(user, next) + (gen.maxTokens ?? 0)
+  }
+
+  if (!gen.presetMode || gen.presetMode === 'advanced') return next
+
+  const recommends: any = {}
+
+  if (sub) {
+    for (const [prop, usable] of Object.entries(MODE_SETTINGS[gen.presetMode] || {})) {
+      if (!usable) continue
+      const value = (sub as any)[prop]
+      if (value !== undefined) {
+        recommends[prop] = value
+      }
+    }
+  }
+
+  Object.assign(next, recommends, { useMaxContext: true })
+
+  return next
+}
+
+let _templateLocator = (id: string): AppSchema.PromptTemplate | undefined => {
+  return
+}
+export function registerTemplateLocator(
+  callback: (id: string) => AppSchema.PromptTemplate | undefined
+) {
+  _templateLocator = callback
 }

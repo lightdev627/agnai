@@ -1,13 +1,4 @@
-import {
-  Component,
-  Match,
-  Switch,
-  createEffect,
-  createMemo,
-  createSignal,
-  on,
-  onMount,
-} from 'solid-js'
+import { Component, Match, Switch, createEffect, createMemo, createSignal, on } from 'solid-js'
 import { AppSchema } from '/common/types/schema'
 import Select from '/web/shared/Select'
 import Modal from '/web/shared/Modal'
@@ -17,6 +8,7 @@ import { exportCharacter } from '/common/characters'
 import { charsApi } from '/web/store/data/chars'
 import { toastStore } from '/web/store'
 import { downloadCharCard } from './util'
+import { downloadJson } from '/web/shared/util'
 
 type CharacterFileType = 'png' | 'json'
 
@@ -32,8 +24,18 @@ export const DownloadModal: Component<{
 }> = (props) => {
   let ref: any
   const [char, setChar] = createSignal<AppSchema.Character | undefined>(props.char)
-  onMount(async () => {
-    if (props.char) return
+
+  createEffect(async () => {
+    if (!props.char && !props.charId) {
+      setChar(undefined)
+      return
+    }
+
+    if (props.char) {
+      setChar(props.char)
+      return
+    }
+
     const res = await charsApi.getCharacterDetail(props.charId)
     if (res.result) {
       setChar(res.result)
@@ -79,6 +81,15 @@ export const DownloadModal: Component<{
     )
   )
 
+  const objectUrl = createMemo(() => {
+    if (!char()) return
+
+    const json = charToJson(char()!, format())
+    return json
+    // const url = URL.createObjectURL(new Blob([json], { type: 'text/json' }))
+    // return url
+  })
+
   return (
     <Modal
       show={props.show && !!char()}
@@ -91,20 +102,19 @@ export const DownloadModal: Component<{
           </Button>
           <Switch>
             <Match when={fileType() === 'json'}>
-              <a
-                href={`data:text/json:charset=utf-8,${encodeURIComponent(
-                  charToJson(props.char || char()!, format())
-                )}`}
-                download={`${char()!.name}.json`}
+              <Button
+                onClick={() => {
+                  const downloadableChar = objectUrl()
+                  if (!downloadableChar) return
+                  downloadJson(downloadableChar, `${char()?.name}.json`)
+                }}
               >
-                <Button>
-                  <Save /> Download (JSON)
-                </Button>
-              </a>
+                <Save /> Download (JSON)
+              </Button>
             </Match>
 
             <Match when={fileType() === 'png'}>
-              <Button onClick={() => downloadCharCard(props.char || props.charId, format())}>
+              <Button disabled={!char()} onClick={() => downloadCharCard(char()!, format())}>
                 <Save /> Download (PNG)
               </Button>
             </Match>

@@ -4,10 +4,9 @@ import { v4 } from 'uuid'
 import { db } from './client'
 import { AppSchema } from '../../common/types/schema'
 import { config } from '../config'
-import { NOVEL_MODELS } from '../../common/adapters'
 import { logger } from '../middleware'
 import { errors, StatusError } from '../api/wrap'
-import { encryptPassword, now } from './util'
+import { decryptText, encryptPassword, encryptText, encryptUserText, now } from './util'
 import { defaultChars } from '/common/characters'
 import { resyncSubscription } from '../api/billing/stripe'
 import { getCachedSubscriptionModels, getCachedTiers, getTier } from './subscriptions'
@@ -16,6 +15,8 @@ import { patreon } from '../api/user/patreon'
 import { getUserSubscriptionTier } from '/common/util'
 import { command } from '../domains'
 import { getRegisteredAdapters } from '../adapter/register'
+import { NOVEL_MODELS } from '/common/presets/novel'
+import { ImageProviderSettings } from '/common/types/image-schema'
 
 export type NewUser = {
   username: string
@@ -26,7 +27,14 @@ export type NewUser = {
 
 export async function ensureInitialUser() {
   const user = await db('user').findOne({ kind: 'user', username: config.init.username })
-  if (user) return
+  const reset = !!process.env.RESET_PASSWORD
+  if (user && !reset) return
+
+  if (user && reset) {
+    await store.users.resetPassword(user?._id, config.init.password)
+    logger.info(config.init, 'Reset initial user')
+    return
+  }
 
   await createUser(
     {
@@ -40,8 +48,74 @@ export async function ensureInitialUser() {
   logger.info(config.init, 'Created initial user')
 }
 
+export async function deleteUserProvider(opts: { userId: string; providerId: string }) {
+  await db('user').updateOne(
+    { _id: opts.userId },
+    {
+      $pull: {
+        providers: { _id: opts.providerId },
+      },
+    },
+    {}
+  )
+
+  const next = await getUser(opts.userId)
+  if (!next) {
+    throw new Error('Invalid user')
+  }
+
+  return toSafeUser(next)
+}
+
+export async function saveUserProvider(
+  userId: string,
+  prv: AppSchema.Provider,
+  deleteKey?: boolean
+) {
+  const user = await getUser(userId)
+  if (!user) throw errors.Forbidden
+
+  const providers = user.providers || []
+  const key = deleteKey ? '' : prv.key ? encryptText(prv.key) : ''
+
+  if (prv._id) {
+    const next = providers.map((p) => {
+      if (prv._id !== p._id) return p
+      return {
+        _id: p._id,
+        name: prv.name,
+        url: prv.url,
+        key: deleteKey ? '' : key ? key : p.key,
+        provider: prv.provider,
+        format: prv.format,
+        userKey: undefined,
+        subFormat: prv.subFormat || '',
+        disableAutoUrl: !!prv.disableAutoUrl,
+      }
+    })
+
+    await db('user').updateOne({ _id: userId }, { $set: { providers: next } })
+    const safe = toSafeUser({ ...user, providers: next })
+    return safe
+  }
+
+  providers.push({
+    _id: v4(),
+    name: prv.name,
+    url: prv.url,
+    disableAutoUrl: !!prv.disableAutoUrl,
+    provider: prv.provider,
+    format: prv.format,
+    key,
+  })
+
+  await db('user').updateOne({ _id: userId }, { $set: { providers } })
+  const safe = toSafeUser({ ...user, providers })
+  return safe
+}
+
 export async function getMetrics() {
-  const [totalUsers] = await Promise.all([db('user').countDocuments()])
+  const [totalUsers] = await Promise.all([db('user').estimatedDocumentCount()])
 
   return { totalUsers }
 }
@@ -52,7 +126,12 @@ export async function getProfile(userId: string) {
 }
 
 export async function getUser(userId: string) {
-  const user = await db('user').findOne({ _id: userId, kind: 'user' }, { projection: { hash: 0 } })
+  const user = await db('user').findOne({ _id: userId }, { projection: { hash: 0 } })
+  return user
+}
+
+export async function getUserByCode(code: string) {
+  const user = await db('user').findOne({ resetCode: code }, { projection: { hash: 0 } })
   return user
 }
 
@@ -64,8 +143,30 @@ export async function updateUserUI(userId: string, props: Partial<AppSchema.User
   await db('user').updateOne({ _id: userId }, { $set: { ui: next, updatedAt: now() } })
 }
 
+export async function resetPassword(userId: string, password: string) {
+  const hash = await encryptPassword(password)
+
+  await db('user').updateOne({ _id: userId }, { $set: { hash, resetCode: '' } })
+}
+
 export async function updateUser(userId: string, props: Partial<AppSchema.User>) {
-  await db('user').updateOne({ _id: userId }, { $set: { ...props, updatedAt: now() } })
+  try {
+    await db('user').updateOne({ _id: userId }, { $set: { ...props, updatedAt: now() } })
+  } catch (ex: any) {
+    /**
+     * A bug has caused specific API keys to be re-encrypted multiple times.
+     * If we get this error, we will need to remove the keys
+     */
+    if (ex?.name !== 'MongoServerError') {
+      throw ex
+    }
+
+    await db('user').updateOne(
+      { _id: userId },
+      { $set: { hordeKey: '' as any, featherlessApiKey: '' as any } }
+    )
+    await db('user').updateOne({ _id: userId }, { $set: { ...props, updatedAt: now() } })
+  }
   return getUser(userId)
 }
 
@@ -77,6 +178,10 @@ export async function updateProfile(userId: string, props: Partial<AppSchema.Pro
 export async function authenticate(username: string, password: string) {
   const user = await db('user').findOne({ username: username.toLowerCase() })
   if (!user) return
+
+  if (user.banned) {
+    throw errors.UserBanned(user.banned.reason)
+  }
 
   const match = await bcrypt.compare(password, user.hash)
   if (!match) return
@@ -213,6 +318,23 @@ export async function createUser(newUser: NewUser, admin?: boolean) {
   return { profile, token, user: toSafeUser(user) }
 }
 
+export async function upsertImageProvider(user: AppSchema.User, provider: ImageProviderSettings) {
+  if (!provider._id) {
+    provider._id = v4()
+  }
+
+  const providers = user.imageProviders || []
+  const isUpdate = providers.some((prv) => prv._id === provider._id)
+
+  const next = isUpdate
+    ? providers.map((prv) => (prv._id === provider._id ? { ...prv, ...provider } : prv))
+    : providers.concat(provider)
+
+  await db('user').updateOne({ _id: user._id }, { $set: { imageProviders: next } })
+  user.imageProviders = next
+  return user
+}
+
 export async function createAccessToken(username: string, user: AppSchema.User) {
   const payload: Omit<AppSchema.Token, 'iat' | 'exp'> = {
     userId: user._id,
@@ -222,7 +344,7 @@ export async function createAccessToken(username: string, user: AppSchema.User) 
 
   const token = jwt.sign(payload, config.jwtSecret, {
     expiresIn: config.jwtExpiry,
-  })
+  } as jwt.SignOptions)
   return token
 }
 
@@ -241,7 +363,7 @@ export async function createRemoteAccessToken(username: string, user: AppSchema.
   const token = jwt.sign(payload, key.key, {
     algorithm: 'RS256',
     expiresIn: config.jwtExpiry,
-  })
+  } as jwt.SignOptions)
 
   return token
 }
@@ -433,7 +555,7 @@ export async function unlinkPatreonAccount(userId: string, reason: string) {
   await command.patron.unlink(user.patreonUserId, { userId, reason })
 }
 
-export function toSafeUser(user: AppSchema.User) {
+export function toSafeUser(user: AppSchema.User, seed?: string) {
   if (user.patreon) {
     user.patreon.access_token = ''
     user.patreon.refresh_token = ''
@@ -451,7 +573,12 @@ export function toSafeUser(user: AppSchema.User) {
     user.novelApiKey = ''
   }
 
-  user.hordeKey = ''
+  if (user.hordeKey) {
+    if (seed) {
+      const key = decryptText(user.hordeKey, true)
+      user.hordeKey = encryptUserText(key, seed)
+    } else user.hordeKey = ''
+  }
   user.apiKey = user.apiKey ? '*********' : 'Not set'
 
   if (user.oaiKey) {
@@ -462,6 +589,11 @@ export function toSafeUser(user: AppSchema.User) {
   if (user.mistralKey) {
     user.mistralKeySet = true
     user.mistralKey = ''
+  }
+
+  if (user.featherlessApiKey) {
+    user.featherlessApiKeySet = true
+    user.featherlessApiKey = ''
   }
 
   if (user.scaleApiKey) {
@@ -484,9 +616,20 @@ export function toSafeUser(user: AppSchema.User) {
     user.elevenLabsApiKeySet = true
   }
 
-  if (user.featherlessApiKey) {
-    user.featherlessApiKey = ''
-    user.featherlessApiKeySet = true
+  if (user.arliApiKey) {
+    user.arliApiKey = ''
+    user.arliApiKeySet = true
+  }
+
+  if (user.providers) {
+    for (const prov of user.providers) {
+      if (prov.provider?.startsWith('self-') && prov.key) {
+        prov.userKey = decryptText(prov.key, true)
+      }
+
+      prov.keySet = !!prov.key
+      prov.key = ''
+    }
   }
 
   for (const svc of getRegisteredAdapters()) {
@@ -499,6 +642,8 @@ export function toSafeUser(user: AppSchema.User) {
       if (user.adapterConfig[svc.name]![secret.field]) {
         user.adapterConfig[svc.name]![secret.field] = ''
         user.adapterConfig[svc.name]![secret.field + 'Set'] = true
+      } else {
+        user.adapterConfig[svc.name]![secret.field + 'Set'] = false
       }
     }
   }

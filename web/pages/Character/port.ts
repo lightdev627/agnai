@@ -4,10 +4,11 @@ import { characterBookToNative } from '/common/memory'
 import { AppSchema } from '/common/types'
 import { slugify } from '/common/util'
 import { FileInputResult, getFileAsString } from '/web/shared/FileInput'
+import { tryParseImport } from '/web/shared/util'
 import { NewCharacter, toastStore } from '/web/store'
 import { CHUB_URL } from '/web/store/chub'
 
-type ImportFormat = 'tavern' | 'tavernV2' | 'ooba' | 'agnai'
+type ImportFormat = 'tavern' | 'tavernV2' | 'ooba' | 'agnai' | 'charas'
 
 export const SUPPORTED_FORMATS = 'Agnaistic, CAI, TavernAI, TextGen, Pygmalion'
 
@@ -40,7 +41,7 @@ export async function importCharacterFile(file: FileInputResult) {
       `Invalid file format: ${file.file.name}. Supported formats: ${SUPPORTED_FORMATS}`
     )
   } catch (ex: any) {
-    toastStore.error(`Failed to import ${file.file.name}: ${ex.message}`)
+    toastStore.error(ex, { prefix: `Failed to import ${file.file.name}` })
     throw ex
   }
 }
@@ -83,9 +84,41 @@ export function jsonToCharacter(json: any): NewCharacter {
       sampleChat: json.mes_example,
       scenario: json.scenario,
       originalAvatar: undefined,
+      alternateGreetings: ensureArray(json.data?.alternate_greetings).filter(
+        (v) => typeof v === 'string'
+      ),
+      characterBook: Array.isArray(json.data?.character_book?.entries)
+        ? characterBookToNative(json.data.character_book)
+        : undefined,
     }
   }
 
+  if (format === 'charas') {
+    const v2 = json.data || {}
+    const ext = v2.extensions || {}
+
+    return {
+      name: json.name,
+      description: json.description,
+      greeting: json.first_mes,
+      appearance: ext?.appearance,
+      creator: v2.creator,
+      persona: {
+        kind: 'text',
+        attributes: {
+          text: [[json.personality].filter((text) => !!text).join('\n')],
+        },
+      },
+      sampleChat: json.mes_example,
+      scenario: json.scenario,
+      originalAvatar: undefined,
+      systemPrompt: v2.system_prompt,
+      postHistoryInstructions: v2.post_history_instructions,
+      tags: Array.isArray(v2.tags) ? v2.tags : [],
+      alternateGreetings: ensureArray(v2.alternate_greetings).filter((v) => typeof v === 'string'),
+      extensions: ext,
+    }
+  }
   /**
    * format === 'tavernV2'
    * Tests, in the case we previously saved the lossless Agnai "Persona" data,
@@ -93,8 +126,8 @@ export function jsonToCharacter(json: any): NewCharacter {
    * causing the saved "Persona" data to be obsolete.
    */
   const isSavedPersonaMissingOrOutdated =
-    json.data.extensions.agnai?.persona === undefined ||
-    formatCharacter(json.data.name, json.data.extensions.agnai?.persona) !== json.data.description
+    json.data?.extensions.agnai?.persona === undefined ||
+    formatCharacter(json.data.name, json.data?.extensions?.agnai?.persona) !== json.data.description
 
   return {
     name: json.data.name,
@@ -108,7 +141,7 @@ export function jsonToCharacter(json: any): NewCharacter {
             ],
           },
         }
-      : json.data.extensions.agnai.persona,
+      : json.data.extensions?.agnai.persona,
     sampleChat: json.data.mes_example,
     scenario: json.data.scenario,
     originalAvatar: undefined,
@@ -123,9 +156,9 @@ export function jsonToCharacter(json: any): NewCharacter {
     characterVersion: json.data.character_version,
     tags: json.data.tags,
     description: json.data.creator_notes,
-    voice: json.data.extensions.agnai?.voice,
-    insert: json.data.extensions.depth_prompt,
-    json: json.data.extensions.agnai?.json,
+    voice: json.data.extensions?.agnai?.voice,
+    insert: json.data.extensions?.depth_prompt,
+    json: json.data.extensions?.agnai?.json,
   }
 }
 
@@ -148,6 +181,7 @@ export async function downloadCharacterHub(path: string) {
 
 function getImportFormat(obj: any): ImportFormat {
   if (obj.kind === 'character' || isNativeCharacter(obj)) return 'agnai'
+  if (obj.extensions?.charas) return 'charas'
   if ('char_name' in obj) return 'ooba'
   if (obj.spec === 'chara_card_v2') return 'tavernV2'
   if ('mes_example' in obj) return 'tavern'
@@ -179,7 +213,7 @@ async function processImage(file: FileInputResult) {
 
 async function processJSON(file: FileInputResult) {
   const content = await getFileAsString(file)
-  const json = JSON.parse(content)
+  const json = tryParseImport(content)
   const char = jsonToCharacter(json)
   char.tags = char.tags || []
   toastStore.success('Character file accepted')
@@ -198,4 +232,10 @@ function sanitiseCharacter<T>(char: T): T {
   }
 
   return char
+}
+
+function ensureArray<T = any>(value?: any): T[] {
+  if (!value) return []
+  if (Array.isArray(value)) return value
+  return []
 }

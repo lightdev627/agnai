@@ -1,23 +1,15 @@
 import { Component, createEffect, createMemo, createSignal, For, on, onMount, Show } from 'solid-js'
-import Select, { Option } from '../Select'
-import {
-  ADAPTER_LABELS,
-  AIAdapter,
-  AdapterSetting,
-  ThirdPartyFormat,
-} from '../../../common/adapters'
+import { Option } from '../Select'
+import { ADAPTER_LABELS, AIAdapter, AdapterSetting } from '../../../common/adapters'
 import { presetStore, settingStore } from '../../store'
-import { Card } from '../Card'
-import { getFormEntries, getUsableServices, storage } from '../util'
+import { getUsableServices, storage } from '../util'
 import { createStore } from 'solid-js/store'
 import Accordian from '../Accordian'
 import { ServiceOption } from '../../pages/Settings/components/RegisteredSettings'
 import { getServiceTempConfig } from '../adapter'
 import Tabs from '../Tabs'
 import { useSearchParams } from '@solidjs/router'
-import { AgnaisticSettings } from './Agnaistic'
 import { usePaneManager } from '../hooks'
-import { PresetProps, PresetState, PresetTab, SetPresetState } from './types'
 import { GeneralSettings } from './General'
 import { RegisteredSettings } from './Registered'
 import { PromptSettings } from './Prompt'
@@ -25,15 +17,17 @@ import { SliderSettings } from './Sliders'
 import { ToggleSettings } from './Toggles'
 import { MemorySettings } from './Memory'
 import { PresetMode } from './Fields'
+import { PresetProvider } from '/web/pages/Settings/Provider'
+import { ThirdPartyModel } from './ThirdPartyModel'
+import Divider from '../Divider'
+import { PresetProps, PresetTab } from '/web/store/preset-context'
 
 export { PresetSettings as default }
 
 type TempSetting = AdapterSetting & { value: any }
 
-const PresetSettings: Component<
-  PresetProps & { noSave: boolean; store: PresetState; setter: SetPresetState }
-> = (props) => {
-  const settings = settingStore()
+const PresetSettings: Component<PresetProps & { noSave: boolean; noModel?: boolean }> = (props) => {
+  const settings = settingStore((s) => ({ config: s.config }))
   const pane = usePaneManager()
   const [search, setSearch] = useSearchParams()
   const [tab, setTab] = createSignal(+(search.preset_tab ?? '0'))
@@ -45,29 +39,29 @@ const PresetSettings: Component<
 
   createEffect(
     on(
-      () => (props.store.service || '') + services().length,
+      () => (props.state.service || '') + services().length,
       () => {
         if (props.disabled) return
-        if (props.store.service) return
+        if (props.state.service) return
         if (!services().length) return
-        if (props.store._id) return
+        if (props.state._id) return
 
-        props.setter('service', services()[0].value as any)
+        props.setters.setState('service', services()[0].value as any)
       }
     )
   )
 
   const sub = createMemo(() => {
-    if (props.store.service !== 'agnaistic') return
-    const match = settings.config.subs.find(
-      (sub) => sub._id === props.store.registered?.agnaistic?.subscriptionId
-    )
+    if (props.state.service !== 'agnaistic') return
+    const subId =
+      props.state.providerModels?.agnaistic || props.state.registered?.agnaistic?.subscriptionId
+    const match = settings.config.subs.find((sub) => sub._id === subId)
 
     return match
   })
 
   const tabs = createMemo(() => {
-    if (!props.hideTabs && props.store.presetMode === 'simple') {
+    if (!props.hideTabs && props.state.presetMode === 'simple') {
       return ['General', 'Prompt']
     }
 
@@ -82,70 +76,31 @@ const PresetSettings: Component<
 
   return (
     <div class="flex flex-col gap-4">
-      <Card class="flex flex-col gap-2">
-        <Select
-          fieldName="service"
-          label="AI Service"
-          helperText={
-            <>
-              <Show when={!props.store.service}>
-                <p class="text-red-500">
-                  Warning! Your preset does not currently have a service set.
-                </p>
-              </Show>
-            </>
-          }
-          value={props.store.service}
-          items={services()}
-          onChange={(ev) => props.setter('service', ev.value as any)}
-          disabled={props.disabled || props.disableService}
-        />
+      <div class="flex flex-col gap-2">
+        <Show when={!props.noModel}>
+          <PresetProvider state={props.state} setters={props.setters} page={props.page} />
 
-        <AgnaisticSettings
-          state={props.store}
-          setter={props.setter}
-          noSave={props.noSave}
-          sub={sub()}
-        />
+          <ThirdPartyModel
+            state={props.state}
+            setters={props.setters}
+            page={props.page}
+            sub={sub()}
+          />
 
-        <Select
-          fieldName="thirdPartyFormat"
-          label="Self-host / 3rd-party Format"
-          helperText="Re-formats the prompt to the desired output format."
-          items={[
-            { label: 'None', value: '' },
-            { label: 'Kobold', value: 'kobold' },
-            { label: 'OpenAI', value: 'openai' },
-            { label: 'OpenAI (Chat Format)', value: 'openai-chat' },
-            { label: 'Claude', value: 'claude' },
-            { label: 'Textgen (Ooba)', value: 'ooba' },
-            { label: 'Llama.cpp', value: 'llamacpp' },
-            { label: 'Ollama', value: 'ollama' },
-            { label: 'vLLM', value: 'vllm' },
-            { label: 'Aphrodite', value: 'aphrodite' },
-            { label: 'ExLlamaV2', value: 'exllamav2' },
-            { label: 'KoboldCpp', value: 'koboldcpp' },
-            { label: 'TabbyAPI', value: 'tabby' },
-            { label: 'Mistral API', value: 'mistral' },
-            { label: 'Featherless', value: 'featherless' },
-            { label: 'Google AI Studio', value: 'gemini' },
-          ]}
-          value={props.store.thirdPartyFormat}
-          hide={props.store.service !== 'kobold'}
-          onChange={(ev) => props.setter('thirdPartyFormat', ev.value as ThirdPartyFormat)}
-        />
+          <Divider class="!my-2" />
+        </Show>
 
-        <PresetMode state={props.store} setter={props.setter} sub={sub()} />
+        <PresetMode state={props.state} setters={props.setters} sub={sub()} page={props.page} />
 
         <RegisteredSettings
-          service={props.store.service}
-          setter={props.setter}
-          state={props.store}
-          mode={props.store.presetMode}
+          service={props.setters.context.service}
+          setters={props.setters}
+          state={props.state}
         />
-      </Card>
+      </div>
+
       <Show when={pane.showing()}>
-        <TempSettings service={props.store.service} />
+        <TempSettings service={props.setters.context.service} />
       </Show>
       <Tabs
         select={(ev) => {
@@ -155,15 +110,45 @@ const PresetSettings: Component<
         selected={tab}
         tabs={tabs()}
       />
-      <GeneralSettings state={props.store} setter={props.setter} sub={sub()} tab={tabName()} />
+      <GeneralSettings
+        state={props.state}
+        setters={props.setters}
+        sub={sub()}
+        tab={tabName()}
+        page={props.page}
+      />
 
-      <PromptSettings state={props.store} setter={props.setter} sub={sub()} tab={tabName()} />
+      <PromptSettings
+        state={props.state}
+        setters={props.setters}
+        sub={sub()}
+        tab={tabName()}
+        page={props.page}
+      />
 
-      <MemorySettings state={props.store} setter={props.setter} sub={sub()} tab={tabName()} />
+      <MemorySettings
+        state={props.state}
+        setters={props.setters}
+        sub={sub()}
+        tab={tabName()}
+        page={props.page}
+      />
 
-      <SliderSettings state={props.store} setter={props.setter} sub={sub()} tab={tabName()} />
+      <SliderSettings
+        state={props.state}
+        setters={props.setters}
+        sub={sub()}
+        tab={tabName()}
+        page={props.page}
+      />
 
-      <ToggleSettings state={props.store} setter={props.setter} sub={sub()} tab={tabName()} />
+      <ToggleSettings
+        state={props.state}
+        setters={props.setters}
+        sub={sub()}
+        tab={tabName()}
+        page={props.page}
+      />
     </div>
   )
 }
@@ -174,12 +159,17 @@ const TempSettings: Component<{ service?: AIAdapter }> = (props) => {
     values: getServiceTempConfig(props.service),
   })
 
-  createEffect(() => {
-    if (settings.service === props.service) return
+  createEffect(
+    on(
+      () => [props.service],
+      () => {
+        if (settings.service === props.service) return
 
-    const values = getServiceTempConfig(props.service)
-    setSettings({ service: props.service, values })
-  })
+        const values = getServiceTempConfig(props.service)
+        setSettings({ service: props.service, values })
+      }
+    )
+  )
 
   return (
     <Show when={settings.values.length}>
@@ -203,20 +193,6 @@ const TempSettings: Component<{ service?: AIAdapter }> = (props) => {
       </Accordian>
     </Show>
   )
-}
-
-export function getRegisteredSettings(service: AIAdapter | undefined, ref: any) {
-  if (!service) return
-
-  const prefix = `registered.${service}.`
-  const values = getFormEntries(ref).reduce((prev, [key, value]) => {
-    if (!key.startsWith(prefix)) return prev
-    const field = key.replace(prefix, '')
-
-    return Object.assign(prev, { [field]: value })
-  }, {})
-
-  return values as Record<string, any>
 }
 
 function updateValue(values: TempSetting[], service: AIAdapter, field: string, nextValue: any) {

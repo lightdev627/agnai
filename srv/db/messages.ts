@@ -3,6 +3,8 @@ import { db } from './client'
 import { AppSchema } from '../../common/types/schema'
 import { now } from './util'
 import { WithId } from 'mongodb'
+import { StatusError } from '../api/wrap'
+import { logger } from '../middleware'
 
 // let PAGE_SIZE = config.limits.msgPageSize
 // if (isNaN(PAGE_SIZE) || PAGE_SIZE < 20) {
@@ -25,14 +27,31 @@ export type NewMessage = {
   retries?: string[]
   parent?: string
   json?: AppSchema.ChatMessage['json']
+  values?: any
   name: string | undefined
 }
 
 export type ImportedMessage = NewMessage & { createdAt: string }
 
+export async function checkExistance(messageIds: string[]) {
+  const res = await db('chat-message')
+    .find({ _id: { $in: messageIds } })
+    .project({ _id: 1, name: 1 })
+    .toArray()
+
+  const missing = new Set(messageIds)
+
+  for (const item of res) {
+    missing.delete(item._id)
+  }
+
+  return { missing: Array.from(missing), valid: missing.size === 0, found: res.length }
+}
+
 export async function createChatMessage(creating: NewMessage, ephemeral?: boolean) {
+  const id = creating._id || v4()
   const doc: AppSchema.ChatMessage = {
-    _id: creating._id || v4(),
+    _id: id,
     kind: 'chat-message',
     chatId: creating.chatId,
     characterId: creating.characterId,
@@ -54,45 +73,90 @@ export async function createChatMessage(creating: NewMessage, ephemeral?: boolea
     doc.imagePrompt = creating.imagePrompt
   }
 
-  if (!ephemeral) await db('chat-message').insertOne(doc)
-  return doc
+  if (ephemeral) return doc
+
+  try {
+    await db('chat-message').insertOne(doc)
+    return doc
+  } catch (ex) {
+    const existing = await db('chat-message').findOne({ _id: id })
+    if (!existing) {
+      throw new StatusError(`Failed to write message to database`, 500)
+    }
+
+    if (existing.chatId !== doc.chatId) {
+      logger.error({ err: ex, payload: { _id: id, chatid: doc.chatId } }, `Failed to write message`)
+      throw new StatusError(`Invalid message ID`, 400)
+    }
+
+    const { _id, ...update } = doc
+    await db('chat-message').updateOne({ _id: id }, { $set: update })
+    return doc
+  }
 }
 
 export async function importMessages(userId: string, messages: NewMessage[]) {
   const start = Date.now()
-  const docs: AppSchema.ChatMessage[] = messages.map((msg, i) => ({
-    _id: v4(),
-    kind: 'chat-message',
-    rating: 'none',
-    chatId: msg.chatId,
-    characterId: msg.characterId,
-    /**
-     * We will use this soon to retain the original handles.
-     * This needs further consideration for how it'll be handled in the front-end
-     * and how ancestors of this chat will retain this information when subsequent exports occur.
-     */
-    // userId: msg.senderId === 'anon' ? userId : msg.senderId,
-    // handle: msg.handle ? { name: msg.handle, userId: msg.senderId } : undefined,
-    handle: msg.handle || undefined,
-    userId: msg.senderId ? msg.senderId : undefined,
-    msg: msg.message,
-    adapter: msg.adapter,
-    createdAt: new Date(start + i).toISOString(),
-    updatedAt: new Date(start + i).toISOString(),
-    retries: [],
-  }))
+
+  const parents = new Map<string, AppSchema.ChatMessage>()
+
+  const docs: AppSchema.ChatMessage[] = messages.map((msg, i) => {
+    const id = v4()
+
+    const mapped = {
+      _id: id,
+      kind: 'chat-message',
+      chatId: msg.chatId,
+      characterId: msg.characterId,
+      /**
+       * We will use this soon to retain the original handles.
+       * This needs further consideration for how it'll be handled in the front-end
+       * and how ancestors of this chat will retain this information when subsequent exports occur.
+       */
+      // userId: msg.senderId === 'anon' ? userId : msg.senderId,
+      // handle: msg.handle ? { name: msg.handle, userId: msg.senderId } : undefined,
+      handle: msg.handle || undefined,
+      userId: msg.senderId ? userId : undefined,
+      parent: msg.parent,
+      ooc: msg.ooc,
+      json: msg.json,
+      values: msg.values,
+      msg: msg.message,
+      name: msg.name,
+      adapter: msg.adapter,
+      createdAt: new Date(start + i).toISOString(),
+      updatedAt: new Date(start + i).toISOString(),
+      retries: [],
+    } as AppSchema.ChatMessage
+
+    if (msg.parent) {
+      parents.set(msg._id!, mapped)
+    }
+
+    return mapped
+  })
+
+  for (const msg of docs) {
+    if (!msg.parent) continue
+    const parent = parents.get(msg.parent)
+    msg.parent = parent?._id
+  }
 
   await db('chat-message').insertMany(docs)
   return docs
 }
 
 export async function getMessage(messageId: string) {
+  if (!messageId) {
+    throw new StatusError(`Cannot retrieve message: No id provided`, 400)
+  }
   const msg = await db('chat-message').findOne({ _id: messageId, kind: 'chat-message' })
   return msg
 }
 
 export async function deleteMessages(messageIds: string[]) {
-  await db('chat-message').deleteMany({ _id: { $in: messageIds } })
+  const res = await db('chat-message').deleteMany({ _id: { $in: messageIds } })
+  return res
 }
 
 export async function editChatMessage(
@@ -118,7 +182,16 @@ export async function editMessage(
   update: Partial<
     Pick<
       AppSchema.ChatMessage,
-      'msg' | 'actions' | 'adapter' | 'meta' | 'state' | 'extras' | 'retries' | 'parent' | 'json'
+      | 'msg'
+      | 'actions'
+      | 'adapter'
+      | 'meta'
+      | 'state'
+      | 'extras'
+      | 'retries'
+      | 'parent'
+      | 'json'
+      | 'imagePrompt'
     >
   >
 ) {

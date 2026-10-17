@@ -42,6 +42,15 @@ export const AdvancedOptions: Component<{ editor: CharEditor }> = (props) => {
         />
         <TextInput
           isMultiline
+          fieldName="prefill]"
+          label="Character Prefill (optional)"
+          helperText={<span>{`Prefill to bundle with your character`}</span>}
+          placeholder="Sure thing! Here is my reply:"
+          value={props.editor.state.prefill}
+          onChange={(ev) => props.editor.update('prefill', ev.currentTarget.value)}
+        />
+        <TextInput
+          isMultiline
           class="min-h-[80px]"
           fieldName="insertPrompt"
           label="Insert / Depth Prompt"
@@ -80,6 +89,7 @@ export const AdvancedOptions: Component<{ editor: CharEditor }> = (props) => {
         <MemoryBookPicker
           setBundledBook={(book) => props.editor.update('book', book)}
           bundledBook={props.editor.state.book}
+          characterId={props.editor.state.editId}
         />
       </Card>
       <Card>

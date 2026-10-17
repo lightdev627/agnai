@@ -1,28 +1,23 @@
-import { batch, createEffect, createMemo, createSignal, on } from 'solid-js'
+import { batch, createEffect, createMemo, createSignal, on, onMount } from 'solid-js'
 import { SetStoreFunction, createStore } from 'solid-js/store'
 import { AppSchema, VoiceSettings } from '/common/types'
 import { FullSprite } from '/common/types/sprite'
 import { defaultCulture } from '/web/shared/CultureCodes'
-import { ADAPTER_LABELS } from '/common/adapters'
 import { fromAttrs, toAttrs } from '/web/shared/PersonaAttributes'
-import {
-  NewCharacter,
-  characterStore,
-  presetStore,
-  settingStore,
-  toastStore,
-  userStore,
-} from '/web/store'
-import { Option } from '/web/shared/Select'
-import { defaultPresets, isDefaultPreset } from '/common/presets'
+import { NewCharacter, characterStore, toastStore, userStore } from '/web/store'
 import { generateField } from './generate-char'
 import { ImageSettings } from '/common/types/image-schema'
 import { useImageCache } from '/web/shared/hooks'
 import { imageApi } from '/web/store/data/image'
 import { v4 } from 'uuid'
 import { ResponseSchema } from '/common/types/library'
+import { createDebounce, storage } from '/web/shared/util'
+
+const EDITOR_CACHE_KEY = `agnai-char-editor`
 
 export type EditorState = {
+  __type?: string
+  state: 'init' | 'loaded'
   editId?: string
   name: string
   personaKind: AppSchema.Character['persona']['kind']
@@ -32,6 +27,7 @@ export type EditorState = {
   scenario: string
   greeting: string
   sampleChat: string
+  prefill: string
   creator: string
   characterVersion: string
   postHistoryInstructions: string
@@ -58,11 +54,13 @@ export type EditorState = {
   imageSettings?: ImageSettings
   json?: ResponseSchema
   imageOverride: string
+  flags: Record<string, any>
 }
 
 export type SetEditor = SetStoreFunction<EditorState>
 
 const initState: EditorState = {
+  state: 'init',
   name: '',
   personaKind: 'text',
   personaAttrs: [],
@@ -74,6 +72,7 @@ const initState: EditorState = {
   creator: '',
   characterVersion: '',
   postHistoryInstructions: '',
+  prefill: '',
   voiceDisabled: false,
   insert: {
     prompt: '',
@@ -102,43 +101,109 @@ const initState: EditorState = {
     summariseChat: true,
     summaryPrompt: '',
     template: '',
+    imageProviderId: '',
+    openai: {} as any,
 
     agnai: {
+      _id: 'agnai',
+      name: 'Agnaistic',
+      type: 'agnai',
+      url: '',
       model: '',
       sampler: '',
+      scheduler: '',
+      draftMode: false,
     },
 
     horde: {
+      _id: 'horde',
+      name: 'Horde',
+      type: 'horde',
+      url: '',
       model: '',
       sampler: '',
+      scheduler: '',
     },
 
     novel: {
+      _id: 'novel',
+      name: 'NovelAI',
+      type: 'novel',
+      url: '',
       model: '',
       sampler: '',
+      qualityTags: true,
+      ucPreset: '0',
+      scheduler: '',
     },
 
     sd: {
-      sampler: '',
+      _id: 'sd',
+      name: 'Stable Diffusion',
+      type: 'sd',
       url: '',
+      sampler: '',
+      model: '',
+      scheduler: '',
+    },
+
+    swarm: {
+      _id: 'swarm',
+      name: 'SwarmUI',
+      type: 'swarm',
+      url: '',
+      sampler: '',
+      local: true,
+      model: '',
+      scheduler: '',
     },
   },
   imageOverride: '',
+  flags: {},
 }
+
+const [updateCache] = createDebounce(async (state: EditorState) => {
+  if (state.state === 'init') return
+  const id = state.editId || 'new'
+
+  if (id !== 'new') {
+    await storage.removeItem(EDITOR_CACHE_KEY)
+    return
+  }
+
+  const next = {
+    id,
+    name: state.name,
+    description: state.description,
+    tags: state.tags,
+    appearance: state.appearance,
+    scenario: state.scenario,
+    persona: state.persona,
+    personaKind: state.personaKind,
+    personaAttrs: state.personaAttrs,
+    systemPrompt: state.systemPrompt,
+    greeting: state.greeting,
+    alternateGreetings: state.alternateGreetings,
+    sampleChat: state.sampleChat,
+    json: state.json,
+    postHistoryInstructions: state.postHistoryInstructions,
+    creator: state.creator,
+    characterVersion: state.characterVersion,
+    insert: state.insert,
+    prefill: state.prefill,
+  }
+
+  await storage.setItem(EDITOR_CACHE_KEY, JSON.stringify(next))
+}, 500)
 
 export type CharEditor = ReturnType<typeof useCharEditor>
 
-export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
-  const user = userStore()
-  const presets = presetStore()
-  const settings = settingStore()
-
-  const cache = useImageCache('avatars', { clean: true })
+export function useCharEditor(editing?: NewCharacter & { _id?: string; __type?: string }) {
+  const cache = useImageCache({ id: 'avatars-images', clean: true })
 
   const [original, setOriginal] = createSignal(editing)
   const [state, setState] = createStore<EditorState>({ ...initState })
   const [imageData, setImageData] = createSignal<string>()
-  const [form, setForm] = createSignal<any>()
   const [generating, setGenerating] = createSignal(false)
   const [imageId, setImageId] = createSignal('')
 
@@ -151,48 +216,6 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
     )
   )
 
-  const genOptions = createMemo(() => {
-    if (!user.user) return []
-
-    const preset = isDefaultPreset(user.user.defaultPreset)
-      ? defaultPresets[user.user.defaultPreset]
-      : presets.presets.find((p) => p._id === user.user?.defaultPreset)
-
-    const opts: Option[] = []
-
-    if (preset?.service && preset.service !== 'horde') {
-      opts.push({ label: `Default (${ADAPTER_LABELS[preset.service!]})`, value: 'default' })
-    }
-
-    {
-      const subs = settings.config.subs.filter((s) => user.user?.admin || s.level <= user.userLevel)
-
-      for (const sub of subs) {
-        opts.push({ label: `Agnastic: ${sub.name}`, value: `agnaistic/${sub._id}` })
-      }
-    }
-
-    if (user.user.oaiKeySet) {
-      opts.push({ label: 'OpenAI - Turbo', value: 'openai/gpt-3.5-turbo-0301' })
-      opts.push({ label: 'OpenAI - GPT-4', value: 'openai/gpt-4' })
-    }
-
-    if (user.user.novelVerified) {
-      opts.push({ label: 'NovelAI - Kayra', value: 'novel/kayra-v1' })
-      opts.push({ label: 'NovelAI - Clio', value: 'novel/clio-v1' })
-    }
-
-    if (preset?.service === 'kobold' || user.user.koboldUrl) {
-      opts.push({ label: 'Third Party', value: 'kobold' })
-    }
-
-    if (user.user.claudeApiKeySet) {
-      opts.push({ label: 'Claude', value: 'claude' })
-    }
-
-    return opts
-  })
-
   createEffect(async () => {
     const nextImage = cache.state.image
 
@@ -204,7 +227,7 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
     }
   })
 
-  createEffect(() => {
+  onMount(() => {
     if (!editing) return
 
     const orig = original()
@@ -221,7 +244,7 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
 
     if (base64) {
       const id = original ? 'original' : v4()
-      await cache.addImage(base64, id)
+      await cache.addImage(base64, { id })
       if (original) {
         setImageId(`avatars-${id}`)
       }
@@ -270,6 +293,8 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
           const next = [...state.personaAttrs]
           next[index] = { key: trait || 'text', values: res }
           setState('personaAttrs', next)
+          updateCache(state)
+
           // const attributes = { ...char.persona.attributes }
           // if (!trait) {
           //   attributes.text = [res]
@@ -283,6 +308,7 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
 
         if (field in state) {
           setState(field as keyof EditorState, res)
+          updateCache(state)
         }
       },
     })
@@ -291,9 +317,9 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
   const reset = async () => {
     batch(async () => {
       const char = original()
-      setState({ ...initState })
+      setState({ ...initState, state: 'loaded' })
 
-      const personaKind = char?.persona.kind || state.personaKind
+      const personaKind = char?.persona?.kind || state.personaKind || ''
 
       setState('personaKind', personaKind)
 
@@ -314,8 +340,9 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
       // We set fields that aren't properly managed by form elements
       setState({
         ...char,
+        flags: {},
         personaKind,
-        personaAttrs: toAttrs(char?.persona.attributes),
+        personaAttrs: toAttrs(char?.persona?.attributes),
         alternateGreetings: char?.alternateGreetings || [],
         book: char?.characterBook,
         voice: char?.voice || { service: undefined },
@@ -332,10 +359,23 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
     load({ ...initState, originalAvatar: undefined })
   }
 
-  const load = (char: NewCharacter | AppSchema.Character) => {
+  const loadCached = async () => {
+    const cached = await storage
+      .getItem(EDITOR_CACHE_KEY)
+      .then((cached) => (cached ? JSON.parse(cached) : null))
+
+    if (!cached) {
+      setState({ ...cached, state: 'loaded' })
+    }
+
+    setState({ ...cached, state: 'loaded' })
+  }
+
+  const load = async (char: NewCharacter | AppSchema.Character) => {
     batch(() => {
       if ('_id' in char) {
         const { avatar, ...incoming } = char
+
         setOriginal({ ...incoming, originalAvatar: avatar })
         reset()
         return
@@ -348,7 +388,7 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
 
   const payload = (submitting?: boolean) => {
     const imgId = imageId()
-    const data = getPayload(form(), state, original())
+    const data = getPayload(state, original())
 
     if (submitting) {
       if (imgId !== cache.state.imageId) {
@@ -363,7 +403,7 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
   }
 
   const convert = (): AppSchema.Character => {
-    const payload = getPayload(form(), state, original())
+    const payload = getPayload(state, original())
 
     return {
       _id: '',
@@ -376,30 +416,33 @@ export function useCharEditor(editing?: NewCharacter & { _id?: string }) {
     }
   }
 
+  const updateState: typeof setState = function (this: any, ...args: any[]) {
+    setState.apply(this, args as any)
+    updateCache(state)
+  }
+
   return {
     state,
-    update: setState,
+    update: updateState,
     reset,
     load,
+    loadCached,
     convert,
     payload,
     original,
     clear,
-    genOptions,
     createAvatar,
     receiveAvatar,
     avatar: imageData,
     generating,
     canGenerate,
-    canGuidance: genOptions().length > 0,
     generateField: genField,
     generateAvatar,
-    prepare: setForm,
     imageCache: cache,
   }
 }
 
-function getPayload(ev: any, state: EditorState, original?: NewCharacter) {
+function getPayload(state: EditorState, original?: NewCharacter) {
   const payload = {
     name: state.name,
     description: state.description,
@@ -419,6 +462,7 @@ function getPayload(ev: any, state: EditorState, original?: NewCharacter) {
     // New fields start here
     systemPrompt: state.systemPrompt ?? '',
     postHistoryInstructions: state.postHistoryInstructions ?? '',
+    prefill: state.prefill,
     insert: { prompt: state.insert?.prompt || '', depth: state.insert?.depth ?? 3 },
     alternateGreetings: state.alternateGreetings ?? [],
     characterBook: state.book,

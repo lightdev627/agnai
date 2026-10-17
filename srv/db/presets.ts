@@ -5,16 +5,13 @@ import { decryptText, encryptText, now } from './util'
 import { StatusError } from '../api/wrap'
 import { BUILTIN_FORMATS } from '/common/presets/templates'
 
-export async function createTemplate(
-  userId: string,
-  { template, name }: { name: string; template: string }
-) {
+export async function createTemplate(userId: string, opts: { name: string; template: string }) {
   const row: AppSchema.PromptTemplate = {
     _id: v4(),
     kind: 'prompt-template',
     userId,
-    name,
-    template,
+    name: opts.name,
+    template: opts.template,
     createdAt: now(),
     updatedAt: now(),
   }
@@ -78,11 +75,9 @@ export async function createUserPreset(userId: string, settings: AppSchema.GenSe
   await db('gen-setting').insertOne(preset)
 
   if (preset.localRequests && originalKey) {
-    preset.thirdPartyKey = originalKey
-  } else {
-    preset.thirdPartyKey = ''
+    preset.userThirdPartyKey = originalKey
   }
-
+  preset.thirdPartyKey = ''
   return preset
 }
 
@@ -95,17 +90,16 @@ export async function getUserPresets(userId: string) {
   const presets = await db('gen-setting').find({ userId }).toArray()
   return presets.map((pre) => {
     if (pre.localRequests && pre.thirdPartyKey) {
-      pre.thirdPartyKey = decryptText(pre.thirdPartyKey, true)
-    } else {
-      pre.thirdPartyKey = ''
+      pre.userThirdPartyKey = decryptText(pre.thirdPartyKey, true)
     }
-    return mergeModelFormats(pre)
+    pre.thirdPartyKey = ''
+    return mergeModelFormats(pre)!
   })
 }
 
 export async function deleteUserPresetKey(userId: string, presetId: string) {
   await db('gen-setting').updateOne({ _id: presetId, userId }, { $set: { thirdPartyKey: '' } })
-  const preset = await getUserPreset(presetId, userId)
+  const preset = await getSafeUserPreset(presetId, userId)
   return preset
 }
 
@@ -119,29 +113,47 @@ export async function updateUserPreset(
   }
 
   if (update.registered) {
-    const prev = await getUserPreset(presetId)
+    const prev = await getUserPresetInternal(presetId)
     update.registered = {
       ...prev?.registered,
       ...update.registered,
     }
   }
 
+  // Detect if the key is already encrypted - if it is, do not proceed with encrypting it
   if (update.thirdPartyKey) {
-    update.thirdPartyKey = encryptText(update.thirdPartyKey)
+    const [, iv] = update.thirdPartyKey.split('|')
+    if (!iv || iv.length !== 32) {
+      update.thirdPartyKey = encryptText(update.thirdPartyKey)
+    }
   } else {
     delete update.thirdPartyKey
   }
 
+  delete update.userThirdPartyKey
   update.updatedAt = new Date().toISOString()
-  await db('gen-setting').updateOne({ _id: presetId, userId }, { $set: update })
+  try {
+    await db('gen-setting').updateOne({ _id: presetId, userId }, { $set: update })
+  } catch (ex: any) {
+    /**
+     * A bug has caused specific API keys to be re-encrypted multiple times.
+     * If we get this error, we will need to remove the keys
+     */
+    if (ex?.name !== 'MongoServerError') {
+      throw ex
+    }
+
+    await db('gen-setting').updateOne({ _id: presetId, userId }, { $set: { thirdPartyKey: '' } })
+    await db('gen-setting').updateOne({ _id: presetId, userId }, { $set: update })
+  }
+
   const updated = await db('gen-setting').findOne({ _id: presetId })
 
   if (updated) {
     if (updated.localRequests && updated.thirdPartyKey) {
-      updated.thirdPartyKey = decryptText(updated.thirdPartyKey, true)
-    } else {
-      updated.thirdPartyKey = ''
+      updated.userThirdPartyKey = decryptText(updated.thirdPartyKey, true)
     }
+    updated.thirdPartyKey = ''
   }
 
   return updated
@@ -154,23 +166,40 @@ export async function updateUserPreset(
  * @param presetId
  * @returns
  */
-export async function getUserPreset(presetId: string, userId?: string) {
+export async function getUserPresetInternal(presetId: string) {
   const preset = await db('gen-setting').findOne({ _id: presetId })
-  if (preset?.localRequests && preset.thirdPartyKey && userId === preset.userId) {
-    preset.thirdPartyKey = decryptText(preset.thirdPartyKey)
-  }
+
+  if (!preset) return
+
   return mergeModelFormats(preset)
 }
 
-function mergeModelFormats(gen: AppSchema.UserGenPreset | null) {
+export async function getSafeUserPreset(presetId: string, userId: string) {
+  const preset = await db('gen-setting').findOne({ _id: presetId })
+  if (preset?.localRequests && preset.thirdPartyKey && userId === preset.userId) {
+    preset.userThirdPartyKey = decryptText(preset.thirdPartyKey)
+  }
+
+  if (preset) {
+    preset.thirdPartyKeySet = !!preset?.thirdPartyKey
+  }
+
+  if (preset?.thirdPartyKey) {
+    preset.thirdPartyKey = ''
+  }
+
+  return preset
+}
+
+function mergeModelFormats(gen: AppSchema.UserGenPreset) {
   if (!gen) return gen
 
   if (gen.useAdvancedPrompt) {
-    gen.modelFormat = gen.modelFormat || 'ChatML'
+    gen.modelFormat = gen.modelFormat || 'None'
   } else if (gen.promptOrderFormat && gen.promptOrderFormat in BUILTIN_FORMATS) {
     gen.modelFormat = gen.promptOrderFormat as any
   } else {
-    gen.modelFormat = 'ChatML'
+    gen.modelFormat = 'None'
   }
 
   delete gen.promptOrderFormat

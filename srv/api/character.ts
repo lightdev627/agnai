@@ -8,14 +8,11 @@ import { PERSONA_FORMATS } from '../../common/adapters'
 import { AppSchema } from '../../common/types/schema'
 import { CharacterUpdate } from '../db/characters'
 import { getVoiceService } from '../voice'
-import { generateImage } from '../image'
 import { v4 } from 'uuid'
 import { validBook } from './memory'
 import { isObject, tryParse } from '/common/util'
 import { assertStrict } from '/common/valid/validate'
-import { buildModPrompt, fromJsonResponse } from '/common/prompt'
-import { createInferenceStream } from '../adapter/generate'
-import { sendOne } from './ws'
+import { generateAppImage } from './image-api'
 
 const router = Router()
 
@@ -38,6 +35,7 @@ const characterForm = {
   voiceDisabled: 'string?',
   tags: 'string?',
   json: 'any?',
+  prefill: 'string?',
 
   imageSettings: 'string?',
 
@@ -158,139 +156,6 @@ const getCharacters = handle(async ({ userId }) => {
   return { characters: chars }
 })
 
-const publishCharacter = handle(async ({ userId, body, log }, res) => {
-  assertValid(
-    { requestId: 'string?', character: 'any?', characterId: 'any?', imageData: 'string?' },
-    body
-  )
-  const config = await store.admin.getServerConfiguration()
-
-  if (!config.modPresetId) {
-    throw new StatusError(`Mod preset not configured`, 400)
-  }
-
-  const user = await store.users.getUser(userId)
-  if (!user) {
-    throw new StatusError('Not authorized', 401)
-  }
-
-  const settings = await store.presets.getUserPreset(config.modPresetId)
-  if (!settings) {
-    throw new StatusError('Mod preset not found', 400)
-  }
-
-  let character = body.character
-
-  if (body.characterId) {
-    character = await store.characters.getCharacter(userId, body.characterId)
-  }
-
-  if (!character) {
-    throw new StatusError(`Character not provided`, 400)
-  }
-
-  const prompt = buildModPrompt({
-    char: character,
-    prompt: config.modPrompt,
-    fields: config.modFieldPrompt,
-  })
-
-  const requestId = body.requestId || v4()
-
-  const { stream, service } = await createInferenceStream({
-    requestId,
-    jsonSchema: config.modSchema,
-    user,
-    log,
-    prompt,
-    settings,
-    imageData: body.imageData,
-  })
-
-  res.json({ success: true, generating: true, requestId })
-
-  if (user.admin) {
-    sendOne(userId, { type: 'inference-prompt', prompt })
-  }
-
-  let response = ''
-  let partial = ''
-  let output: any = {}
-
-  try {
-    for await (const gen of stream) {
-      if (typeof gen === 'string') {
-        response = gen
-        continue
-      }
-
-      if ('meta' in gen && user.admin) {
-        sendOne(userId, { type: 'inference-meta', meta: gen.meta, requestId })
-      }
-
-      if ('partial' in gen) {
-        partial = gen.partial
-        fromJsonResponse(config.modSchema, gen.partial, output)
-        if (user.admin)
-          sendOne(userId, { type: 'inference-partial', partial, service, requestId, output })
-        continue
-      }
-
-      if ('error' in gen) {
-        sendOne(userId, { type: 'inference-error', partial, error: gen.error, requestId })
-        continue
-      }
-
-      if ('warning' in gen) {
-        sendOne(userId, { type: 'inference-warning', requestId, warning: gen.warning })
-        continue
-      }
-    }
-  } catch (ex: any) {
-    if (ex instanceof StatusError) {
-      sendOne(userId, {
-        type: 'inference-error',
-        partial,
-        error: `[${ex.status}] ${ex.message}`,
-        requestId,
-      })
-    } else {
-      sendOne(userId, { type: 'inference-error', partial, error: `${ex.message || ex}`, requestId })
-    }
-  }
-
-  if (!response) return
-  if (user.admin) sendOne(userId, { type: 'inference', requestId, response: response, output })
-
-  let acceptable = true
-  for (const [key, value] of Object.entries(output)) {
-    const def = config.modSchema.find((s) => s.name === key)
-    if (!def) continue
-    if (!def.type.valid) continue
-
-    switch (def.type.type) {
-      case 'integer':
-      case 'string':
-        continue
-
-      case 'bool': {
-        const expected = def.type.valid === 'true'
-        if (value !== expected) acceptable = false
-        continue
-      }
-
-      case 'enum': {
-        const values = def.type.valid.split(',').map((v) => v.trim())
-        const valid = values.includes((value || '') as string)
-        if (!valid) acceptable = false
-        continue
-      }
-    }
-  }
-
-  sendOne(userId, { type: 'publish-response', acceptable, requestId })
-})
-
 const editPartCharacter = handle(async ({ body, params, userId }) => {
   const id = params.id
   assertStrict({ type: characterPost }, body)
@@ -344,18 +209,39 @@ const editPartCharacter = handle(async ({ body, params, userId }) => {
 
 export const bulkUpdate = handle(async (req) => {
   assertValid(
-    { characterIds: ['string'], folder: 'string?', addTag: 'string?', removeTag: 'string?' },
+    {
+      characterIds: ['string'],
+      folder: 'string?',
+      addTag: 'string?',
+      removeTag: 'string?',
+      archive: 'boolean?',
+      delete: 'boolean?',
+    },
     req.body
   )
 
   const modified = await store.characters.bulkUpdate(req.userId, req.body.characterIds, req.body)
 
-  return { success: true, modified }
+  if (req.body.delete) {
+    return { success: true, modified, characters: [] }
+  }
+
+  const characters = await store.characters.getCharacters(req.userId, {
+    ids: req.body.characterIds,
+    detailed: false,
+  })
+
+  return { success: true, modified, characters }
 })
 
 const editFullCharacter = handle(async (req) => {
   const id = req.params.id
   const body = handleForm(req, characterForm)
+
+  const existing = await store.characters.getCharacter(req.userId, id)
+  if (!existing) {
+    throw new StatusError(`Character with ID "${id}" not found`, 404)
+  }
 
   const alternateGreetings = body.alternateGreetings ? toArray(body.alternateGreetings) : undefined
   const characterBook = body.characterBook ? JSON.parse(body.characterBook) : undefined
@@ -388,6 +274,7 @@ const editFullCharacter = handle(async (req) => {
     systemPrompt: body.systemPrompt,
     postHistoryInstructions: body.postHistoryInstructions,
     creator: body.creator,
+    prefill: body.prefill,
     characterVersion: body.characterVersion,
     voiceDisabled: body.voiceDisabled === 'true',
     imageSettings,
@@ -439,6 +326,15 @@ const getCharacter = handle(async ({ userId, params }) => {
   return char
 })
 
+const getDetailCharacters = handle(async ({ userId, body }) => {
+  assertValid({ characterIds: ['string'] }, body)
+  const characters = await store.characters.getCharacters(userId, {
+    ids: body.characterIds,
+    detailed: true,
+  })
+  return { characters }
+})
+
 const deleteCharacter = handle(async ({ userId, params }) => {
   const id = params.id
   await store.characters.deleteCharacter({ userId: userId!, charId: id })
@@ -469,57 +365,20 @@ function parseAndValidateVoice(json?: string) {
   return obj as unknown as AppSchema.Character['voice']
 }
 
-export const createImage = handle(async ({ body, userId, socketId, log }) => {
-  assertValid(
-    {
-      user: 'any?',
-      prompt: 'string',
-      ephemeral: 'boolean?',
-      source: 'string?',
-      noAffix: 'boolean?',
-      characterId: 'string?',
-      chatId: 'string?',
-      requestId: 'string?',
-      parent: 'string?',
-      model: 'string?',
-    },
-    body
-  )
-  const user = userId ? await store.users.getUser(userId) : body.user
-
-  const guestId = userId ? undefined : socketId
-  const requestId = body.requestId || v4()
-  generateImage(
-    {
-      user,
-      prompt: body.prompt,
-      ephemeral: body.ephemeral,
-      source: body.source || 'unknown',
-      noAffix: body.noAffix,
-      chatId: body.chatId,
-      characterId: body.characterId,
-      requestId,
-      parentId: body.parent,
-      model: body.model,
-    },
-    log,
-    guestId
-  )
-  return { success: true, requestId }
-})
-
-router.post('/image', createImage)
+router.post('/image', generateAppImage)
 router.use(loggedIn)
-router.post('/', createCharacter)
+
 router.get('/', getCharacters)
-router.post('/publish', publishCharacter)
+router.post('/multiple', getDetailCharacters)
+router.delete('/:id', deleteCharacter)
+router.post('/bulk-update', bulkUpdate)
+
+router.post('/', createCharacter)
 router.post('/:id/update', editPartCharacter)
 router.post('/:id', editFullCharacter)
 router.get('/:id', getCharacter)
-router.delete('/:id', deleteCharacter)
 router.post('/:id/favorite', editCharacterFavorite)
 router.delete('/:id/avatar', removeAvatar)
-router.post('/bulk-update', bulkUpdate)
 
 export default router
 

@@ -1,11 +1,18 @@
-import { Component, Show, createSignal, createEffect } from 'solid-js'
+import { Component, Show, createEffect, on } from 'solid-js'
 import type { JSX } from 'solid-js'
 import { PresetAISettings, samplerDisableValues } from '../../common/adapters'
 import { markdown } from './markdown'
 
+function updateSliderColors(range: HTMLInputElement, current: number) {
+  if (!range) return
+  const percent = Math.min(+current, +range.max)
+  const nextSize = ((percent - +range.min) * 100) / (+range.max - +range.min) + '% 100%'
+  range.style.backgroundSize = nextSize
+}
+
 const RangeInput: Component<{
   label: string | JSX.Element
-  fieldName: string
+  fieldName?: string
   value: number
   helperText?: string | JSX.Element
   helperMarkdown?: string
@@ -15,42 +22,72 @@ const RangeInput: Component<{
   disabled?: boolean
   recommended?: number | string
   recommendLabel?: string | JSX.Element
-  onChange?: (value: number) => void
+  onChange: (value: number) => void
   parentClass?: string
   aiSetting?: keyof PresetAISettings
   hide?: boolean
 }> = (props) => {
-  const [previousPropsValue, setPreviousPropsValue] = createSignal(props.value)
-  const [value, setValue] = createSignal(props.value)
+  let range: HTMLInputElement | undefined
   let input: HTMLInputElement | undefined
 
-  function updateRangeSliders() {
-    if (props.value !== previousPropsValue()) {
-      setValue(props.value)
-      setPreviousPropsValue(props.value)
+  function updateRangeSliders(evented: boolean, source: 'slider' | 'input', next?: string) {
+    if (!range || !input) return
+
+    if (!evented) {
+      return
     }
-    if (!input) return
-    const value = Math.min(+input.value, +input.max)
-    const nextSize = ((value - +input.min) * 100) / (+input.max - +input.min) + '% 100%'
-    input.style.backgroundSize = nextSize
+
+    const parsed = next !== undefined ? next ?? '' : ''
+
+    if (isNaN(+parsed)) {
+      range.value = parsed
+      input.value = parsed
+      return
+    }
+
+    range.value = parsed
+
+    if (source === 'slider') {
+      input.value = parsed
+    }
+
+    updateSliderColors(range, +parsed)
+
+    if (evented && next !== undefined) {
+      props.onChange(+parsed)
+    }
   }
 
-  const onInput: JSX.EventHandler<HTMLInputElement, InputEvent> = (event) => {
-    setValue(+event.currentTarget.value)
-    updateRangeSliders()
-    props.onChange?.(+event.currentTarget.value)
+  const onInput = (source: 'slider' | 'input') => {
+    const callback: JSX.EventHandler<HTMLInputElement, InputEvent> = (event) => {
+      updateRangeSliders(true, source, event.currentTarget.value as any)
+      // props.onChange(+event.currentTarget.value)
+    }
+    return callback
   }
 
-  createEffect(updateRangeSliders)
+  createEffect(
+    on(
+      () => props.value,
+      () => {
+        updateRangeSliders(false, 'input', props.value.toString())
+        updateSliderColors(range!, +props.value)
+      }
+    )
+  )
 
   const disableSampler = () => {
+    if (!props.aiSetting) return
+    const value = samplerDisableValues[props.aiSetting]
     if (value === undefined) return
-
-    setValue(value)
+    updateRangeSliders(true, 'input', value.toString())
   }
 
   return (
-    <div class={`relative pt-1 ${props.parentClass || ''}`} classList={{ hidden: props.hide }}>
+    <div
+      class={`relative pt-1 ${props.parentClass || ''}`}
+      classList={{ hidden: props.hide ?? false }}
+    >
       <ul class="w-full">
         <div class="flex flex-row justify-between gap-2">
           <span>
@@ -68,18 +105,6 @@ const RangeInput: Component<{
             </a>
           </Show>
         </div>
-        <input
-          id={props.fieldName}
-          name={props.fieldName}
-          class="form-field focusable-field float-right inline-block rounded-lg border border-white/5 p-1 hover:border-white/20"
-          value={value()}
-          type="number"
-          min={props.min}
-          max={props.max}
-          step={props.step}
-          onInput={onInput}
-          disabled={props.disabled}
-        />
       </ul>
       <Show when={props.helperText}>
         <p class="helper-text">{props.helperText}</p>
@@ -87,10 +112,11 @@ const RangeInput: Component<{
       <Show when={!!props.helperMarkdown}>
         <p class="helper-text markdown" innerHTML={markdown.makeHtml(props.helperMarkdown!)}></p>
       </Show>
-      <input
-        ref={input}
-        type="range"
-        class="
+      <div class="flex w-full items-center gap-2">
+        <input
+          ref={range}
+          type="range"
+          class="
         form-field
         form-range
         h-1
@@ -101,53 +127,111 @@ const RangeInput: Component<{
         text-opacity-50
         accent-[var(--hl-400)]
         focus:shadow-none focus:outline-none focus:ring-0
-      "
-        min={props.min}
-        max={props.max}
-        step={props.step}
-        onInput={onInput}
-        value={value()}
-        disabled={props.disabled}
-      />
+        "
+          min={props.min}
+          max={props.max}
+          step={props.step}
+          onInput={onInput('slider')}
+          value={props.value}
+          disabled={props.disabled}
+        />
+        <input
+          ref={input}
+          id={props.fieldName}
+          name={props.fieldName}
+          class="form-field focusable-field border-0.25 float-right box-border inline-block min-w-24 rounded-lg border border-[var(--bg-600)] p-1 hover:border-white/20"
+          value={props.value}
+          min={props.min}
+          type="number"
+          max={props.max}
+          step={props.step}
+          onInput={onInput('input')}
+          disabled={props.disabled}
+        />
+      </div>
     </div>
   )
 }
 
 export const InlineRangeInput: Component<{
-  fieldName: string
+  fieldName?: string
   value: number
   min: number
   max: number
   step: number
   disabled?: boolean
-  onChange?: (value: number) => void
+  onChange: (value: number) => void
   hide?: boolean
   parentClass?: string
+  inputClass?: string
+  label?: string
+  aiSetting?: keyof PresetAISettings
 }> = (props) => {
-  const [value, setValue] = createSignal(props.value)
+  let range: HTMLInputElement | undefined
   let input: HTMLInputElement | undefined
 
-  function updateRangeSliders() {
-    if (!input) return
-    const value = Math.min(+input.value, +input.max)
-    const nextSize = ((value - +input.min) * 100) / (+input.max - +input.min) + '% 100%'
-    input.style.backgroundSize = nextSize
+  function updateRangeSliders(evented: boolean, source: 'slider' | 'input', next?: string) {
+    if (!range || !input) return
+
+    if (!evented) {
+      return
+    }
+
+    const parsed = next !== undefined ? next ?? '' : ''
+
+    if (isNaN(+parsed)) {
+      range.value = parsed
+      input.value = parsed
+      return
+    }
+
+    range.value = parsed
+
+    if (source === 'slider') {
+      input.value = parsed
+    }
+
+    const percent = Math.min(+parsed, +range.max)
+    const nextSize = ((percent - +range.min) * 100) / (+range.max - +range.min) + '% 100%'
+    range.style.backgroundSize = nextSize
+
+    if (evented && next !== undefined) {
+      props.onChange(+parsed)
+    }
   }
 
-  const onInput: JSX.EventHandler<HTMLInputElement, InputEvent> = (event) => {
-    setValue(+event.currentTarget.value)
-    updateRangeSliders()
-    props.onChange?.(+event.currentTarget.value)
+  const onInput = (source: 'slider' | 'input') => {
+    const callback: JSX.EventHandler<HTMLInputElement, InputEvent> = (event) => {
+      updateRangeSliders(true, source, event.currentTarget.value as any)
+      // props.onChange(+event.currentTarget.value)
+    }
+    return callback
   }
 
-  createEffect(updateRangeSliders)
+  createEffect(
+    on(
+      () => props.value,
+      () => updateRangeSliders(false, 'input', props.value.toString())
+    )
+  )
+
+  const disableSampler = () => {
+    if (!props.aiSetting) return
+    const value = samplerDisableValues[props.aiSetting]
+    if (value === undefined) return
+    updateRangeSliders(true, 'input', value.toString())
+  }
+
   return (
     <div
-      class={`bg-800 flex items-center gap-2 rounded-xl px-2 ${props.parentClass || ''}`}
-      classList={{ hidden: props.hide }}
+      class={`bg-800 flex items-center gap-2 rounded-xl ${props.parentClass || ''}`}
+      classList={{ hidden: props.hide ?? false }}
     >
+      <Show when={props.label}>
+        <div class="bold min-w-fit pl-2">{props.label}</div>
+      </Show>
       <input
-        ref={input}
+        ref={range}
         type="range"
         class="
         form-field
@@ -164,22 +248,29 @@ export const InlineRangeInput: Component<{
         min={props.min}
         max={props.max}
         step={props.step}
-        onInput={onInput}
-        value={value()}
+        onInput={onInput('slider')}
+        value={props.value}
         disabled={props.disabled}
       />
       <input
+        ref={input}
         id={props.fieldName}
         name={props.fieldName}
-        class="form-field focusable-field float-right inline-block rounded-lg border border-white/5 p-1 hover:border-white/20"
-        value={value()}
-        type="number"
+        class="form-field focusable-field border-0.25 float-right box-border inline-block w-32 rounded-lg border border-[var(--bg-600)] p-1 hover:border-white/20"
+        value={props.value}
         min={props.min}
+        type="number"
         max={props.max}
         step={props.step}
-        onInput={onInput}
+        onInput={onInput('input')}
         disabled={props.disabled}
       />
+
+      <Show when={props.aiSetting && props.aiSetting in samplerDisableValues}>
+        <a class="link text-xs" onClick={disableSampler}>
+          Disable
+        </a>
+      </Show>
     </div>
   )
 }

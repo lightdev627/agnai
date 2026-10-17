@@ -7,11 +7,12 @@ import { createReadStream, readdirSync } from 'fs'
 import { assertValid, Validator, UnwrapBody } from '/common/valid'
 import { config } from '../config'
 import { errors } from './wrap'
+import { joinUrl } from '/common/requests/util'
 
 const s3 = new S3({
   region: 'us-east-1',
   forcePathStyle: false,
-  endpoint: `https://${config.storage.endpoint}`,
+  endpoint: config.storage.endpoint ? `https://${config.storage.endpoint}` : undefined,
   credentials: {
     accessKeyId: config.storage.id,
     secretAccessKey: config.storage.key,
@@ -90,6 +91,10 @@ export async function upload(attachment: Attachment, name: string, ttl?: number)
       ContentType: attachment.type,
       ACL: 'public-read',
     })
+    if (config.cdnHostname) {
+      return `https://${config.cdnHostname}/assets/${filename}`
+    }
+
     return `/assets/` + filename
   }
 
@@ -118,6 +123,11 @@ export async function saveFile(filename: string, content: any, ttl?: number) {
     )
   }
   await writeFile(safeRelativeResolve(config.assetFolder, filename), content, { encoding: 'utf8' })
+
+  if (config.assetUploadUrl) {
+    return joinUrl(config.assetUploadUrl, `/assets/${filename}`)
+  }
+
   return `/assets/${filename}`
 }
 
@@ -200,7 +210,7 @@ function isAllowedType(contentType: string) {
  */
 function safeRelativeResolve(root: string, filename: string) {
   const resolved_path = normalize(resolve(root, filename))
-  if (!resolved_path.startsWith(root)) {
+  if (!resolved_path?.startsWith(root)) {
     throw errors.BadRequest
   }
   return resolved_path

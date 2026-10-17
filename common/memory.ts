@@ -1,6 +1,6 @@
 import { TokenCounter, AppSchema } from './types'
-import { defaultPresets } from './presets'
 import { BOT_REPLACE, SELF_REPLACE } from './prompt'
+import { presetDefaults } from './default-preset'
 
 export const BUNDLED_CHARACTER_BOOK_ID = '__bundled__characterbook__'
 
@@ -97,10 +97,10 @@ function getMemoryPromptContext(
   opts: MemoryOpts,
   encoder: TokenCounter
 ): MemoryPromptContext | undefined {
-  const depth = opts.settings?.memoryDepth || defaultPresets.basic.memoryDepth || Infinity
+  const depth = +(opts.settings?.memoryDepth || presetDefaults.memoryDepth || Infinity)
   if (isNaN(depth) || depth <= 0) return
 
-  const budget = opts.settings?.memoryContextLimit || defaultPresets.basic.memoryContextLimit
+  const budget = opts.settings?.memoryContextLimit || 500
 
   const bot = opts.char.name
   const sender =
@@ -117,7 +117,7 @@ function getMemoryPromptContext(
   }
 }
 
-function getEnabledEntriesFromBooks(books: (AppSchema.MemoryBook | undefined)[] | undefined) {
+function getEnabledEntriesFromBooks(books: Array<AppSchema.MemoryBook | undefined> | undefined) {
   if (!books) return []
 
   const entries = []
@@ -209,25 +209,19 @@ async function getMatchesWithinBudget(matches: Match[], ctx: MemoryPromptContext
   return allowed
 }
 
-function byPriorityThenAge(
-  { messageAge: lAge, entry: l }: Match,
-  { messageAge: rAge, entry: r }: Match
-) {
+function byPriorityThenAge(l: Match, r: Match) {
   // higher priority first
-  if (l.priority !== r.priority) return l.priority > r.priority ? -1 : 1
+  if (l.entry.priority !== r.entry.priority) return l.entry.priority > r.entry.priority ? -1 : 1
   // lower age first
-  if (lAge !== rAge) return lAge < rAge ? -1 : 1
+  if (l.messageAge !== r.messageAge) return l.messageAge < r.messageAge ? -1 : 1
   return 0
 }
 
-function byWeightThenAge(
-  { messageAge: lAge, entry: l }: Match,
-  { messageAge: rAge, entry: r }: Match
-) {
+function byWeightThenAge(l: Match, r: Match) {
   // higher weight first
-  if (l.weight !== r.weight) return l.weight > r.weight ? -1 : 1
+  if (l.entry.weight !== r.entry.weight) return l.entry.weight > r.entry.weight ? -1 : 1
   // lower age first
-  if (lAge !== rAge) return lAge < rAge ? -1 : 1
+  if (l.messageAge !== r.messageAge) return l.messageAge < r.messageAge ? -1 : 1
   return 0
 }
 

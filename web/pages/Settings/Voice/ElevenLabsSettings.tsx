@@ -2,12 +2,12 @@ import { Component } from 'solid-js'
 import { userStore } from '../../../store'
 import TextInput from '../../../shared/TextInput'
 import Button from '../../../shared/Button'
-import { AppSchema } from '/common/types/index'
 import { SetStoreFunction } from 'solid-js/store'
+import { UserSettings } from '../util'
 
 const ElevenLabsSettings: Component<{
-  state: AppSchema.User
-  setter: SetStoreFunction<AppSchema.User>
+  state: UserSettings
+  setter: SetStoreFunction<UserSettings>
 }> = (props) => {
   return (
     <>
@@ -22,7 +22,7 @@ const ElevenLabsSettings: Component<{
         }
         type="password"
         value={props.state.elevenLabsApiKey}
-        onChange={(ev) => props.setter('elevenLabsApiKey', props.state.elevenLabsApiKey)}
+        onChange={(ev) => props.setter('elevenLabsApiKey', ev.currentTarget.value)}
       />
 
       <Button schema="red" class="w-max" onClick={() => userStore.deleteKey('elevenlabs')}>

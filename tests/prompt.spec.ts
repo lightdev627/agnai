@@ -1,9 +1,9 @@
 import './init'
 import { expect } from 'chai'
-import { OPENAI_MODELS } from '../common/adapters'
 import { BOT_REPLACE, SELF_REPLACE } from '../common/prompt'
 import { toChat, build, botMsg, toMsg, entities, reset, toBook, toEntry } from './util'
 import { getTokenCounter } from '../srv/tokenize'
+import { OPENAI_MODELS } from '/common/presets/openai'
 
 const { chat, replyAs, main } = entities
 
@@ -16,14 +16,15 @@ describe('Prompt building', async () => {
   })
 
   it('will build a continue prompt', async () => {
-    const actual = await build([botMsg('FIRST')], { continue: 'ORIGINAL', replyAs: main })
+    const actual = await build([botMsg('FIRST'), botMsg('ORIGINAL')], {
+      replyAs: main,
+    })
     expect(actual.template.parsed).toMatchSnapshot()
   })
 
   // i dont understand this test. @malfoyslastname 2023-06-07
   it('will exclude sample chat when gaslight contains sample chat placeholder', async () => {
-    const actual = await build([botMsg('FIRST'), toMsg('SECOND')], {
-      continue: 'ORIGINAL',
+    const actual = await build([botMsg('FIRST'), toMsg('SECOND'), botMsg('ORIGINAL')], {
       chat: { ...chat, adapter: 'openai' },
       settings: {
         oaiModel: OPENAI_MODELS.Turbo,
@@ -36,8 +37,7 @@ This is how {{char}} should talk: {{example_dialogue}}`,
   })
 
   it('will include sample chat when gaslight does not contain sample chat placeholder', async () => {
-    const actual = await build([botMsg('FIRST'), toMsg('SECOND')], {
-      continue: 'ORIGINAL',
+    const actual = await build([botMsg('FIRST'), toMsg('SECOND'), botMsg('ORIGINAL')], {
       chat,
       settings: { service: 'openai', oaiModel: OPENAI_MODELS.Turbo, gaslight: 'Gaslight' },
     })
@@ -171,6 +171,7 @@ This is how {{char}} should talk: {{example_dialogue}}`,
       },
     })
     delete (actual.template as any).sections
+    delete actual.template.length
     expect(actual).to.matchSnapshot()
   })
 

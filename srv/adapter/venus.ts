@@ -1,9 +1,9 @@
 import { ModelAdapter } from './type'
 import { decryptText } from '../db/util'
-import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
+import { sanitise } from '/common/requests/util'
 import { registerAdapter } from './register'
-import { getStoppingStrings } from './prompt'
-import { streamCompletion } from './stream'
+import { streamGenerator } from '/common/requests/stream'
+import { getStoppingStrings } from '/common/requests/payloads'
 
 const venusOptions: Record<string, string> = {
   Mars: 'asha',
@@ -25,7 +25,7 @@ export const handleVenus: ModelAdapter = async function* (opts) {
     temperature: opts.gen.temp,
     top_p: opts.gen.topP,
     top_k: opts.gen.topK,
-    stop: getStoppingStrings(opts),
+    stop: getStoppingStrings(opts, opts.gen),
   }
 
   const url = `https://inference.chub.ai/prompt`
@@ -45,7 +45,17 @@ export const handleVenus: ModelAdapter = async function* (opts) {
     Authorization: `Bearer ${apiKey}`,
   }
 
-  const iter = streamCompletion(opts.user._id, url, headers, body, 'Venus', opts.log, 'openai')
+  const iter = streamGenerator({
+    userId: opts.user._id,
+    url,
+    headers,
+    body,
+    service: 'Venus',
+    log: opts.log,
+    format: 'openai',
+    signal: opts.signal,
+  })
+
   let accumulated = ''
 
   while (true) {
@@ -56,7 +66,7 @@ export const handleVenus: ModelAdapter = async function* (opts) {
       break
     }
 
-    if (generated.value.error) {
+    if ('error' in generated.value) {
       yield { error: generated.value.error }
       return
     }
@@ -66,23 +76,13 @@ export const handleVenus: ModelAdapter = async function* (opts) {
       accumulated += generated.value.token
 
       if (opts.gen.streamResponse) {
-        yield {
-          partial: sanitiseAndTrim(
-            accumulated,
-            body.template,
-            opts.char,
-            opts.characters,
-            opts.members
-          ),
-        }
+        yield { partial: accumulated }
       }
     }
   }
 
   const parsed = sanitise(accumulated)
-  const trimmed = trimResponseV2(parsed, opts.replyAs, opts.members, opts.characters)
-
-  yield trimmed || parsed
+  yield parsed
 }
 
 registerAdapter('venus', handleVenus, {

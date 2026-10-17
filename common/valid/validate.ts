@@ -11,6 +11,8 @@ import {
   isUnion,
 } from './util'
 
+const OPTIONAL_SYMBOL = '__optional__'
+
 export function isValid<T extends Validator>(type: T, compare: any): compare is UnwrapBody<T> {
   const valid = validateBody(type, compare, { notThrow: true })
   return valid.errors.length === 0
@@ -25,6 +27,15 @@ export function assertValid<T extends Validator>(
   if (errors.length) {
     throw new Error(`Request body is invalid: ${errors.join(', ')}`)
   }
+}
+
+export function assessValid<T extends Validator>(type: T, compare: any, partial?: boolean) {
+  const result = validateBody(type, compare, { notThrow: true, partial })
+  if (result.errors.length) {
+    throw new Error(`Request body is invalid: ${result.errors.join(', ')}`)
+  }
+
+  return result
 }
 
 /**
@@ -61,25 +72,32 @@ export function isValidPartial<T extends Validator>(
 }
 
 export function validateBody<T extends Validator>(
-  type: T,
+  guard: T,
   compare: any,
   opts: { partial?: boolean; prefix?: string; notThrow?: boolean } = {}
-): { errors: string[]; actual: UnwrapBody<T> } {
+): { errors: string[]; actual: UnwrapBody<T>; original: UnwrapBody<T>; omits: string[] } {
   const prefix = opts.prefix ? `${opts.prefix}.` : ''
   const errors: string[] = []
   const actual: any = {}
+  const omits: string[] = []
 
-  if (!compare && '?' in type && (type as any)['?'] === '?') {
-    return { errors, actual }
+  if (!compare && OPTIONAL_SYMBOL in guard) {
+    return { errors, actual, original: compare, omits }
   }
 
-  start: for (const key in type) {
+  start: for (const key in guard) {
+    if (key in compare === false) {
+      omits.push(key)
+    }
+
     const prop = `${prefix}${key}`
-    const bodyType = type[key]
+    const bodyType = guard[key]
     let value
     try {
       value = compare?.[key]
-      actual[key] = value
+      if (key !== OPTIONAL_SYMBOL && value !== undefined) {
+        actual[key] = value
+      }
     } catch (ex: any) {
       throw new Error(`${ex.message}: ${prop}`)
     }
@@ -90,12 +108,12 @@ export function validateBody<T extends Validator>(
       if (isOptionalArray(bodyType)) continue
       if (isObjectOptional(bodyType)) continue
       if (isOptionalUnion(bodyType)) continue
-      if ((key as any) === '?' && (bodyType as any) === '?') continue
+      if ((key as any) === OPTIONAL_SYMBOL && (bodyType as any) === true) continue
       if (!opts.partial) errors.push(`.${prop} is undefined`)
       continue
     }
 
-    if (bodyType === 'any' || bodyType === 'unknown' || (bodyType as any) === '?') continue
+    if (bodyType === 'any' || bodyType === 'unknown') continue
 
     if (isPrimitive(bodyType) && typeof value !== bodyType) {
       errors.push(`.${prop} is ${typeof value}, expected ${bodyType}`)
@@ -104,7 +122,7 @@ export function validateBody<T extends Validator>(
 
     if (isOptionalPrimitive(bodyType)) {
       // We have already checked this, but harmless to check again
-      if (value === undefined) continue
+      if (value === undefined || value === null) continue
 
       const actual = bodyType.slice(0, -1)
       if (actual === 'any' || actual === 'unknown') continue
@@ -133,7 +151,7 @@ export function validateBody<T extends Validator>(
     }
 
     if (isTupleOptional(bodyType)) {
-      if (value === undefined) continue
+      if (value === undefined || value === null) continue
 
       const [innerType] = bodyType
       const actual = innerType.slice(0, -1)
@@ -189,7 +207,7 @@ export function validateBody<T extends Validator>(
 
       if (typeof value !== 'string') {
         errors.push(
-          `.${prop} is ${typeof value}, expected undefined or literal of ${bodyType
+          `.${prop} is ${typeof value} ('${value}'), expected undefined or literal of ${bodyType
             .filter((v) => v !== null)
             .join(' | ')}`
         )
@@ -198,7 +216,7 @@ export function validateBody<T extends Validator>(
 
       if (bodyType.includes(value) === false) {
         errors.push(
-          `.${prop} value is invalid, expected undefined or literal of ${bodyType
+          `.${prop} value is invalid ('${value}'), expected undefined or literal of ${bodyType
             .filter((v) => v !== null)
             .join(' | ')}`
         )
@@ -209,12 +227,16 @@ export function validateBody<T extends Validator>(
     }
     if (isUnion(bodyType)) {
       if (typeof value !== 'string') {
-        errors.push(`.${prop} is ${typeof value}, expected literal of ${bodyType.join(' | ')}`)
+        errors.push(
+          `.${prop} is ${typeof value} ('${value}'), expected literal of ${bodyType.join(' | ')}`
+        )
         continue start
       }
 
       if (bodyType.includes(value) === false) {
-        errors.push(`.${prop} value is invalid, expected literal of ${bodyType.join(' | ')}`)
+        errors.push(
+          `.${prop} value is invalid ('${value}'), expected literal of ${bodyType.join(' | ')}`
+        )
         continue start
       }
 
@@ -242,5 +264,5 @@ export function validateBody<T extends Validator>(
     throw new Error(`Object does not match type: ${errors.join(', ')}`)
   }
 
-  return { errors, actual }
+  return { errors, actual, original: compare, omits }
 }

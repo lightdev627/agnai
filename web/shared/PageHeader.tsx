@@ -1,10 +1,10 @@
-import { Component, JSX, Show, createEffect, createMemo, createSignal } from 'solid-js'
+import { Component, JSX, Show, createMemo, createSignal, onMount } from 'solid-js'
 import Divider from './Divider'
 import Slot from './Slot'
 import { useRef } from './hooks'
 
 type Props = {
-  title: string | JSX.Element
+  title?: string | JSX.Element
   subtitle?: string | JSX.Element
   noDivider?: boolean
   noslot?: boolean
@@ -18,7 +18,7 @@ const PageHeader: Component<Props> = (props) => {
   const [ref, onRef] = useRef()
   const [_sticky, setSticky] = createSignal(true)
 
-  createEffect(() => {
+  onMount(() => {
     setTimeout(() => setSticky(false), 4000)
   })
 

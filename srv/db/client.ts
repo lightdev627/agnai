@@ -8,6 +8,7 @@ let connected = false
 let retrying = false
 
 let database: Db | null = null
+let client: MongoClient | null = null
 
 export async function connect(verbose = false) {
   if (!config.db.uri && !config.db.host) {
@@ -23,6 +24,7 @@ export async function connect(verbose = false) {
     clearTimeout(timer)
 
     database = cli.db(config.db.name)
+    client = cli
 
     const onClose = (event: string) => () => {
       if (retrying) return
@@ -34,7 +36,7 @@ export async function connect(verbose = false) {
 
     cli.on('connectionPoolCleared', onClose('connectionPoolCleared'))
 
-    logger.info({ uri }, 'Connected to MongoDB')
+    logger.info('Connected to MongoDB')
     connected = true
     return database
   } catch (ex) {
@@ -46,6 +48,19 @@ export async function connect(verbose = false) {
 export function getDb() {
   if (!database) throw new Error('Database not yet initialised')
   return database!
+}
+
+export async function transact(callback: () => Promise<void>) {
+  const session = client!.startSession()
+  try {
+    await session.withTransaction(async () => callback(), {
+      readPreference: 'primary',
+      readConcern: { level: 'local' },
+      writeConcern: { w: 'majority' },
+    })
+  } finally {
+    await session.endSession()
+  }
 }
 
 export function db<T extends AllDoc['kind']>(kind: T) {
@@ -73,6 +88,7 @@ export async function createIndexes() {
   await db('memory').createIndex({ userId: 1 }, { name: 'memory_userId' })
 
   await db('gen-setting').createIndex({ userId: 1 }, { name: 'gen-setting_userId' })
+  await db('image-preset').createIndex({ userId: 1 }, { name: 'image-preset_userId' })
 
   await db('chat-message').createIndex({ chatId: 1 }, { name: 'chatmessages_chatId' })
   await db('chat-message').createIndex(
@@ -95,6 +111,7 @@ export async function createIndexes() {
   await db('user').createIndex({ username: 1 }, { name: 'user_username' })
   await db('user').createIndex({ kind: 1, username: 1 }, { name: 'user_kind_username' })
   await db('user').createIndex({ apiKey: 1 }, { name: 'user_apiKey' })
+  await db('user').createIndex({ resetCode: 1 }, { name: 'user_resetCode' })
   await db('user').createIndex({ patreonUserId: 1 }, { name: 'user_patreonUserId' })
   await db('user').createIndex(
     { 'patreon.user.attributes.email': 1 },

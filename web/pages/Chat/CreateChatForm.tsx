@@ -15,7 +15,7 @@ import {
 } from '../../store'
 import CharacterSelect from '../../shared/CharacterSelect'
 import { AutoPreset, getPresetOptions } from '../../shared/adapter'
-import { defaultPresets, isDefaultPreset } from '/common/presets'
+import { defaultPresets } from '/common/presets'
 import ServiceWarning from '/web/shared/ServiceWarning'
 import { PresetSelect } from '/web/shared/PresetSelect'
 import { Card, TitleCard } from '/web/shared/Card'
@@ -27,6 +27,7 @@ import { AppSchema } from '/common/types'
 import { ADAPTER_LABELS } from '/common/adapters'
 import { Page } from '/web/Layout'
 import { createStore } from 'solid-js/store'
+import { isDefaultPreset } from '/common/default-preset'
 
 const options = [{ value: 'attributes', label: 'Attributes' }]
 
@@ -57,7 +58,7 @@ const CreateChatForm: Component<{
   const nav = useNavigate()
 
   const scen = scenarioStore((s) => s.scenarios)
-  const cfg = settingStore()
+  const cfg = settingStore((s) => ({ config: s.config }))
   const user = userStore((s) => ({ ...s.user, sub: s.sub, userLevel: s.userLevel }))
   const chars = characterStore((s) => ({
     char: s.editing,
@@ -65,7 +66,7 @@ const CreateChatForm: Component<{
     loaded: s.characters.loaded,
   }))
 
-  const [state, setState] = createStore(getInitState(chars.char))
+  const [state, setState] = createStore(getInitState(chars.char, { presetId: user.defaultPreset }))
   const [selectedId, setSelected] = createSignal<string | undefined>(params.id)
 
   const scenarios = createMemo(() => {
@@ -73,20 +74,25 @@ const CreateChatForm: Component<{
     return [{ value: '', label: 'None' }, ...scen.map((s) => ({ label: s.name, value: s._id }))]
   })
 
-  createEffect(() => {
-    if (props.charId) return
-    const curr = selectedId()
-    if (curr) return
+  createEffect(
+    on(
+      () => [props.charId, chars.chars],
+      () => {
+        if (props.charId) return
+        const curr = selectedId()
+        if (curr) return
 
-    if (!chars.chars.length) return
-    setSelected(chars.chars[0]._id)
-  })
+        if (!chars.chars.length) return
+        setSelected(chars.chars[0]._id)
+      }
+    )
+  )
 
   createEffect(() => {
     const id = selectedId()
     if (!id) return
 
-    if (chars.char?._id === id) return
+    if (chars.char?._id === id && '__type' in chars.char === false) return
     characterStore.getCharacter(id)
   })
 
@@ -105,7 +111,13 @@ const CreateChatForm: Component<{
   const presetOptions = createMemo(() => {
     const opts = getPresetOptions(presets, { builtin: true }).filter((pre) => pre.value !== 'chat')
     const combined = [
-      { label: 'System Built-in Preset (Horde)', value: AutoPreset.service, custom: false },
+      {
+        label: 'System Built-in Preset (Horde)',
+        value: AutoPreset.service,
+        custom: false,
+        name: 'System Built-in Preset',
+        provider: 'Horde',
+      },
     ].concat(opts)
 
     const defaultPreset = presets.find((p) => p._id === user.defaultPreset)
@@ -115,6 +127,8 @@ const CreateChatForm: Component<{
         label: `[${label}] Your Default Preset`,
         value: '',
         custom: true,
+        provider: label,
+        name: 'Your Default Preset',
       })
     }
 
@@ -191,7 +205,17 @@ const CreateChatForm: Component<{
 
   return (
     <Page>
-      <PageHeader title={`Create Chat with ${chars.char?.name}`} />
+      <PageHeader
+        title={`Create Chat`}
+        subtitle={
+          <div class="flex w-full justify-between">
+            <div>{chars.char?.name || ''}</div>
+            <Button onClick={onCreate} size="sm">
+              Create
+            </Button>
+          </div>
+        }
+      />
       <form ref={ref}>
         <div class="mb-2 text-sm">
           Optionally modify some of the conversation context. You can override other aspects of the
@@ -212,6 +236,7 @@ const CreateChatForm: Component<{
                 helperText="The conversation's main character"
                 onChange={(c) => setSelected(c?._id)}
                 ignoreActive
+                random
               />
             </Card>
           </Show>
@@ -254,6 +279,7 @@ const CreateChatForm: Component<{
                 </span>
               }
               placeholder="Untitled"
+              onChange={(ev) => setState('name', ev.currentTarget.value)}
             />
           </Card>
           <Card>
@@ -353,7 +379,7 @@ const CreateChatForm: Component<{
   )
 }
 
-function getInitState(char?: AppSchema.Character, previous?: ChatState): ChatState {
+function getInitState(char?: AppSchema.Character, previous?: Partial<ChatState>): ChatState {
   return {
     name: previous?.name || '',
     presetId: previous?.presetId || '',
@@ -370,8 +396,8 @@ function getInitState(char?: AppSchema.Character, previous?: ChatState): ChatSta
     systemPrompt: '',
     postHistoryInstructions: '',
 
-    personaKind: char?.persona.kind || 'text',
-    personaAttrs: toAttrs(char?.persona.attributes),
+    personaKind: char?.persona?.kind || 'text',
+    personaAttrs: toAttrs(char?.persona?.attributes),
   }
 }
 

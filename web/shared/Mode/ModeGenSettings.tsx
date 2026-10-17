@@ -1,36 +1,39 @@
 import { Save, X } from 'lucide-solid'
 import { Component, createEffect, createMemo, createSignal, JSX, on, onMount, Show } from 'solid-js'
-import { defaultPresets, isDefaultPreset } from '../../../common/presets'
+import { defaultPresets, isDefaultPreset } from '../../../common/default-preset'
 import { AppSchema } from '../../../common/types/schema'
 import Button from '../Button'
-import { toastStore, userStore } from '../../store'
 import { presetStore } from '../../store'
-import { AutoPreset, getPresetOptions } from '../adapter'
+import { getPresetOptions } from '../adapter'
 import ServiceWarning from '/web/shared/ServiceWarning'
 import { PresetSelect } from '/web/shared/PresetSelect'
-import { Card, TitleCard } from '/web/shared/Card'
+import { TitleCard } from '/web/shared/Card'
 import { usePane } from '/web/shared/hooks'
 import TextInput from '/web/shared/TextInput'
 import PresetSettings from '/web/shared/PresetSettings'
-import { getPresetEditor, getPresetForm, PresetTab } from '../PresetSettings/types'
 import { ADAPTER_SETTINGS } from '../PresetSettings/settings'
+import Divider from '../Divider'
+import { getPresetForm, PresetFuncs, PresetTab, ContextPreset } from '/web/store/preset-context'
+import { deepClone } from '/common/util'
 
 export const ModeGenSettings: Component<{
+  preset: ContextPreset
+  setters: PresetFuncs
   onPresetChanged: (presetId: string) => void
   presetId: string | undefined
+  page: string
   hideTabs?: PresetTab[]
   close?: () => void
   footer?: (children: JSX.Element) => void
 }> = (props) => {
   let ref: any
-  const user = userStore()
   const pane = usePane()
   const state = presetStore(({ presets }) => ({
     presets,
     options: presets.map((pre) => ({ label: pre.name, value: pre._id })),
   }))
 
-  const [store, setStore] = getPresetEditor()
+  const [clicked, setClicked] = createSignal(false)
 
   const presetOptions = createMemo(() =>
     getPresetOptions(state.presets, { builtin: true, base: true })
@@ -49,19 +52,26 @@ export const ModeGenSettings: Component<{
     return all.concat(defaults)
   })
 
-  const [selected, setSelected] = createSignal(
-    props.presetId || user.user?.defaultPreset || AutoPreset.service
-  )
+  const [selected, setSelected] = createSignal(props.presetId || '')
 
   createEffect(
     on(
       () => selected(),
       (id) => {
         if (!id) return
-        const preset = state.presets.find((p) => p._id === id)
-        if (preset) {
-          setStore(preset)
+
+        if (isDefaultPreset(id)) {
+          props.setters.clear()
+          const clone = deepClone(defaultPresets[id])
+          props.setters.setState({ ...clone, _id: id })
+          return
         }
+
+        if (props.preset._id === id) {
+          return
+        }
+
+        props.setters.load(id)
       }
     )
   )
@@ -80,7 +90,7 @@ export const ModeGenSettings: Component<{
 
   const onSave = () => {
     const presetId = selected()
-    const update = getPresetForm(store)
+    const update = getPresetForm(props.preset)
 
     if (isDefaultPreset(presetId)) {
       const original = defaultPresets[presetId] as AppSchema.GenSettings
@@ -114,13 +124,9 @@ export const ModeGenSettings: Component<{
     }
 
     if (!isDefaultPreset(presetId)) {
-      if (!update.service) {
-        toastStore.error(`You must select an AI service before saving`)
-        return
-      }
-
       presetStore.updatePreset(presetId, update as any, {
-        onSuccess: () => {
+        onSuccess: (next) => {
+          props.setters.setState(next)
           if (pane() === 'popup') {
             props.close?.()
           }
@@ -145,36 +151,67 @@ export const ModeGenSettings: Component<{
 
   const activePreset = createMemo(() => presets().find((pre) => pre._id === selected()))
 
+  const copy = (text: string) => {
+    if (typeof navigator === undefined) return
+
+    try {
+      navigator.clipboard.writeText(text)
+      setTimeout(() => setClicked(false), 1000)
+      setClicked(true)
+    } catch (ex) {}
+  }
+
   return (
     <div class="text-sm">
       <form ref={ref} class="flex flex-col gap-4">
-        <Card class="flex flex-col gap-2">
-          <PresetSelect
-            options={presetOptions()}
-            selected={selected()}
-            setPresetId={(val) => {
-              setSelected(val)
-              props.onPresetChanged(val)
-            }}
-          />
+        <PresetSelect
+          options={presetOptions()}
+          selected={selected()}
+          setPresetId={(val) => {
+            setSelected(val)
+            props.onPresetChanged(val)
+          }}
+        />
 
-          <ServiceWarning preset={activePreset()} />
-          <Show when={isDefaultPreset(selected())}>
-            <TitleCard type="orange">
-              You are using a built-in preset which cannot be modified. Modifying this will create a
-              new preset and assign it to your chat.
-            </TitleCard>
-          </Show>
+        <ServiceWarning preset={activePreset()} />
+        <Show when={isDefaultPreset(selected())}>
+          <TitleCard type="orange">
+            You are using a built-in preset which cannot be modified. Modifying this will create a
+            new preset and assign it to your chat.
+          </TitleCard>
+        </Show>
 
-          <TextInput
-            fieldName="name"
-            value={store.name}
-            label="Preset Name"
-            onChange={(ev) => setStore('name', ev.currentTarget.value)}
-          />
-        </Card>
+        <TextInput
+          fieldName="name"
+          value={props.preset.name}
+          label={
+            <div class="flex gap-2">
+              <div>Preset Name</div>{' '}
+              <div
+                class="icon-button select-none text-sm"
+                style={{ transition: '0.3s' }}
+                classList={{ '!text-green-500': clicked() }}
+                onClick={() => copy(props.preset._id)}
+              >
+                <Show when={window.flags.debug} fallback={'Copy ID'}>
+                  {props.preset._id}
+                </Show>
+                {clicked() ? '✓' : ''}
+              </div>
+            </div>
+          }
+          onChange={(ev) => props.setters.setState('name', ev.currentTarget.value)}
+        />
 
-        <PresetSettings store={store} setter={setStore} hideTabs={props.hideTabs} noSave={false} />
+        <Divider class="!my-1" />
+
+        <PresetSettings
+          state={props.preset}
+          setters={props.setters}
+          hideTabs={props.hideTabs}
+          noSave={false}
+          page={props.page}
+        />
       </form>
     </div>
   )
@@ -182,10 +219,10 @@ export const ModeGenSettings: Component<{
 
 function isPresetDirty(
   original: AppSchema.GenSettings,
-  compare: Omit<AppSchema.GenSettings, 'service'>
+  update: Omit<AppSchema.GenSettings, 'service'>
 ) {
   const svc = original.service
-  for (const key in compare) {
+  for (const key in update) {
     const prop = key as keyof AppSchema.GenSettings
 
     switch (prop) {
@@ -193,13 +230,13 @@ function isPresetDirty(
         continue
     }
 
-    if (compare[prop] === undefined || original[prop] === undefined) continue
+    if (update[prop] === undefined && original[prop] === undefined) continue
 
     const usable: string[] | undefined = (ADAPTER_SETTINGS as any)[prop]
 
     if (svc && usable && !usable.includes(svc)) continue
 
-    if (original[prop] !== compare[prop]) {
+    if (original[prop] !== update[prop]) {
       return true
     }
   }

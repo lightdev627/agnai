@@ -1,40 +1,27 @@
-import { v4 } from 'uuid'
 import { AppSchema } from '../../common/types/schema'
 import { EVENTS, events } from '../emitter'
-import { createDebounce, getAssetUrl } from '../shared/util'
+import { getAssetUrl, getUtterableText, storage } from '../shared/util'
 import { isLoggedIn } from './api'
 import { createStore, getStore } from './create'
-import { publish, subscribe } from './socket'
+import { subscribe } from './socket'
 import { toastStore } from './toasts'
 import { msgsApi } from './data/messages'
 import { imageApi } from './data/image'
 import { userStore } from './user'
 import { localApi } from './data/storage'
 import { chatStore } from './chat'
-import { voiceApi } from './data/voice'
-import { VoiceSettings, VoiceWebSynthesisSettings } from '../../common/types/texttospeech-schema'
-import { defaultCulture } from '../shared/CultureCodes'
-import { createSpeech, isNativeSpeechSupported, stopSpeech } from '../shared/Audio/speech'
 import { eventStore } from './event'
-import { exclude, findOne, replace } from '/common/util'
-import {
-  ChatTree,
-  removeChatTreeNodes,
-  resolveChatPath,
-  sortAsc,
-  toChatGraph,
-  updateChatTreeNode,
-} from '/common/chat'
+import { findOne, replace } from '/common/util'
+import { ChatTree, sortAsc, toChatGraph } from '/common/chat'
 import { embedApi } from './embeddings'
-import { JsonField, TickHandler } from '/common/prompt'
 import { HordeCheck } from '/common/horde-gen'
-import { botGen, GenerateOpts } from './data/bot-generate'
+import type { MsgAttachment } from '/srv/adapter/type'
+import { debug } from '/common/debug'
+import { responseStore } from './response'
+import { getMessageImagePrompt } from '../shared/hooks'
+import { TickHandler } from '/common/prompt'
 
 const SOFT_PAGE_SIZE = 20
-
-type ChatId = string
-
-export type VoiceState = 'generating' | 'playing'
 
 type SendModes =
   | 'send'
@@ -47,35 +34,30 @@ type SendModes =
   | 'self'
   | 'send-noreply'
 
-export type ChatMessageExt = AppSchema.ChatMessage & { voiceUrl?: string }
+export type ChatMessageExt = AppSchema.ChatMessage & { voiceUrl?: string; handle?: string }
 
 export type MsgState = {
   hordeStatus?: HordeCheck
   activeChatId: string
   activeCharId: string
-  messageHistory: ChatMessageExt[]
+  // messageHistory: ChatMessageExt[]
   msgs: ChatMessageExt[]
-  partial?: string
-  retrying?: AppSchema.ChatMessage
-  waiting?: {
+  showMessageCount: number
+
+  deleting?: boolean
+
+  imgWaiting?: {
     chatId: string
-    mode?: GenerateOpts['kind']
-    input?: string
-    userId?: string
-    characterId: string
+    characterId?: string
     messageId?: string
-    image?: boolean
+    signal: AbortController
+    pos: number
   }
+
   nextLoading: boolean
   imagesSaved: boolean
-  speaking: { messageId: string; status: VoiceState } | undefined
-  lastInference?: {
-    requestId: string
-    chatId: string
-    messageId: string
-    characterId: string
-    text: string
-  }
+  // speaking: { messageId: string; status: VoiceState } | undefined
+
   textBeforeGenMore: string | undefined
   queue: Array<{ chatId: string; message: string; mode: SendModes }>
   // cache: Record<string, AppSchema.ChatMessage>
@@ -86,28 +68,25 @@ export type MsgState = {
    *
    * These will be 'inserted' into chats by 'createdAt' timestamp
    */
-  images: Record<ChatId, AppSchema.ChatMessage[]>
+  // images: Record<ChatId, AppSchema.ChatMessage[]>
 
   /** Attachments, mapped by Chat ID  */
-  attachments: Record<string, { image: string } | undefined>
+  attachments: Record<string, MsgAttachment[]>
   graph: {
     tree: ChatTree
     root: string
   }
+  metadata?: AppSchema.ChatMessage
 }
 
 const initState: MsgState = {
   activeChatId: '',
   activeCharId: '',
-  messageHistory: [],
+  showMessageCount: SOFT_PAGE_SIZE,
+  // messageHistory: [],
   msgs: [],
-  images: {},
   nextLoading: false,
   imagesSaved: false,
-  waiting: undefined,
-  partial: undefined,
-  retrying: undefined,
-  speaking: undefined,
   queue: [],
   textBeforeGenMore: undefined,
   canImageCaption: false,
@@ -118,6 +97,28 @@ const initState: MsgState = {
   },
 }
 
+export async function getMessageImages(messageId: string) {
+  const cached = await storage
+    .getItem(`message-images-${messageId}`)
+    .then((res) => (res ? JSON.parse(res) : []))
+
+  return cached as string[]
+}
+
+async function addMessageImage(messageId: string, cacheId: string) {
+  const prev = await getMessageImages(messageId)
+  if (prev.includes(cacheId)) return
+
+  const next = prev.concat(cacheId)
+  await storage.setItem(`message-images-${messageId}`, JSON.stringify(next))
+  debug('image-cache')(
+    'appended %s: %s',
+    `message-images-${messageId}`.slice(0, 20) + '...',
+    cacheId
+  )
+  await hydrateMessageImages(messageId)
+}
+
 export const msgStore = createStore<MsgState>(
   'messages',
   initState
@@ -126,7 +127,7 @@ export const msgStore = createStore<MsgState>(
     msgStore.setState({ canImageCaption: true })
   })
 
-  events.on('logged-out', () => {
+  events.on(EVENTS.loggedOut, () => {
     msgStore.setState(initState)
   })
 
@@ -138,80 +139,122 @@ export const msgStore = createStore<MsgState>(
     msgStore.setState({ activeChatId: chatId, activeCharId: undefined, msgs: [] })
   })
 
-  events.on(
-    EVENTS.receiveMsgs,
-    (data: {
-      characterId: string
-      chatId: string
-      leafId?: string
-      messages: AppSchema.ChatMessage[]
-    }) => {
-      data.messages.sort(sortAsc)
-      const graph = toChatGraph(data.messages)
+  events.on(EVENTS.chatClosed, () => {
+    msgStore.setState({ activeChatId: undefined, activeCharId: undefined })
+  })
 
-      let leaf = data.leafId || data.messages.slice(-1)[0]?._id || ''
+  return {
+    receiveMessages(
+      _,
+      opts: {
+        chatId: string
+        leafId?: string
+        characterId: string
+        messages: AppSchema.ChatMessage[]
+      }
+    ) {
+      opts.messages.sort(sortAsc)
+      const graph = toChatGraph(opts.messages)
 
-      // If the leaf has been deleted then the path won't load
-      // So, if the leaf doesn't exist, use the most recent message
-      if (data.leafId) {
-        const node = graph.tree[data.leafId]
-        if (!node) {
-          leaf = data.messages.slice(-1)[0]?._id || ''
+      return {
+        activeCharId: opts.characterId,
+        activeChatId: opts.chatId,
+        msgs: opts.messages,
+        showMessageCount: 20,
+        graph,
+      }
+    },
+
+    setMetadataMsg(_, msg?: AppSchema.ChatMessage) {
+      return { metadata: msg }
+    },
+
+    // setAttachment({ attachments }, chatId: string, base64: string) {
+    //   return { attachments: { ...attachments, [chatId]: { image: base64 } } }
+    // },
+    addAttachment({ attachments }, msgId: string, attachment: MsgAttachment[]) {
+      const existing = attachments[msgId]
+      const newAttachments: MsgAttachment[] = attachment.filter((attach) => {
+        if (!existing) return true
+
+        for (const exist of existing) {
+          if (exist.image === attach.image) return false
+        }
+
+        return true
+      })
+
+      if (!newAttachments.length) return
+
+      const next = { ...attachments }
+      if (!next[msgId]) {
+        next[msgId] = []
+      } else {
+        next[msgId] = next[msgId].slice()
+      }
+
+      next[msgId].push(...newAttachments)
+      // events.emit('msg-attachment', next[msgId])
+      return { attachments: next }
+    },
+    removeAttachment({ attachments }, msgId: string, index: number) {
+      const next = { ...attachments }
+
+      if (next[msgId]) {
+        if (index < 0) {
+          next[msgId] = []
+        } else {
+          const list = next[msgId].toSpliced(index, 1)
+          next[msgId] = list
         }
       }
 
-      const fullPath = resolveChatPath(graph.tree, leaf)
-      const recent = fullPath.splice(-SOFT_PAGE_SIZE)
-
-      msgStore.setState({
-        activeCharId: data.characterId,
-        activeChatId: data.chatId,
-        messageHistory: fullPath,
-        msgs: recent,
-        graph,
-      })
-
-      embedApi.embedChat(data.chatId, data.messages)
-    }
-  )
-
-  return {
-    setAttachment({ attachments }, chatId: string, base64: string) {
-      return { attachments: { ...attachments, [chatId]: { image: base64 } } }
+      // events.emit('msg-attachment', next[msgId])
+      return { attachments: next }
     },
-    removeAttachment({ attachments }, chatId: string) {
-      return { attachments: { ...attachments, [chatId]: undefined } }
-    },
-    async *getNextMessages({ msgs, messageHistory, activeChatId, nextLoading }) {
+    async *getNextMessages({ msgs, nextLoading, showMessageCount }) {
       if (nextLoading) return
 
       const msg = msgs[0]
       if (!msg || msg.first) return
 
-      yield { nextLoading: true }
+      return { showMessageCount: showMessageCount + 20 }
+    },
 
-      if (messageHistory.length) {
-        const nextHistory = messageHistory.slice()
-        const trailing = nextHistory.splice(-SOFT_PAGE_SIZE)
-        yield { nextLoading: false, msgs: trailing.concat(msgs), messageHistory: nextHistory }
-        return
+    async *softEditMessageParent(
+      { msgs, graph },
+      msgId: string,
+      update: Partial<AppSchema.ChatMessage>,
+      onSuccess?: Function
+    ) {
+      const prev = graph.tree[msgId]
+      if (!prev) return toastStore.error(`Cannot find message`)
+
+      const next = { ...prev.msg, ...update, voiceUrl: undefined }
+      applyGraphUpdates({ updates: [next] })
+      // updateGraphAndReload(msgId, next)
+      onSuccess?.()
+    },
+
+    async *editMessageParent(
+      { msgs, graph },
+      msgId: string,
+      update: Partial<AppSchema.ChatMessage>,
+      onSuccess?: Function
+    ) {
+      const prev = graph.tree[msgId]
+      if (!prev) return toastStore.error(`Cannot find message`)
+
+      const res = await msgsApi.editMessageProps(prev.msg, update)
+      if (res.result) {
+        const next = { ...prev.msg, ...update, voiceUrl: undefined }
+        applyGraphUpdates({ updates: [next] })
+        // updateGraphAndReload(msgId, next)
+        onSuccess?.()
       }
 
-      const before = msg.createdAt
-
-      const res = await msgsApi.getMessages(activeChatId, before)
-      yield { nextLoading: false }
-      if (res.result && res.result.messages.length) {
-        return { msgs: res.result.messages.concat(msgs) }
-      }
-
-      if (res.result && !res.result.messages.length) {
-        return {
-          msgs: msgs.map((msg, i) => {
-            if (i === 0) return { ...msg, first: true }
-            return msg
-          }),
-        }
+      if (res.error) {
+        toastStore.error(`Failed to update: ${res.error}`)
       }
     },
 
@@ -221,7 +264,7 @@ export const msgStore = createStore<MsgState>(
       update: Partial<AppSchema.ChatMessage>,
       onSuccess?: Function
     ) {
-      const prev = msgs.find((m) => m._id === msgId)
+      const prev = findOne(msgId, msgs)
       if (!prev) return toastStore.error(`Cannot find message`)
 
       const res = await msgsApi.editMessageProps(prev, update)
@@ -230,11 +273,21 @@ export const msgStore = createStore<MsgState>(
       }
 
       if (res.result) {
-        yield {
-          msgs: msgs.map((m) => (m._id === msgId ? { ...m, ...update, voiceUrl: undefined } : m)),
-        }
+        const next = { ...prev, ...update, voiceUrl: undefined }
+        applyGraphUpdates({ updates: [{ ...next, _id: msgId }] })
         onSuccess?.()
       }
+    },
+
+    localEditMessageProp({ msgs }, msgId: string, update: Partial<AppSchema.ChatMessage>) {
+      const prev = findOne(msgId, msgs)
+      if (!prev) return
+
+      const next = { ...prev, ...update, voiceUrl: undefined }
+      const nextMsgs = replace(msgId, msgs, next)
+      const nextGraph = toChatGraph(nextMsgs)
+
+      return { msgs: nextMsgs, graph: nextGraph }
     },
 
     async *removeMessageImage({ msgs }, msgId: string, position: number) {
@@ -243,19 +296,25 @@ export const msgStore = createStore<MsgState>(
 
       const extras = (prev.extras || []).slice()
 
-      if (position === 0) {
-        if (!extras.length) {
-          msgStore.deleteMessages(msgId, true)
+      // 'image' messages have an image in `.msg` which we treat as `position 0`
+      if (prev.adapter === 'image') {
+        if (position === 0) {
+          if (!extras.length) {
+            msgStore.deleteMessages(msgId, true)
+            return
+          }
+
+          msgStore.editMessageProp(msgId, { msg: extras[0], extras: extras.slice(1) })
           return
         }
 
-        const msg = extras.shift()
-        msgStore.editMessageProp(msgId, { msg, extras })
+        msgStore.editMessageProp(msgId, { extras: extras.toSpliced(position - 1, 1) })
         return
       }
 
-      extras.splice(position - 1, 1)
-      msgStore.editMessageProp(msgId, { extras })
+      // non-image messages only have images in `.extras`
+      msgStore.editMessageProp(msgId, { extras: extras.toSpliced(position, 1) })
+      return
     },
 
     async *swapMessage({ msgs }, msgId: string, position: number, onSuccess?: Function) {
@@ -276,17 +335,14 @@ export const msgStore = createStore<MsgState>(
       const retries = msg.retries.slice()
       retries[position - 1] = original
 
-      const res = await msgsApi.swapMessage(msg, replacement, retries)
+      const text = replacement
+      const res = await msgsApi.swapMessage(msg, text, retries)
       if (res.error) {
         toastStore.error(`Failed to swap message: ${res.error}`)
       }
 
       if (res.result) {
-        const next = msgs.map((msg) => {
-          if (msgId !== msg._id) return msg
-          return { ...msg, msg: replacement, retries }
-        })
-        yield { msgs: next }
+        applyGraphUpdates({ updates: [{ _id: msgId, msg: text, retries }] })
         onSuccess?.()
       }
     },
@@ -305,7 +361,7 @@ export const msgStore = createStore<MsgState>(
         return toastStore.error(`Cannot discard swipe: Swipe not found`)
       }
 
-      const text = position === 0 ? retries[0] : msg.msg
+      const replacement = position === 0 ? retries[0] : msg.msg
       // Remove the message at the specified position from the retries array
       if (position !== 0) {
         retries.splice(position - 1, 1)
@@ -313,20 +369,20 @@ export const msgStore = createStore<MsgState>(
         retries.splice(0, 1)
       }
 
+      const text = replacement
       const res = await msgsApi.swapMessage(msg, text, retries)
       if (res.error) {
         toastStore.error(`Failed to discard message: ${res.error}`)
       }
       if (res.result) {
-        const nextMsgs = msgs.map((m) => (m._id === msgId ? { ...m, msg: text, retries } : m))
-        yield { msgs: nextMsgs }
+        applyGraphUpdates({ updates: [{ _id: msgId, msg: text, retries }] })
         onSuccess?.()
-        toastStore.success(`Swipe deleted`, 2)
+        toastStore.success(`Swipe deleted`, { ttl: 2 })
       }
     },
 
     async *editMessage({ msgs, graph }, msgId: string, msg: string, onSuccess?: Function) {
-      const prev = msgs.find((m) => m._id === msgId)
+      const prev = findOne(msgId, msgs)
       if (!prev) return toastStore.error(`Cannot find message`)
 
       const res = await msgsApi.editMessage(prev, msg)
@@ -334,152 +390,14 @@ export const msgStore = createStore<MsgState>(
         toastStore.error(`Failed to update message: ${res.error}`)
       }
       if (res.result) {
-        const tree = updateChatTreeNode(graph.tree, { ...prev, msg })
+        const nextMsgs = replace(msgId, msgs, { msg, voiceUrl: undefined })
+        const graph = toChatGraph(nextMsgs)
         yield {
-          msgs: msgs.map((m) => (m._id === msgId ? { ...m, msg, voiceUrl: undefined } : m)),
-          graph: { tree, root: graph.root },
+          msgs: nextMsgs,
+          graph,
         }
         onSuccess?.()
       }
-    },
-
-    clearLastInference() {
-      return { lastInference: undefined }
-    },
-
-    async *continuation(
-      { msgs },
-      chatId: string,
-      onSuccess?: () => void,
-      retryLatestGenMoreOutput?: boolean
-    ) {
-      if (!chatId) {
-        toastStore.error('Could not send message: No active chat')
-        yield { partial: undefined }
-        return
-      }
-
-      const [_, replace] = msgs.slice(-2)
-      yield {
-        partial: '',
-        waiting: {
-          chatId,
-          mode: 'continue',
-          characterId: replace.characterId!,
-        },
-        retrying: replace,
-      }
-
-      const msgState = msgStore.getState()
-      const textBeforeGenMore = retryLatestGenMoreOutput
-        ? msgState.textBeforeGenMore ?? replace.msg
-        : replace.msg
-      const res = await botGen
-        .generate({
-          kind: 'continue',
-          retry: retryLatestGenMoreOutput,
-        })
-        .catch((err) => ({ error: err.message, result: undefined }))
-
-      if (res.error) {
-        toastStore.error(`(Continue) Generation request failed: ${res.error}`)
-        yield { partial: undefined, waiting: undefined }
-      }
-
-      if (res.result) {
-        msgStore.setState({ textBeforeGenMore })
-        onSuccess?.()
-      }
-    },
-
-    async *request(_, chatId: string, characterId: string, onSuccess?: () => void) {
-      if (!chatId) {
-        toastStore.error('Could not send message: No active chat')
-        yield { partial: undefined }
-        return
-      }
-      yield { partial: undefined, waiting: { chatId, mode: 'request', characterId } }
-
-      const res = await botGen
-        .generate({ kind: 'request', characterId })
-        .catch((err) => ({ error: err.message, result: undefined }))
-
-      if (res.error) {
-        toastStore.error(`(Bot) Generation request failed: ${res.error}`)
-        yield { partial: undefined, waiting: undefined }
-      }
-
-      if (res.result) onSuccess?.()
-    },
-
-    async *fork({ graph: { tree }, msgs, messageHistory }, messageId: 'root' | string) {
-      if (messageId === 'root') {
-        const first = messageHistory[0] || msgs[0]
-
-        if (!first) {
-          toastStore.warn('Could not restart: No root message found')
-          return
-        }
-
-        messageId = first._id
-      }
-      const path = resolveChatPath(tree, messageId)
-      const page = path.splice(-SOFT_PAGE_SIZE)
-      yield { msgs: page, messageHistory: path }
-    },
-
-    async *retry(
-      { msgs, activeCharId },
-      chatId: string,
-      messageId?: string,
-      onSuccess?: () => void
-    ) {
-      if (!chatId) {
-        toastStore.error('Could not send message: No active chat')
-        yield { partial: undefined }
-        return
-      }
-
-      if (msgs.length === 0) {
-        msgStore.request(chatId, activeCharId, onSuccess)
-        return
-      }
-
-      const msg = messageId ? msgs.find((msg) => msg._id === messageId)! : msgs[msgs.length - 1]
-      const replace = msg?.userId ? undefined : { ...msg, voiceUrl: undefined }
-      const characterId = replace?.characterId || activeCharId
-      yield {
-        partial: '',
-        waiting: { chatId, mode: 'retry', characterId },
-        retrying: replace,
-      }
-
-      const res = await botGen
-        .generate({ kind: 'retry', messageId })
-        .catch((err) => ({ error: err.message, result: undefined }))
-
-      if (res.error) {
-        toastStore.error(`(Retry) Generation request failed: ${res.error}`)
-        yield { partial: undefined, waiting: undefined, retrying: undefined }
-      } else if (res.result) {
-        onSuccess?.()
-      }
-    },
-
-    async resend({ msgs }, chatId: string, msgId: string) {
-      const msgIndex = msgs.findIndex((m) => m._id === msgId)
-
-      if (msgIndex === -1) {
-        toastStore.error('Cannot resend message: Message not found')
-        return
-      }
-
-      const msg = msgs[msgIndex]
-      msgStore.send(chatId, msg.msg, 'retry', undefined)
-    },
-
-    async *selfGenerate({ activeChatId }) {
-      msgStore.send(activeChatId, '', 'self', undefined)
     },
 
     *queue({ queue }, chatId: string, message: string, mode: SendModes) {
@@ -487,120 +405,6 @@ export const msgStore = createStore<MsgState>(
       processQueue()
     },
 
-    async *chatQuery({ waiting, activeChatId }, message: string, onTick: TickHandler) {
-      if (waiting) return
-      if (!activeChatId) {
-        toastStore.error('Could not send message: No active chat')
-        return
-      }
-
-      const res = await botGen
-        .generate({ kind: 'chat-query', text: message }, onTick)
-        .catch((err) => ({ error: err.message, result: undefined }))
-
-      if (res.error) {
-        toastStore.error(`(Send) Generation request failed: ${res?.error ?? 'Unknown error'}`)
-      }
-    },
-
-    async *chatJson(
-      { waiting, activeChatId },
-      message: string,
-      schema: JsonField[],
-      onTick: TickHandler
-    ) {
-      if (waiting) return
-      if (!activeChatId) {
-        toastStore.error('Could not send message: No active chat')
-        return
-      }
-
-      const res = await botGen
-        .generate({ kind: 'chat-query', text: message, schema }, onTick)
-        .catch((err) => ({ error: err.message, result: undefined }))
-
-      if (res.error) {
-        toastStore.error(`(Send) Generation request failed: ${res?.error ?? 'Unknown error'}`)
-      }
-    },
-
-    async *send(
-      { activeCharId, waiting },
-      chatId: string,
-      message: string,
-      mode: SendModes,
-      onSuccess?: () => void
-    ) {
-      if (waiting) return
-      if (!chatId) {
-        toastStore.error('Could not send message: No active chat')
-        yield { partial: undefined }
-        return
-      }
-
-      let res: { result?: any; error?: string }
-
-      yield { partial: '', waiting: { chatId, mode, characterId: activeCharId } }
-      let input = ''
-
-      switch (mode) {
-        case 'self':
-        case 'retry':
-          res = await botGen
-            .generate({ kind: mode })
-            .catch((err) => ({ error: err.message, result: undefined }))
-          break
-
-        case 'send':
-        case 'ooc':
-        case 'send-event:world':
-        case 'send-event:character':
-        case 'send-event:hidden':
-        case 'send-noreply':
-        case 'send-event:ooc':
-          res = await botGen
-            .generate({ kind: mode, text: message })
-            .catch((err) => ({ error: err.message, result: undefined }))
-          if ('result' in res && !res.result.generating) {
-            yield { partial: undefined, waiting: undefined }
-          }
-
-          input = res.result?.input
-          if (input) {
-            yield { waiting: { chatId, mode, characterId: activeCharId, input } }
-          }
-          break
-
-        default:
-          res = { error: `Unknown mode ${mode}`, result: undefined }
-      }
-
-      if (res.error) {
-        toastStore.error(`(Send) Generation request failed: ${res?.error ?? 'Unknown error'}`)
-        yield { partial: undefined, waiting: undefined }
-      }
-
-      if (res.result) {
-        onSuccess?.()
-
-        if (res.result.created) {
-          onMessageReceived({ msg: res.result.created, chatId: res.result.created.chatId })
-        }
-      }
-
-      if (res.result?.messageId) {
-        yield {
-          partial: '',
-          waiting: {
-            chatId,
-            mode,
-            characterId: activeCharId,
-            messageId: res.result.messageId,
-            input,
-          },
-        }
-      }
-    },
     async *confirmSwipe({ msgs }, msgId: string, position: number, onSuccess?: Function) {
       const msg = msgs.find((m) => m._id === msgId)
       const replacement = msg?.retries?.[position - 1]
@@ -610,143 +414,137 @@ export const msgStore = createStore<MsgState>(
 
       msgStore.swapMessage(msgId, position, onSuccess)
     },
-    async deleteMessages({ msgs, activeChatId, graph }, fromId: string, deleteOne?: boolean) {
-      const index = msgs.findIndex((m) => m._id === fromId)
-      if (index === -1) {
+
+    async *deleteMessages(
+      { msgs, activeChatId, graph, deleting },
+      fromId: string,
+      deleteOne?: boolean
+    ) {
+      let chatId = activeChatId
+
+      if (!chatId) {
+        chatId = msgs[0]?.chatId
+      }
+
+      const { details } = chatStore.getState()
+      const active = details[chatId]?.chat
+
+      if (!active) return
+      const currentLeafId = active.treeLeafId || ''
+
+      if (deleting) {
+        return
+      }
+
+      const fromMsg = graph.tree[fromId]
+      if (!fromMsg) {
         return toastStore.error(`Cannot delete message: Message not found`)
       }
 
-      const parents: any = {}
-      if (deleteOne) {
-        const node = graph.tree[fromId]
+      yield { deleting: true }
 
-        if (node) {
-          const children = node.children
-          for (const child of children) {
-            parents[child] = node.msg.parent
-          }
-        }
+      const changes = getDeletingIds(fromId, !!deleteOne)
+      const forkRequired = changes.deletes.includes(currentLeafId)
+
+      if (fromMsg.msg.parent && forkRequired) {
+        chatStore.forkChat(fromMsg.msg.parent)
       }
 
-      const deleteIds = deleteOne ? [fromId] : msgs.slice(index).map((m) => m._id)
-      const removed = new Set(deleteIds)
-
-      const nextMsgs = msgs.filter((msg) => !removed.has(msg._id))
-
-      const leafId = nextMsgs.slice(-1)[0]?._id || ''
-      const res = await msgsApi.deleteMessages(activeChatId, deleteIds, leafId, parents)
+      const res = await msgsApi.deleteMessages(chatId, changes.deletes, currentLeafId)
 
       if (res.error) {
+        yield { deleting: false }
+        if (forkRequired) chatStore.forkChat(currentLeafId)
         return toastStore.error(`Failed to delete messages: ${res.error}`)
       }
 
-      updateMsgParents(activeChatId, parents)
-      return {
-        msgs: msgs.filter((m) => !deleteIds.includes(m._id)),
+      const nextLeafId = res.result?.chat.treeLeafId
+      if (nextLeafId && nextLeafId !== currentLeafId && graph.tree[nextLeafId]) {
+        chatStore.forkChat(nextLeafId)
       }
+
+      applyGraphUpdates({ updates: res.result?.messages, deletes: changes.deletes })
+
+      yield { deleting: false }
     },
-    stopSpeech() {
-      stopSpeech()
-      return { speaking: undefined }
-    },
-    async *textToSpeech(
-      { activeChatId, msgs },
-      messageId: string,
-      text: string,
-      voice: VoiceSettings,
-      culture?: string
+
+    async *createImage(
+      { msgs, activeChatId, activeCharId, imgWaiting },
+      opts: {
+        sourceMsgId?: string
+        append?: boolean
+        prompt?: string
+        onImage?: (image: string) => void
+        onError?: (error: string) => void
+        onPrompt?: (prompt: string) => void
+        onTick?: TickHandler
+      }
     ) {
-      stopSpeech()
+      if (imgWaiting) return
 
-      if (!voice.service) {
-        yield { speaking: undefined }
-        return
+      const messageId = opts.sourceMsgId || msgs.slice(-1)[0]._id
+      const messageImagePromt =
+        messageId && !opts.prompt ? getMessageImagePrompt(messageId) : undefined
+
+      yield {
+        hordeStatus: undefined,
+        imgWaiting: {
+          chatId: activeChatId,
+          characterId: activeCharId,
+          pos: 1,
+          messageId,
+          signal: new AbortController(),
+        },
       }
 
-      yield { speaking: { messageId, status: 'generating' } }
+      const res = await imageApi.generateImage(
+        {
+          messageId,
+          chatId: activeChatId,
+          prompt: opts.prompt || messageImagePromt,
+          append: opts.append,
+          source: 'summary',
+        },
+        {
+          onTick: opts.onTick,
+          onSummary: async (summary) => {
+            const { imgWaiting } = msgStore.getState()
+            const next = (imgWaiting?.pos || 1) + 1
+            msgStore.setState({ imgWaiting: { ...imgWaiting!, pos: next } })
 
-      if (voice.service === 'webspeechsynthesis') {
-        if (!isNativeSpeechSupported()) {
-          toastStore.error(`Speech synthesis not supported on this browser`)
+            if (!opts.prompt) {
+              await msgStore.editMessageProp(messageId, { imagePrompt: summary })
+            }
+
+            opts.onPrompt?.(summary)
+          },
+        }
+      )
+
+      if (res.result?.content) {
+        await handleImage({
+          chatId: activeChatId,
+          image: res.result.content,
+          messageId,
+          requestId: res.result.requestId,
+        })
+
+        opts.onImage?.(res.result.content)
+      }
+
+      if (res.error) {
+        yield { imgWaiting: undefined }
+        console.log('[wait] create-img err')
+
+        if (opts.onError) {
+          opts.onError(res.error)
           return
         }
 
-        try {
-          await playVoiceFromBrowser(voice, text, culture ?? defaultCulture, messageId)
-        } catch (e: any) {
-          toastStore.error(`Failed to play web speech synthesis: ${e.message}`)
-        }
-
-        return
-      }
-
-      const msg = msgs.find((m) => m._id === messageId)
-      if (msg?.voiceUrl) {
-        playVoiceFromUrl(activeChatId, messageId, msg.voiceUrl, voice.rate)
-        return
-      }
-
-      const res = await voiceApi.chatTextToSpeech({
-        chatId: activeChatId,
-        messageId,
-        text,
-        voice,
-        culture,
-      })
-      if (res.error) {
-        toastStore.error(`Failed to request text to speech: ${res.error}`)
-      }
-    },
-    async *createImage(
-      { msgs, activeChatId, activeCharId, waiting, graph },
-      messageId?: string,
-      append?: boolean
-    ) {
-      if (waiting) return
-
-      const onDone = (image: string) => handleImage(activeChatId, image)
-      yield {
-        hordeStatus: undefined,
-        waiting: { chatId: activeChatId, mode: 'send', characterId: activeCharId, image: true },
-      }
-
-      const prev = messageId ? msgs.find((msg) => msg._id === messageId) : undefined
-      const parent = messageId ? graph.tree[messageId].msg.parent : msgs.slice(-1)[0]._id
-
-      const res = await imageApi.generateImage({
-        messageId,
-        prompt: prev?.imagePrompt,
-        append,
-        onDone,
-        source: 'summary',
-        parent,
-      })
-      if (res.error) {
-        yield { waiting: undefined }
-        toastStore.error(`Failed to request image: ${res.error}`)
+        toastStore.error(`[Image Generation]: ${res.error}`)
       }
     },
   }
-})
-
-setInterval(() => {
-  const { waiting, retrying, graph } = msgStore.getState()
-  const id = waiting?.messageId || retrying?._id
-  if (!id) return
-  if (!retrying && graph.tree[id]) return
-
-  publish({ type: 'message-ready', messageId: id, updatedAt: retrying?.updatedAt })
-}, 4000)
-
-const [debouncedEmbed] = createDebounce((chatId: string, history: AppSchema.ChatMessage[]) => {
-  embedApi.embedChat(chatId, history)
-}, 250)
-
-msgStore.subscribe((state) => {
-  if (state.partial) return
-  if (!state.activeChatId) return
-  if (!state.msgs.length) return
-  debouncedEmbed(state.activeChatId, state.messageHistory.concat(state.msgs))
 })
 
 function processQueue() {
@@ -758,7 +556,12 @@ function processQueue() {
   const remaining = queue.slice(1)
   msgStore.setState({ queue: remaining })
 
-  msgStore.send(first.chatId, first.message, first.mode, () => processQueue())
+  getStore('responses').send({
+    chatId: first.chatId,
+    msg: first.message,
+    mode: first.mode,
+    onSuccess: () => processQueue(),
+  })
 }
 
 /**
@@ -766,16 +569,22 @@ function processQueue() {
  * @param chatId
  * @param image base64 encoded image or image url
  */
-async function handleImage(chatId: string, image: string, messageId?: string) {
-  const { msgs, activeCharId, images, imagesSaved, activeChatId } = msgStore.getState()
+async function handleImage(body: {
+  chatId: string
+  image: string
+  messageId: string
+  requestId: string
+}) {
+  let { chatId, image, messageId, requestId } = body
+  if (!messageId) return
 
-  const chatImages = images[chatId] || []
+  const { msgs, imagesSaved, activeChatId } = msgStore.getState()
 
   const isImageUrl =
-    image.startsWith('/asset') ||
-    image.startsWith('asset/') ||
-    image.endsWith('png') ||
-    image.endsWith('jpg') ||
+    image?.startsWith('/asset') ||
+    image?.startsWith('asset/') ||
+    image?.endsWith('png') ||
+    image?.endsWith('jpg') ||
     image.endsWith('jpeg')
 
   if (!imagesSaved && isImageUrl) {
@@ -787,201 +596,34 @@ async function handleImage(chatId: string, image: string, messageId?: string) {
   }
 
   if (!isImageUrl) {
-    image = image.startsWith('data') ? image : `data:image/png;base64,${image}`
+    image = image?.startsWith('data') ? image : `data:image/png;base64,${image}`
   }
 
-  const newMsg: AppSchema.ChatMessage = {
-    _id: v4(),
-    chatId,
-    kind: 'chat-message',
-    msg: image,
-    adapter: 'image',
-    characterId: activeCharId,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    retries: [],
+  const cacheId = imagesSaved ? '' : `cache:${requestId}`
+
+  if (cacheId) {
+    const prev = await storage.getItem(cacheId)
+    if (prev) return
+    const imageIds = await getMessageImages(messageId)
+
+    imageIds.push(cacheId)
+
+    await storage.setItem(cacheId, image)
+    await addMessageImage(messageId, cacheId)
+    console.log(`[cache] image cached:`, cacheId)
   }
 
-  chatImages.push(newMsg)
+  const msg = msgs.find((m) => m._id === messageId)
+  if (!msg) return
+
+  const extras = (msg.extras || []).slice().concat(cacheId ? cacheId : image)
+  applyGraphUpdates({ updates: [{ _id: messageId, extras }] })
 
   if (chatId === activeChatId) {
-    const nextMsgs = msgs.concat(newMsg)
-    msgStore.setState({
-      msgs: nextMsgs,
-      waiting: undefined,
-      images: { ...images, [chatId]: chatImages },
-    })
+    console.log('[wait] handle-img')
+    msgStore.setState({ imgWaiting: undefined })
   }
 }
-
-async function playVoiceFromUrl(
-  chatId: string,
-  messageId: string,
-  url: string,
-  rate: number | undefined
-) {
-  if (chatId != msgStore.getState().activeChatId) {
-    msgStore.setState({ speaking: undefined })
-    return
-  }
-  try {
-    const audio = await createSpeech({ kind: 'remote', url })
-
-    audio.addEventListener('error', (e) => {
-      console.error(e)
-      toastStore.error(`Error playing URL: ${e.message}`)
-      const msgs = msgStore.getState().msgs
-      const msg = msgs.find((m) => m._id === messageId)
-      if (!msg) return
-      const nextMsgs = msgs.map((m) => (m._id === msg._id ? { ...m, voiceUrl: undefined } : m))
-      msgStore.setState({ speaking: undefined, msgs: nextMsgs })
-    })
-    audio.addEventListener('playing', () => {
-      const msgs = msgStore.getState().msgs
-      const msg = msgs.find((m) => m._id === messageId)
-      if (!msg) return
-      const nextMsgs = msgs.map((m) => (m._id === msg._id ? { ...m, voiceUrl: url } : m))
-      msgStore.setState({ speaking: { messageId, status: 'playing' }, msgs: nextMsgs })
-    })
-    audio.addEventListener('ended', () => {
-      msgStore.setState({ speaking: undefined })
-    })
-    msgStore.setState({ speaking: { messageId, status: 'generating' } })
-    audio.play(rate)
-  } catch (e: any) {
-    toastStore.error(`Error playing URL: ${e.message}`)
-    msgStore.setState({ speaking: undefined })
-  }
-}
-
-async function playVoiceFromBrowser(
-  voice: VoiceWebSynthesisSettings,
-  text: string,
-  culture: string,
-  messageId: string
-) {
-  const user = userStore.getState().user
-  if (!user || user?.texttospeech?.enabled === false) return
-  const filterAction = user.texttospeech?.filterActions ?? true
-  const audio = await createSpeech({ kind: 'native', voice, text, culture, filterAction })
-
-  audio.addEventListener('error', (e) => {
-    toastStore.error(`Error playing web speech: ${e.message}`)
-    msgStore.setState({ speaking: undefined })
-  })
-
-  audio.addEventListener('playing', () =>
-    msgStore.setState({ speaking: { messageId, status: 'playing' } })
-  )
-  audio.addEventListener('ended', () => msgStore.setState({ speaking: undefined }))
-
-  audio.play(voice.rate)
-}
-
-subscribe(
-  'message-partial',
-  { partial: 'string', chatId: 'string', kind: 'string?', json: 'any?' },
-  (body) => {
-    const { activeChatId } = msgStore.getState()
-    if (body.chatId !== activeChatId) return
-
-    if (body.kind !== 'chat-query') {
-      msgStore.setState({ partial: body.partial })
-    }
-  }
-)
-
-subscribe(
-  'message-retry',
-  {
-    messageId: 'string',
-    requestId: 'string?',
-    chatId: 'string',
-    message: 'string',
-    continue: 'boolean?',
-    adapter: 'string',
-    extras: ['string?'],
-    meta: 'any?',
-    retries: ['string?'],
-    updatedAt: 'string?',
-    actions: [{ emote: 'string', action: 'string' }, '?'],
-    json: 'any?',
-  },
-  async (body) => {
-    const { retrying, msgs, activeChatId, graph } = msgStore.getState()
-    const { characters } = getStore('character').getState()
-    const { active } = getStore('chat').getState()
-
-    const { user } = getStore('user').getState()
-
-    if (activeChatId !== body.chatId || !active) return
-
-    const prev = msgs.find((msg) => msg._id === body.messageId)
-    const char = prev?.characterId ? characters.map[prev?.characterId] : undefined
-
-    msgStore.setState({
-      partial: undefined,
-      retrying: undefined,
-      waiting: undefined,
-      lastInference: {
-        requestId: body.requestId!,
-        text: body.message,
-        characterId: char?._id!,
-        chatId: body.chatId,
-        messageId: body.messageId,
-      },
-    })
-
-    await Promise.resolve()
-
-    const nextMsg = {
-      msg: body.message,
-      actions: body.actions,
-      voiceUrl: undefined,
-      meta: body.meta,
-      extras: body.extras || prev?.extras,
-      retries: body.retries,
-      updatedAt: body.updatedAt || new Date().toISOString(),
-      json: body.json,
-    }
-
-    let tree: ChatTree | undefined
-
-    if (retrying?._id === body.messageId) {
-      const next = msgs.map((msg) => {
-        if (msg._id === body.messageId) {
-          const replacement = { ...msg, ...nextMsg }
-          tree = updateChatTreeNode(graph.tree, replacement)
-          return replacement
-        }
-
-        return msg
-      })
-      msgStore.setState({ msgs: next, graph: { ...graph, tree: tree || graph.tree } })
-    } else {
-      if (activeChatId !== body.chatId || !prev) return
-      const next = msgs.map((msg) => {
-        if (msg._id === body.messageId) {
-          const replacement = { ...msg, ...nextMsg }
-          tree = updateChatTreeNode(graph.tree, replacement)
-          return replacement
-        }
-        return msg
-      })
-      msgStore.setState({ msgs: next, graph: { ...graph, tree: tree || graph.tree } })
-    }
-
-    if (active.chat._id !== body.chatId || !prev || !char) return
-
-    const voice = char.voice
-
-    if (body.adapter === 'image' || !voice || !user) return
-    const canSpeak = (user?.texttospeech?.enabled ?? true) && !char.voiceDisabled
-    if (canSpeak && active.char.userId === user._id) {
-      msgStore.textToSpeech(body.messageId, body.message, voice, char.culture ?? defaultCulture)
-    }
-  }
-)
 
 subscribe(
   'message-created',
@@ -996,20 +638,8 @@ subscribe(
   onMessageReceived
 )
 
-subscribe(
-  'message-completed',
-  {
-    msg: 'any',
-    chatId: 'string',
-    generate: 'boolean?',
-    requestId: 'string?',
-    retry: 'boolean?',
-    json: 'any?',
-  } as const,
-  onMessageReceived
-)
-
 async function onMessageReceived(body: {
+  type: string
   msg: any
   chatId: string
   generate?: boolean
@@ -1017,53 +647,51 @@ async function onMessageReceived(body: {
   retry?: boolean
   json?: any
 }) {
-  const { msgs, activeChatId, graph } = msgStore.getState()
+  const { msgs, activeChatId, graph, attachments } = msgStore.getState()
   if (activeChatId !== body.chatId) return
 
   const msg = body.msg as AppSchema.ChatMessage
   const user = userStore.getState().user
 
-  if (graph.tree[msg._id]) {
-    console.log('message-created: already received')
-    return
-  }
+  const existing = graph.tree[msg._id]
+
+  const isUserMsg = !!msg.userId
+  const isRetry = !!existing
 
   const speech = getMessageSpeechInfo(msg, user)
 
-  const isUserMsg = !!msg.userId
-
-  const isRetry = !!graph.tree[msg._id]
-  const tree = updateChatTreeNode(graph.tree, msg)
   const nextMsgs = isRetry
     ? msgs.map((m) => (m._id === msg._id ? msg : m))
     : msgs.filter((m) => m._id !== msg._id).concat(msg)
 
+  const stack = new Error()
+  console.log('[wait] msg-rec', body.type, stack.stack)
+
   msgStore.setState({
-    lastInference: {
-      requestId: body.requestId!,
-      text: body.msg.msg,
-      characterId: body.msg.characterId,
-      chatId: body.chatId,
-      messageId: body.msg._id,
-    },
     textBeforeGenMore: undefined,
-    graph: {
-      tree,
-      root: graph.root,
-    },
+    msgs: nextMsgs,
+    graph: toChatGraph(nextMsgs),
   })
 
+  if (!isRetry) {
+    chatStore.forkChat(msg._id)
+  }
+
   // If the message is from a user don't clear the "waiting for response" flags
-  if (isUserMsg && !body.generate) {
-    msgStore.setState({ msgs: nextMsgs, speaking: speech?.speaking })
+  if (isUserMsg) {
+    getStore('responses').setState({ speaking: speech?.speaking })
   } else {
-    msgStore.setState({
-      msgs: nextMsgs,
-      partial: undefined,
-      waiting: undefined,
-      retrying: undefined,
+    getStore('responses').setState({
       speaking: speech?.speaking,
+      partial: undefined,
+      retrying: undefined,
     })
+  }
+
+  const chatAttachments = attachments[body.chatId]
+  if (isUserMsg && chatAttachments?.length && body.msg._id) {
+    msgStore.removeAttachment(body.chatId, -1)
+    msgStore.addAttachment(body.msg._id, chatAttachments)
   }
 
   if (!isLoggedIn()) {
@@ -1079,11 +707,25 @@ async function onMessageReceived(body: {
   if (body.msg.adapter === 'image') return
 
   if (speech && !isUserMsg) {
-    msgStore.textToSpeech(msg._id, msg.msg, speech.voice, speech?.culture)
+    const parsed = getUtterableText(msg.msg)
+    if (parsed?.content) {
+      getStore('responses').textToSpeech(msg._id, parsed.content, speech.voice, speech?.culture)
+    }
   }
 
   onCharacterMessageReceived(msg)
 }
+
+msgStore.subscribe((curr, prev) => {
+  if (prev.activeChatId === curr.activeChatId) return
+  const from = prev.activeChatId || 'none'
+  const to = curr.activeChatId || 'none'
+  if (from === 'none') {
+    const error = new Error()
+    console.log(error.stack)
+  }
+  debug('chat-id')('changed %s --> %s', from, to)
+})
 
 function onCharacterMessageReceived(msg: AppSchema.ChatMessage) {
   if (!msg.characterId || msg.event || msg.ooc) return
@@ -1099,7 +741,10 @@ function onCharacterMessageReceived(msg: AppSchema.ChatMessage) {
     }
   }
 
-  eventStore.onCharacterMessageReceived(chatStore.getState().active?.chat!, messagesSinceLastEvent)
+  const { details, lastChatId } = chatStore.getState()
+  const active = details[lastChatId]
+
+  eventStore.onCharacterMessageReceived(active?.chat!, messagesSinceLastEvent)
 }
 
 function getMessageSpeechInfo(msg: AppSchema.ChatMessage, user: AppSchema.User | undefined) {
@@ -1129,146 +774,157 @@ subscribe('chat-query', { requestId: 'string', response: 'string' }, (body) => {
 })
 
 subscribe('image-failed', { chatId: 'string', error: 'string' }, (body) => {
-  msgStore.setState({ waiting: undefined })
+  console.log('[wait] img-failed')
+  msgStore.setState({ imgWaiting: undefined })
   toastStore.error(body.error)
 })
 
 subscribe(
   'image-generated',
-  { chatId: 'string', image: 'string', messageId: 'string?' },
+  { chatId: 'string', image: 'string', messageId: 'string?', requestId: 'string' },
   (body) => {
-    handleImage(body.chatId, body.image, body.messageId)
+    if (!body.messageId) return
+    handleImage({
+      chatId: body.chatId,
+      image: body.image,
+      messageId: body.messageId,
+      requestId: body.requestId,
+    })
   }
 )
 
-subscribe('voice-generating', { chatId: 'string', messageId: 'string' }, (body) => {
-  const activeChatId = msgStore.getState().activeChatId
-  if (activeChatId != body.chatId) return
-  const { user } = userStore.getState()
-  if (user?.texttospeech?.enabled === false) return
-  msgStore.setState({ speaking: { messageId: body.messageId, status: 'generating' } })
-})
-
-subscribe('voice-failed', { chatId: 'string', error: 'string' }, (body) => {
-  const activeChatId = msgStore.getState().activeChatId
-  if (activeChatId != body.chatId) return
-  msgStore.setState({ speaking: undefined })
-  toastStore.error(body.error)
-})
-
-subscribe(
-  'voice-generated',
-  { chatId: 'string', messageId: 'string', url: 'string', rate: 'number?' },
-  (body) => {
-    if (msgStore.getState().speaking?.messageId != body.messageId) return
-    playVoiceFromUrl(body.chatId, body.messageId, body.url, body.rate)
-  }
-)
-
-subscribe('message-error', { error: 'any', chatId: 'string' }, (body) => {
+subscribe(['message-error', 'inference-error'], { error: 'any', chatId: 'string' }, (body) => {
   const { activeChatId } = msgStore.getState()
+  const { waiting } = getStore('responses').getState()
 
   if (activeChatId !== body.chatId) return
-  toastStore.error(`Failed to generate response: ${body.error}`)
+  if (!waiting) return
 
-  msgStore.setState({ partial: undefined, waiting: undefined, retrying: undefined })
-})
+  if (body.error === 'inference cancelled by user') {
+    /** intentional noop */
+    // toastStore.warn(`Message cancelled`)
+  } else {
+    toastStore.error(`Failed to generate response: ${body.error}`)
+  }
 
-subscribe('message-warning', { warning: 'string' }, (body) => {
-  toastStore.warn(body.warning)
+  debug('waiting')('subscription:on-error')
+  responseStore.setState({ partial: undefined, waiting: undefined, retrying: undefined })
 })
 
 subscribe('messages-deleted', { ids: ['string'] }, (body) => {
   const ids = new Set(body.ids)
-  const { msgs, graph } = msgStore.getState()
+  const { msgs } = msgStore.getState()
 
+  // @TODO 27-May:
+
+  const nextMsgs = msgs.filter((msg) => !ids.has(msg._id))
+  const newGraph = toChatGraph(nextMsgs)
   msgStore.setState({
-    msgs: msgs.filter((msg) => !ids.has(msg._id)),
-    graph: {
-      tree: removeChatTreeNodes(graph.tree, body.ids),
-      root: graph.root,
-    },
+    msgs: nextMsgs,
+    graph: newGraph,
   })
 })
 
+subscribe(
+  'messaged-deleted-v2',
+  {
+    updates: { chat: 'any?', messages: [{ _id: 'string', parent: 'string?' }] },
+    deletes: ['string?'],
+  },
+  (body) => {
+    applyGraphUpdates({ updates: body.updates.messages, deletes: body.deletes })
+  }
+)
+
 const updateMsgSub = (body: {
+  type: string
+  chatId: string
   messageId: string
+
+  imagePrompt?: string
   message?: string
   retries?: string[]
   actions: any
+  msg?: string
+  parent?: string
   extras?: string[]
+  json?: any
+  invisible?: any
 }) => {
-  const { msgs, graph } = msgStore.getState()
+  debug('edit')('updating %s', body.messageId)
+  const { msgs } = msgStore.getState()
   const prev = findOne(body.messageId, msgs)
 
   if (!prev) return
 
-  const next: ChatMessageExt = {
-    ...prev,
-    msg: body.message || prev?.msg,
-    retries: body.retries || prev?.retries,
-    actions: body.actions || prev?.actions,
-    voiceUrl: undefined,
-    extras: body.extras || prev?.extras,
+  const next: ChatMessageExt = { ...prev }
+
+  for (const [key, value] of Object.entries(body)) {
+    const prop = key as keyof ChatMessageExt
+    if (key === 'type' || key === 'chatId' || key === 'messageId') continue
+    if (key === 'message') {
+      next.msg = value
+      continue
+    }
+
+    next[prop] = value as any
   }
+
   const nextMsgs = replace(body.messageId, msgs, next)
+  const nextGraph = toChatGraph(nextMsgs)
 
   msgStore.setState({
     msgs: nextMsgs,
-    graph: {
-      tree: updateChatTreeNode(graph.tree, next),
-      root: graph.root,
-    },
+    graph: nextGraph,
   })
 }
 
+subscribe('message-parents', { chatId: 'string', parents: 'any' }, (body) => {
+  updateMsgParents(body.chatId, body.parents)
+})
+
 function updateMsgParents(chatId: string, parents: Record<string, string>, deleteIds?: string[]) {
-  const { messageHistory, msgs, activeChatId, graph } = msgStore.getState()
+  const { msgs, activeChatId } = msgStore.getState()
   if (activeChatId !== chatId) return
 
-  let nextHist = messageHistory.slice()
-  let nextMsgs = msgs.slice()
-  let tree = { ...graph.tree }
+  let modified = false
 
-  for (const [nodeId, parentId] of Object.entries(parents)) {
-    if (typeof parentId !== 'string') continue
-    const prev = graph.tree[nodeId]
-    if (!prev) continue
+  const deleteSet = new Set(deleteIds || [])
+  const nextMsgs = msgs
+    .filter((m) => !deleteSet.has(m._id))
+    .map((msg) => {
+      if (!parents[msg._id]) return msg
+      if (msg.parent !== parents[msg._id]) {
+        modified = true
+      }
+      return { ...msg, parent: parents[msg._id] }
+    })
 
-    const next = { ...prev.msg, parent: parentId }
-    nextHist = replace(nodeId, nextHist, { parent: parentId })
-    nextMsgs = replace(nodeId, nextMsgs, { parent: parentId })
-    tree = updateChatTreeNode(tree, next)
-    tree[next._id].children = new Set(prev.children)
-
-    const parent = tree[parentId]
-    if (parent) {
-      parent.children.add(next._id)
-    }
+  // The caller will immediately update the tree when deleting messages
+  // This prevents this function running twice due to the 'message-parents' subscription
+  if (!modified && !deleteIds) {
+    return
   }
 
-  if (deleteIds) {
-    for (const id of deleteIds) {
-      delete tree[id]
-    }
-  }
+  const newGraph = toChatGraph(nextMsgs)
 
   msgStore.setState({
     msgs: nextMsgs,
-    messageHistory: nextHist,
-    graph: {
-      tree,
-      root: graph.root,
-    },
+    graph: newGraph,
   })
 }
 
 subscribe(
   'message-edited',
   {
+    chatId: 'string',
     messageId: 'string',
+
     message: 'string?',
+    msg: 'string?',
     imagePrompt: 'string?',
+    invsibie: 'any?',
+    json: 'any?',
     actions: 'any?',
     extras: ['string?'],
     retries: ['string?'],
@@ -1279,6 +935,7 @@ subscribe(
 subscribe(
   'message-swapped',
   {
+    chatId: 'string',
     messageId: 'string',
     message: 'string?',
     imagePrompt: 'string?',
@@ -1289,99 +946,92 @@ subscribe(
   updateMsgSub
 )
 
-subscribe('message-retrying', { chatId: 'string', messageId: 'string' }, (body) => {
-  const { msgs, activeChatId, retrying } = msgStore.getState()
-
-  const replace = msgs.find((msg) => msg._id === body.messageId)
-
-  if (activeChatId !== body.chatId) return
-  if (retrying) return
-  if (!replace) return
-
-  msgStore.setState({
-    partial: '',
-    retrying: replace,
-    waiting: { chatId: body.chatId, mode: 'retry', characterId: '' },
-    lastInference: undefined,
-  })
-})
-
-subscribe(
-  'message-creating',
-  { chatId: 'string', senderId: 'string?', mode: 'string?', characterId: 'string' },
-  (body) => {
-    const { activeChatId } = msgStore.getState()
-    if (body.chatId !== activeChatId) return
-
-    msgStore.setState({
-      waiting: {
-        chatId: activeChatId,
-        mode: body.mode as any,
-        userId: body.senderId,
-        characterId: body.characterId,
-      },
-      partial: '',
-      lastInference: undefined,
-    })
-  }
-)
-
 subscribe('message-horde-eta', { eta: 'number', queue: 'number' }, (body) => {
   toastStore.normal(`Queue: ${body.queue}`)
 })
 
-subscribe(
-  'guest-message-created',
-  { msg: 'any', chatId: 'string', continue: 'boolean?', requestId: 'string?' },
-  async (body) => {
-    const { activeChatId, retrying, graph, msgs } = msgStore.getState()
-    if (activeChatId !== body.chatId) return
-
-    if (retrying) {
-      body.msg._id = retrying._id
-    }
-
-    const allMsgs = await localApi.getMessages(body.chatId)
-
-    const msg = body.msg as AppSchema.ChatMessage
-    const next = allMsgs.filter((m) => m._id !== retrying?._id && m._id !== msg._id).concat(msg)
-    const speech = getMessageSpeechInfo(msg, userStore.getState().user)
-
-    const chats = await localApi.loadItem('chats')
-    await localApi.saveChats(
-      replace(body.chatId, chats, { updatedAt: new Date().toISOString(), treeLeafId: body.msg._id })
-    )
-    await localApi.saveMessages(body.chatId, next)
-
-    msgStore.setState({
-      msgs: exclude(msgs, [body.msg._id]).concat(msg),
-      retrying: undefined,
-      partial: undefined,
-      waiting: undefined,
-      speaking: speech?.speaking,
-      lastInference: {
-        requestId: body.requestId!,
-        text: body.msg.msg,
-        characterId: body.msg.characterId,
-        chatId: body.chatId,
-        messageId: body.msg._id,
-      },
-      textBeforeGenMore: undefined,
-      graph: {
-        tree: updateChatTreeNode(graph.tree, msg),
-        root: graph.root,
-      },
-    })
-
-    if (speech) msgStore.textToSpeech(msg._id, msg.msg, speech.voice, speech?.culture)
-
-    onCharacterMessageReceived(msg)
-  }
-)
-
 subscribe('horde-status', { status: 'any' }, (body) => {
-  const waiting = msgStore.getState().waiting
+  const waiting = msgStore.getState().imgWaiting
 
-  if (!waiting?.image) return
+  if (!waiting?.pos) return
   msgStore.setState({ hordeStatus: body.status })
 })
+
+export async function hydrateMessageImages(messageId: string) {
+  if (!messageId) return
+
+  const { msgs } = msgStore.getState()
+  const curr = findOne(messageId, msgs)
+
+  if (!curr) return
+
+  const cached = await getMessageImages(messageId)
+  applyGraphUpdates({ updates: [{ _id: messageId, extras: cached }] })
+
+  // Case 1. Initial load or first image
+  // if (!curr.extras?.length) {
+  //   next.push(...cached)
+  // }
+
+  // Case 2.
+}
+
+function applyGraphUpdates(params: {
+  updates?: Array<{ _id: string } & Partial<AppSchema.ChatMessage>>
+  deletes?: string[]
+}) {
+  const { msgs } = msgStore.getState()
+
+  const updateMap: Record<string, { _id: string } & Partial<AppSchema.ChatMessage>> = {}
+  if (params.updates) {
+    for (const { _id, ...update } of params.updates) {
+      updateMap[_id] = { _id, ...update }
+    }
+  }
+
+  const deletes = new Set(params.deletes || [])
+  const nextMsgs = msgs
+    .filter((m) => !deletes.has(m._id))
+    .map((m) => {
+      if (!updateMap[m._id]) return m
+      return { ...m, ...updateMap[m._id] }
+    })
+  const newGraph = toChatGraph(nextMsgs)
+
+  msgStore.setState({
+    graph: newGraph,
+    msgs: nextMsgs,
+  })
+}
+
+function getDeletingIds(fromId: string, deleteOne: boolean) {
+  const state = msgStore.getState()
+  const graph = toChatGraph(state.msgs.slice())
+
+  const from = graph.tree[fromId]
+
+  if (!from) {
+    throw new Error(`Could not locate message to delete`)
+  }
+
+  if (deleteOne) {
+    return { deletes: [fromId] }
+  }
+
+  const deletes = [fromId].concat(getChildren(graph.tree, fromId))
+
+  return { deletes }
+}
+
+function getChildren(graph: ChatTree, nodeId: string, prev: string[] = []) {
+  const target = graph[nodeId]
+  if (!target) return prev
+
+  for (const child in target.children) {
+    prev.push(child)
+
+    getChildren(graph, child, prev)
+  }
+
+  return prev
+}

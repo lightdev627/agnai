@@ -1,8 +1,32 @@
 export const BG_THEME = ['truegray', 'coolgray', 'bluegray'] as const
 
-export const UI_FONT = ['default', 'lato'] as const
+export type FontSetting = keyof typeof FONT_FACES
 
-export const AVATAR_SIZES = ['hide', 'xs', 'sm', 'md', 'lg', 'xl', '2xl', '3xl', 'max3xl'] as const
+export const FONT_FACES = {
+  default: { face: 'unset', label: 'Default', style: 'normal' },
+  lato: { face: 'Lato, sans-serif', label: 'Lato (Roko)', style: 'normal' },
+  jersey: { face: '"Jersey 10", sans-serif', label: 'Jersey', style: 'normal' },
+  shadows: {
+    face: '"Annie Use Your Telescope", cursive',
+    label: 'Shadows Into Light',
+    style: 'normal',
+  },
+} satisfies Record<string, { face: string; label: string; style?: string }>
+
+export const UI_FONT = Object.keys(FONT_FACES) as FontSetting[]
+
+export const AVATAR_SIZES = [
+  'hide',
+  'xs',
+  'sm',
+  'md',
+  'lg',
+  'xl',
+  '2xl',
+  '3xl',
+  'max3xl',
+  'custom',
+] as const
 export const AVATAR_CORNERS = ['sm', 'md', 'lg', 'circle', 'none'] as const
 
 export const CHAT_WIDTHS = ['full', 'narrow', 'xl', '2xl', '3xl', 'fill'] as const
@@ -30,7 +54,6 @@ export type ThemeBGColor = (typeof BG_THEME)[number]
 export type ThemeMode = (typeof UI_MODE)[number]
 export type AvatarSize = (typeof AVATAR_SIZES)[number]
 export type AvatarCornerRadius = (typeof AVATAR_CORNERS)[number]
-export type FontSetting = (typeof UI_FONT)[number]
 export type ChatWidth = (typeof CHAT_WIDTHS)[number]
 
 export type CustomUI = {
@@ -40,9 +63,20 @@ export type CustomUI = {
   chatTextColor: string
   chatEmphasisColor: string
   chatQuoteColor: string
+  chatQuoteEmphasisColor: string
+  chatQuoteEmphasisWeight: string
 }
 
-export type MessageOption = 'edit' | 'regen' | 'trash' | 'fork' | 'prompt'
+export type MessageOption =
+  | 'edit'
+  | 'regen'
+  | 'trash'
+  | 'fork'
+  | 'prompt'
+  | 'attach'
+  | 'visible'
+  | 'gen-image'
+  | 'gen-json'
 
 export type UISettings = {
   theme: string
@@ -55,8 +89,11 @@ export type UISettings = {
   chatAvatarMode?: boolean
   avatarSize: AvatarSize
   avatarCorners: AvatarCornerRadius
+  customAvatarWidth?: number
+  customAvatarHeight?: number
   font: FontSetting
   imageWrap: boolean
+  textSpeed?: number
 
   /** 0 -> 1. 0 = transparent. 1 = opaque */
   msgOpacity: number
@@ -71,9 +108,16 @@ export type UISettings = {
   trimSentences?: boolean
   logPromptsToBrowserConsole: boolean
   contextWindowLine: boolean
+  expandReasoning?: boolean
+  displayReasoning?: 'all' | 'pre' | 'post'
+
+  embeddingModel?: string
+  captionModel?: string
 
   dark: CustomUI
   light: CustomUI
+
+  fontSize?: number
 }
 
 const customUiGuard = {
@@ -82,6 +126,8 @@ const customUiGuard = {
   chatTextColor: 'string',
   chatEmphasisColor: 'string',
   chatQuoteColor: 'string',
+  chatQuoteEmphasisColor: 'string',
+  chatQuoteEmphasisWeight: 'string',
 } as const
 
 export const uiGuard = {
@@ -94,7 +140,6 @@ export const uiGuard = {
   chatAvatarMode: 'boolean?',
   avatarSize: AVATAR_SIZES,
   avatarCorners: AVATAR_CORNERS,
-  font: UI_FONT,
   imageWrap: 'boolean',
   msgOpacity: 'number',
   mobileSendOnEnter: 'boolean',
@@ -131,6 +176,8 @@ export const defaultUIsettings: UISettings = {
     chatTextColor: '--text-800',
     chatEmphasisColor: '--text-600',
     chatQuoteColor: '--text-800',
+    chatQuoteEmphasisColor: '--text-800',
+    chatQuoteEmphasisWeight: 'unset',
   },
 
   dark: {
@@ -139,6 +186,8 @@ export const defaultUIsettings: UISettings = {
     chatTextColor: '--text-800',
     chatEmphasisColor: '--text-600',
     chatQuoteColor: '--text-800',
+    chatQuoteEmphasisColor: '--text-800',
+    chatQuoteEmphasisWeight: 'unset',
   },
 
   msgOptsInline: {
@@ -146,6 +195,10 @@ export const defaultUIsettings: UISettings = {
     prompt: { outer: false, pos: 3 },
     fork: { outer: false, pos: 2 },
     regen: { outer: true, pos: 1 },
+    attach: { outer: false, pos: 6 },
     trash: { outer: false, pos: 4 },
+    visible: { outer: false, pos: 3.9 },
+    'gen-image': { outer: false, pos: 3.8 },
+    'gen-json': { outer: false, pos: 3.81 },
   },
 }

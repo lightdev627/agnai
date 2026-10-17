@@ -9,10 +9,10 @@ import {
   createSignal,
   onCleanup,
 } from 'solid-js'
-import { characterStore, chatStore, toastStore } from '/web/store'
+import { chatStore, toastStore } from '/web/store'
 import Convertible from '../../../shared/Mode/Convertible'
 import { A, useParams, useSearchParams } from '@solidjs/router'
-import { getActiveBots } from '../util'
+import { useEditableBots } from '../util'
 import { AppSchema } from '/common/types'
 import { CreateCharacterForm } from '../../Character/CreateCharacterForm'
 import Loading from '/web/shared/Loading'
@@ -24,8 +24,8 @@ import { wait } from '/common/util'
 import CharacterSelect from '/web/shared/CharacterSelect'
 import ChatSettings from '../ChatSettings'
 import ChatMemoryModal from './MemoryModal'
-import { getClientPreset } from '/web/shared/adapter'
 import { usePaneManager } from '/web/shared/hooks'
+import { usePresetContext } from '/web/store/preset-context'
 
 export { ChatPanes as default }
 
@@ -54,23 +54,13 @@ export const useValidChatPane = () => {
 const ChatPanes: Component<{}> = (props) => {
   const params = useParams()
   const pane = usePaneManager()
-
-  const chars = characterStore((s) => ({
-    chatBots: s.characters.list,
-    botMap: s.characters.map,
-    impersonate: s.impersonating,
-  }))
+  const [preset, setters] = usePresetContext()
 
   const chats = chatStore((s) => {
     return {
-      ...(s.active?.chat._id === params.id ? s.active : undefined),
-      opts: s.opts,
-      activeBots: getActiveBots(s.active?.chat!, chars.botMap),
-      tempBots: Object.values(s.active?.chat?.tempCharacters! || {}),
+      ...(s.details[s.lastChatId]?.chat._id === params.id ? s.details[s.lastChatId] : undefined),
     }
   })
-
-  const clientPreset = createMemo(() => getClientPreset(chats.chat)?.preset)
 
   const [paneFooter, setPaneFooter] = createSignal<JSX.Element>()
   const [editId, setEditId] = createSignal<string>()
@@ -85,33 +75,10 @@ const ChatPanes: Component<{}> = (props) => {
     setEditId(chats.char?._id ?? '')
   })
 
-  const editableCharcters = createMemo(() => {
-    const ids = new Map<string, AppSchema.Character>()
-
-    if (chats.char) {
-      ids.set(chats.char._id, chats.char)
-    }
-
-    if (chars.impersonate) {
-      ids.set(chars.impersonate._id, chars.impersonate)
-    }
-
-    for (const bot of chats.activeBots) {
-      if (bot.deletedAt) continue
-      if (bot._id.startsWith('temp-') && bot.favorite === false) continue
-      ids.set(bot._id, bot)
-    }
-
-    for (const bot of Object.values(chats.chat?.tempCharacters || {})) {
-      ids.set(bot._id, bot)
-    }
-
-    const editable = Array.from(ids.values())
-    return editable
-  })
+  const editableChars = useEditableBots()
 
   const charBeingEdited = createMemo(() => {
-    return editableCharcters().find((ch) => ch._id === editId())
+    return editableChars().find((ch) => ch._id === editId())
   })
 
   const changeEditingChar = async (char: AppSchema.Character | undefined) => {
@@ -137,9 +104,8 @@ const ChatPanes: Component<{}> = (props) => {
 
   const onPresetChanged = (presetId: string) => {
     if (!chats.chat) return
-    chatStore.editChatGenPreset(chats.chat._id, presetId, () => {
-      toastStore.success('Chat preset changed')
-    })
+
+    setters.change({ chatId: chats.chat._id, presetId })
   }
 
   return (
@@ -156,11 +122,11 @@ const ChatPanes: Component<{}> = (props) => {
                 temp={editId()?.startsWith('temp-')}
                 onSuccess={() => toastStore.success('Temporary character updated')}
               >
-                <Show when={editableCharcters().length > 1}>
+                <Show when={editableChars().length > 1}>
                   <CharacterSelect
                     class="w-full"
                     fieldName="editingId"
-                    items={editableCharcters()}
+                    items={editableChars()}
                     value={charBeingEdited()}
                     onChange={changeEditingChar}
                   />
@@ -179,7 +145,10 @@ const ChatPanes: Component<{}> = (props) => {
         <Match when={pane.pane() === 'preset'}>
           <Convertible close={closePane} footer={paneFooter()}>
             <ModeGenSettings
-              presetId={clientPreset()?._id}
+              page="mode"
+              preset={preset.current}
+              setters={setters}
+              presetId={preset.current._id}
               onPresetChanged={onPresetChanged}
               close={closePane}
               footer={setPaneFooter}

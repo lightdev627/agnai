@@ -4,6 +4,7 @@ import { A } from '@solidjs/router'
 import { TitleCard } from './Card'
 import { settingStore } from '../store'
 import { AppSchema } from '/common/types'
+import { getSubscriptionModelLimits } from '/common/util'
 
 const ServiceWarning: Component<{ preset?: Partial<AppSchema.GenSettings> }> = (props) => {
   const user = userStore((s) => ({ ...s.user, sub: s.sub, userLevel: s.userLevel }))
@@ -15,12 +16,15 @@ const ServiceWarning: Component<{ preset?: Partial<AppSchema.GenSettings> }> = (
     if (!user.sub) return false
 
     const userLevel = user.admin ? Infinity : user.userLevel
-    const sub = cfg.subs.find(
-      (sub) => sub._id === props.preset?.registered?.agnaistic?.subscriptionId
-    )
+    const subId =
+      props.preset?.providerModels?.agnaistic || props.preset?.registered?.agnaistic?.subscriptionId
+
+    const sub = cfg.subs.find((sub) => sub._id === subId)
 
     if (!sub) return false
-    const ineligible = userLevel < sub.level
+    const limit = getSubscriptionModelLimits(sub.preset, userLevel)
+    const subLevel = limit?.level ?? sub.level ?? sub.preset.subLevel
+    const ineligible = userLevel < subLevel
     return ineligible
   })
 
@@ -59,15 +63,7 @@ const ServiceWarning: Component<{ preset?: Partial<AppSchema.GenSettings> }> = (
         </span>
       </Match>
 
-      <Match when={props.preset?.service === 'horde' && !user?.hordeName}>
-        <TitleCard type="orange">
-          Register at{' '}
-          <a class="link" href="https://aihorde.net/register" target="_blank">
-            AIHorde
-          </a>{' '}
-          for a better Horde experience.
-        </TitleCard>
-      </Match>
+      <Match when>{null}</Match>
     </Switch>
   )
 }

@@ -1,13 +1,23 @@
 import { AppSchema } from './types/schema'
 import { AIAdapter, AI_ADAPTERS, ChatAdapter, THIRDPARTY_FORMATS } from './adapters'
-import { defaultPresets } from './default-preset'
+import { defaultPresets, presetDefaults } from './default-preset'
 import { deepClone } from './util'
+import { Sampler, SamplerState } from './types/presets'
+import { optionalArray } from './valid/types'
 
 export { defaultPresets }
 
 export type GenerationPreset = keyof typeof defaultPresets
 
 export type GenMap = { [key in keyof Omit<AppSchema.GenSettings, 'name'>]: string }
+
+export const samplerOptions: { [key in Sampler]?: SamplerState[] } = {
+  topK: ['on', 'off'],
+  topA: ['on', 'off'],
+  topP: ['on', 'off'],
+  typicalP: ['on', 'off'],
+  minP: ['on', 'off'],
+}
 
 export const presetValidator = {
   service: AI_ADAPTERS,
@@ -54,9 +64,11 @@ export const presetValidator = {
   ignoreCharacterSystemPrompt: 'boolean?',
   ignoreCharacterUjb: 'boolean?',
   gaslight: 'string?',
+  jinjaTemplate: 'string?',
   oaiModel: 'string',
   openRouterModel: 'any?',
   featherlessModel: 'string?',
+  arliModel: 'string?',
   googleModel: 'string?',
 
   mirostatTau: 'number?',
@@ -66,6 +78,13 @@ export const presetValidator = {
   phraseRepPenalty: 'string?',
 
   stopSequences: ['string?'],
+  parsers: optionalArray([
+    {
+      type: ['remove', 'replace', 'replace-prompt', 'remove-prompt'],
+      text: 'string',
+      to: 'string?',
+    },
+  ]),
   trimStop: 'boolean?',
   thirdPartyUrl: 'string?',
   thirdPartyKey: 'string?',
@@ -73,10 +92,15 @@ export const presetValidator = {
   thirdPartyUrlNoSuffix: 'boolean?',
   thirdPartyModel: 'string?',
 
+  dryAllowedLength: 'number?',
+  dryBase: 'number?',
+  drySequenceBreakers: ['string?'],
+  dryMultiplier: 'number?',
+
   novelModel: 'string?',
   novelModelOverride: 'string?',
 
-  claudeModel: 'string',
+  claudeModel: 'string?',
   mistralModel: 'string?',
   streamResponse: 'boolean?',
   ultimeJailbreak: 'string?',
@@ -96,6 +120,12 @@ export const presetValidator = {
   epsilonCutoff: 'number?',
   etaCutoff: 'number?',
   mirostatToggle: 'boolean?',
+  // reasoning: {
+  //   '?': '?',
+  //   start: 'string?',
+  //   end: 'string?',
+  // },
+  presetMode: ['simple', 'advanced', null],
 } as const
 
 const disabledValues: { [key in keyof GenMap]?: AppSchema.GenSettings[key] } = {
@@ -128,39 +158,6 @@ export function mapPresetsToAdapter(presets: Partial<AppSchema.GenSettings>, ada
   }
 
   return body
-}
-
-export function getGenSettings(chat: AppSchema.Chat, adapter: AIAdapter) {
-  const map = serviceGenMap[adapter]
-  const presetValues = getPresetValues(chat)
-
-  const body: any = {}
-  for (const [keyStr, value] of Object.entries(map || {})) {
-    const key = keyStr as keyof GenMap
-    if (!value) continue
-
-    const presetValue = presetValues[key]
-    const disabledValue = disabledValues[key]
-
-    if (presetValue === undefined) continue
-
-    // Remove disabled values from generation settings
-    if (disabledValue !== undefined && presetValue === disabledValue) continue
-
-    body[value] = presetValue
-  }
-
-  return body
-}
-
-function getPresetValues(chat: AppSchema.Chat): Partial<AppSchema.GenSettings> {
-  if (chat.genPreset && isDefaultPreset(chat.genPreset)) {
-    return defaultPresets[chat.genPreset]
-  }
-
-  if (chat.genSettings) return chat.genSettings
-
-  return defaultPresets.basic
 }
 
 export const serviceGenMap: { [key in ChatAdapter]?: GenMap } = {
@@ -394,20 +391,16 @@ export const serviceGenMap: { [key in ChatAdapter]?: GenMap } = {
   },
 }
 
-export function isDefaultPreset(value?: string): value is GenerationPreset {
-  if (!value) return false
-  return value in defaultPresets
-}
-
 export function getFallbackPreset(adapter: AIAdapter): Partial<AppSchema.GenSettings> {
   switch (adapter) {
     case 'petals':
     case 'horde':
       return deepClone(defaultPresets.horde)
 
+    case 'third-party':
     case 'kobold':
     case 'ooba':
-      return deepClone(defaultPresets.basic)
+      return deepClone(presetDefaults)
 
     case 'agnaistic':
       return deepClone(defaultPresets.agnai)
@@ -422,16 +415,18 @@ export function getFallbackPreset(adapter: AIAdapter): Partial<AppSchema.GenSett
       return deepClone(defaultPresets.scale)
 
     case 'claude':
+    case 'claude-v2':
       return deepClone(defaultPresets.claude)
 
     case 'goose':
-      return deepClone({ ...defaultPresets.basic, service: 'goose' })
+      return deepClone({ ...presetDefaults, service: 'goose' })
 
     case 'replicate':
       return deepClone(defaultPresets.replicate_vicuna_13b)
 
     /** TODO: Create default preset for OpenRouter... */
     case 'openrouter':
+    case 'openrouter-completion':
       return deepClone(defaultPresets.openai)
 
     case 'mancer':

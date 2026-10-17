@@ -1,17 +1,21 @@
 import { createHooks, recommended } from '@css-hooks/solid'
 import * as lf from 'localforage'
 import { UnwrapBody, Validator, assertValid } from '/common/valid'
-import { AIAdapter, MODE_SETTINGS, PresetAISettings, ThirdPartyFormat } from '/common/adapters'
+import { AIAdapter, PresetAISettings, ThirdPartyFormat } from '/common/adapters'
 import type { Option } from './Select'
-import { Component, createEffect, createSignal, JSX, on, onCleanup } from 'solid-js'
+import { Component, createEffect, createMemo, JSX, onCleanup } from 'solid-js'
 import type { UserState } from '../store'
 import { AppSchema, UI } from '/common/types'
 import { deepClone } from '/common/util'
 import { getRootRgb } from './colors'
 import { getStore } from '../store/create'
 import { ADAPTER_SETTINGS } from './PresetSettings/settings'
-import { PresetState } from './PresetSettings/types'
-import { Reference } from '/common/valid/types'
+import { ContextPreset } from '../store/preset-context'
+import { v4 } from 'uuid'
+import { getChatPreset } from '../pages/Chat/util'
+import { extractReasoning } from '/common/reasoning'
+import { getUserId, isLoggedIn } from '../store/api'
+import { debug } from '/common/debug'
 
 const [css, hooks] = createHooks(recommended)
 
@@ -36,47 +40,191 @@ export async function random<T extends keyof Chance.Chance>(kind: T, opts: Chanc
   return ''
 }
 
-export type ComponentEmitter<T extends string> = {
-  emit: { [key in T]: () => void }
-  on: ComponentSubscriber<T>
+export type InvokeEmitter = (...args: any[]) => void
+
+export type PartialEventEmitter<T extends string> = {
+  emit: PartialEmit<T>
+  on: ComponentSubscriber<any>
+  off: (id: string | Function) => boolean
 }
 
-export type ComponentSubscriber<T> = (event: T, callback: () => any) => void
+export type PartialListener<T extends string> = PartialEventEmitter<T>['emit']
+
+export type ComponentEventEmitter<T extends string> = {
+  emit: ComponentEmit<T>
+  on: ComponentSubscriber<T>
+  off: (id: string | Function) => boolean
+}
+
+export type ComponentEmit<T extends string> = {
+  [key in T]: InvokeEmitter
+}
+
+export type PartialEmit<T extends string> = {
+  [key in T]?: InvokeEmitter
+}
+
+type UnsubFunc = () => void
+
+export type ComponentSubscriber<T> = (event: T, callback: InvokeEmitter) => UnsubFunc
+
+export function getAbsolutePosition(ele: HTMLElement) {
+  let curr = ele
+  let top = 0
+  let left = 0
+
+  do {
+    top += curr.offsetTop
+    left += curr.offsetLeft
+    curr = curr.offsetParent as HTMLElement
+  } while (curr)
+
+  return { top, left, bottom: window.innerHeight - top, right: window.innerWidth - left }
+}
 
 export function createEmitter<T extends string>(...events: T[]) {
-  const emit: any = {}
-  const listeners: Array<{ event: T; callback: () => void }> = []
+  let emit: any = {}
+  const listeners: Array<{ id: string; event: T; callback: InvokeEmitter }> = []
 
-  const on = (event: T, callback: () => void) => {
-    listeners.push({ event, callback })
+  const unsubscribe = (id: string) => {
+    const index = listeners.findIndex((i) => i.id === id)
+    if (index === -1) return
+
+    listeners.splice(index, 1)
+  }
+
+  const on = (event: T, callback: InvokeEmitter) => {
+    const id = v4()
+    listeners.push({ event, callback, id })
+
+    const unsub = () => unsubscribe(id)
+
+    return unsub
+  }
+
+  const off = (id: string | Function) => {
+    if (typeof id === 'string') {
+      const index = listeners.findIndex((l) => l.id === id)
+      if (index > -1) {
+        listeners.splice(index, 1)
+        return true
+      }
+    }
+
+    if (typeof id === 'function') {
+      const index = listeners.findIndex((l) => l.callback === id)
+      if (index > -1) {
+        listeners.splice(index, 1)
+        return true
+      }
+    }
+
+    return false
   }
 
   for (const event of events) {
-    emit[event] = () => {
+    emit[event] = (...args: any[]) => {
       for (const cb of listeners) {
-        if (cb.event === event) cb.callback()
+        if (cb.event === event) cb.callback.apply(null, args)
       }
     }
   }
 
-  const emitter: ComponentEmitter<T> = {
-    emit,
-    on,
+  onCleanup(() => {
+    listeners.length = 0
+    emit = undefined
+  })
+
+  return { emit, on, off } as ComponentEventEmitter<T>
+}
+
+async function userCacheGet<T = any>(key: string) {
+  const prop = getUserCacheKey(key)
+  if (!prop) return
+
+  const data = await getItem(prop)
+  if (!data) {
+    debug('cache')(`[${key}] miss`)
+    return
   }
 
-  return emitter
+  const json = JSON.parse(data)
+  debug('cache')(`[${key}] hit`)
+  return json as T
+}
+
+async function userCacheSet(key: string, data: any) {
+  if (!isLoggedIn()) return
+
+  const prop = getUserCacheKey(key)
+  if (!prop) return
+
+  debug('cache')(`[${key}] modified`)
+  await setItem(prop, JSON.stringify(data))
+}
+
+function getUserCacheKey(key: string) {
+  if (!isLoggedIn()) return
+  const userId = getUserId()
+  if (!userId) return
+  return `user-${userId}_${key}`
+}
+
+export function tryParseImport(content: string) {
+  try {
+    const json = JSON.parse(content)
+    return json
+  } catch (ex) {}
+
+  try {
+    const data = decodeURIComponent(content)
+    const json = JSON.parse(data)
+    return json
+  } catch (ex) {}
+
+  if (content?.startsWith('data:')) {
+    try {
+      const index = content.indexOf(',')
+      const data = decodeURIComponent(content.slice(index + 1))
+      const json = JSON.parse(data)
+      return json
+    } catch (ex) {}
+  }
+
+  throw new Error(`Could not parse imported content`)
+}
+
+export function getUtterableText(msg: string) {
+  const { details, lastChatId } = getStore('chat').getState()
+  const { ui, user } = getStore('user').getState()
+  const { presets } = getStore('presets').getState()
+  const active = details[lastChatId]
+
+  if (!active?.chat || !user) return
+
+  const preset = getChatPreset(active.chat, user, presets)
+  const extract = extractReasoning(msg, { tags: preset.reasoning, display: ui.displayReasoning })
+  return extract
 }
 
 export function downloadJson(content: string | object, filename: string = 'agnai_export') {
-  const output = encodeURIComponent(
-    typeof content === 'string' ? content : JSON.stringify(content, null, 2)
-  )
+  const output = typeof content === 'string' ? content : JSON.stringify(content, null, 2)
 
+  const encode: boolean = false
   const anchor = document.createElement('a')
-  anchor.href = `data:text/json:charset=utf-8,${output}`
+  const href = `data:text/json:charset=utf-8,${encodeURIComponent(output)}`
+  anchor.href = encode ? URL.createObjectURL(new Blob([href])) : href
   anchor.download = `${filename}.json`
   anchor.click()
   URL.revokeObjectURL(anchor.href)
+}
+
+export async function prepareJsonHref(content: string | object) {
+  const output = encodeURIComponent(
+    typeof content === 'string' ? content : JSON.stringify(content, null, 2)
+  )
+  const href = `data:application/json:charset=utf-8,${output}`
+  return href
 }
 
 export function getHeaderBg(mode: UI.UISettings['mode']) {
@@ -121,6 +269,9 @@ export const storage = {
   localRemoveItem,
   localClear,
   test,
+
+  userCacheGet,
+  userCacheSet,
 }
 
 export function isExpired(date?: string | Date) {
@@ -207,8 +358,8 @@ export function getAssetPrefix() {
 }
 
 export function isBase64(file: string) {
-  if (file.startsWith('/') || file.startsWith('http')) return false
-  if (file.startsWith('data:')) return true
+  if (file?.startsWith('/') || file?.startsWith('http')) return false
+  if (file?.startsWith('data:')) return true
 
   return file.length > 500
 }
@@ -247,77 +398,7 @@ export function setAssetPrefix(prefix: string) {
   assetPrefix = prefix
 }
 
-export function getForm<T = {}>(evt: Event | HTMLFormElement): T {
-  evt.preventDefault?.()
-  const target = evt instanceof HTMLFormElement ? evt : (evt.target as HTMLFormElement)
-  const form = new FormData(target as HTMLFormElement)
-
-  const disable = enableAll(target)
-
-  const body = Array.from(form.entries()).reduce((prev, [key, value]) => {
-    Object.assign(prev, { [key]: value })
-    return prev
-  }, {})
-
-  disable()
-
-  return body as any
-}
-
 type Field = HTMLSelectElement | HTMLInputElement
-
-export function toStrictInitializer<T extends Validator>(
-  valid: T,
-  partial: Partial<UnwrapBody<T>> = {}
-): UnwrapBody<T> {
-  const init: any = {}
-
-  for (const [key, type] of Object.entries(valid)) {
-    if (partial[key] !== undefined) {
-      init[key] = partial[key] as any
-      continue
-    }
-
-    init[key] = getInitValue(type)
-  }
-
-  return init
-}
-
-function getInitValue(ref: Reference): any {
-  if (ref === 'string') return ''
-  if (ref === 'boolean') return false
-  if (ref === 'number') return 0
-  if (Array.isArray(ref)) {
-    // Optional union or object
-    if (ref.some((r) => r === '?')) return
-
-    // Optional primitive
-    if (typeof ref[0] === 'string' && ref[0]?.endsWith('?')) return
-
-    // String literal union
-    if (ref.length > 1) return ref[0]
-
-    // Array of objects
-    if (typeof ref[0] === 'object') {
-      return toStrictInitializer(ref[0] as Validator, {})
-    }
-
-    console.error(ref)
-    throw new Error(`Unexpected initializer type`)
-  }
-
-  // Nested object
-  if (typeof ref === 'object') {
-    // Optional object
-    if (Object.keys(ref).some((r) => r === '?')) return
-
-    return toStrictInitializer(ref as Validator, {})
-  }
-
-  console.error(ref)
-  throw new Error(`Unexpected initializer type`)
-}
 
 export function getStrictForm<T extends Validator>(
   evt: Event | HTMLFormElement,
@@ -352,46 +433,6 @@ export function getStrictForm<T extends Validator>(
   return values
 }
 
-export function setFormField(ref: HTMLFormElement, field: string, value: any) {
-  const elem = document.querySelector(`.form-field[name="${field}"]`)
-  if (!elem) {
-    console.warn(`[${field}] Could not update field: Element not found`)
-    return
-  }
-
-  if ('value' in elem) {
-    elem.value = value
-  }
-}
-
-export function setFormFields(ref: HTMLFormElement, update: Record<string, any>) {
-  for (const [field, value] of Object.entries(update)) {
-    setFormField(ref, field, value)
-  }
-}
-
-export function getFormEntries(evt: Event | HTMLFormElement): Array<[string, string]> {
-  evt.preventDefault?.()
-  const target = evt instanceof HTMLFormElement ? evt : (evt.target as HTMLFormElement)
-  const disable = enableAll(target)
-  const form = new FormData(target as HTMLFormElement)
-  const entries = Array.from(form.entries()).map(
-    ([key, value]) => [key, value.toString()] as [string, string]
-  )
-
-  const dangling = target.querySelectorAll('input[type="checkbox"]') as NodeListOf<HTMLInputElement>
-  for (const input of dangling) {
-    const prev = entries.find((e) => e[0] === input.id)
-    if (prev) continue
-
-    entries.push([input.id, input.checked ? 'on' : ''])
-  }
-
-  disable()
-
-  return entries
-}
-
 export function formatDate(value: string | number | Date) {
   const date = new Date(value)
   const str = date.toString()
@@ -400,6 +441,55 @@ export function formatDate(value: string | number | Date) {
   const time = str.slice(16, 24)
 
   return `${month} ${day} ${time}`
+}
+
+export function isToday(time: Date | string) {
+  const date = typeof time === 'string' || typeof time === 'number' ? new Date(time) : time
+
+  const now = new Date()
+  if (now.getFullYear() !== date.getFullYear()) return false
+  if (now.getMonth() !== date.getMonth()) return false
+  if (now.getDate() !== date.getDate()) return false
+  return true
+}
+
+export function toShortDuration(valueSecs: number | Date | string, parts?: number) {
+  if (valueSecs instanceof Date) {
+    valueSecs = Math.round((Date.now() - valueSecs.valueOf()) / 1000)
+  } else if (typeof valueSecs === 'string') {
+    valueSecs = Math.round((Date.now() - new Date(valueSecs).valueOf()) / 1000)
+  }
+
+  if (valueSecs < 60) {
+    return '<1m'
+  }
+  const {
+    duration: [days, hours, minutes, seconds],
+  } = toRawDuration(valueSecs)
+
+  if (parts) {
+    const sects: string[] = []
+    if (days) sects.push(`${days}d`)
+    if (hours) sects.push(`${hours}h`)
+    if (minutes) sects.push(`${minutes}m`)
+    if (seconds) sects.push(`${seconds}s`)
+
+    return sects.slice(0, parts).join(' ')
+  }
+
+  if (days) {
+    return `${days}d`
+  }
+
+  if (hours) {
+    return `${hours}h`
+  }
+
+  if (minutes) {
+    return `${minutes}m`
+  }
+
+  return `${seconds}s`
 }
 
 export function toDuration(valueSecs: number | Date, full?: boolean) {
@@ -510,8 +600,15 @@ export function capitalize(input: string) {
   return input.slice(0, 1).toUpperCase() + input.slice(1)
 }
 
-export function toDropdownItems(values: string[] | readonly string[]): Option[] {
-  return values.map((value) => ({ label: capitalize(value), value }))
+export function toDropdownItems(
+  values: string[] | readonly string[] | Record<string, string>
+): Option[] {
+  if (Array.isArray(values)) {
+    return values.map((value) => ({ label: capitalize(value), value }))
+  }
+
+  const options = Object.entries(values).map(([value, label]) => ({ label, value }))
+  return options
 }
 
 export function createDebounce<T extends (...args: any[]) => void>(
@@ -607,7 +704,7 @@ export function isDirty<T extends {}>(original: T, compare: T): boolean {
 }
 
 export function serviceHasSetting(
-  state: Pick<PresetState, 'service' | 'thirdPartyFormat'>,
+  state: Pick<ContextPreset, 'service' | 'thirdPartyFormat'>,
   ...props: Array<keyof PresetAISettings>
 ) {
   if (!state.service) {
@@ -641,50 +738,8 @@ function isPresetSetting(key: string): key is keyof PresetAISettings {
   return key in ADAPTER_SETTINGS === true
 }
 
-export function hidePresetSetting(
-  state: Pick<PresetState, 'service' | 'thirdPartyFormat' | 'presetMode'>,
-  prop?: keyof PresetAISettings
-) {
-  let initial = false
-  if (!prop) {
-    initial = false
-  } else if (state.presetMode && state.presetMode !== 'advanced') {
-    const enabled = MODE_SETTINGS[state.presetMode]?.[prop]
-    if (!enabled) initial = true
-  } else {
-    const valid = isValidServiceSetting(state, prop)
-    if (valid) initial = false
-    else initial = true
-  }
-
-  const [hide, setHide] = createSignal(initial)
-
-  createEffect(
-    on(
-      () => (state.service || '') + (state.thirdPartyFormat || '') + (state.presetMode || ''),
-      () => {
-        let next = false
-        if (!prop) {
-          next = false
-        } else if (state.presetMode && state.presetMode !== 'advanced') {
-          const enabled = MODE_SETTINGS[state.presetMode]?.[prop]
-          if (!enabled) next = true
-        } else {
-          const valid = isValidServiceSetting(state, prop)
-          if (valid) next = false
-          else next = true
-        }
-
-        setHide(next)
-      }
-    )
-  )
-
-  return hide()
-}
-
 export function isValidServiceSetting(
-  state: Pick<PresetState, 'service' | 'thirdPartyFormat'>,
+  state: Pick<ContextPreset, 'service' | 'thirdPartyFormat'>,
   prop?: keyof PresetAISettings
 ) {
   const services = getAISettingServices(prop)
@@ -692,9 +747,13 @@ export function isValidServiceSetting(
   if (!services || !state.service) return true
 
   if (services.includes(state.service)) return true
-  if (!state.thirdPartyFormat) return false
+  if (!state.thirdPartyFormat) {
+    return false
+  }
 
-  if (state.service !== 'kobold') return false
+  if (state.service !== 'kobold') {
+    return false
+  }
 
   for (const srv of services) {
     if (srv === state.thirdPartyFormat) return true
@@ -722,6 +781,29 @@ export function applyDotProperty<T>(obj: T, property: string, value: any) {
   }
 
   return obj
+}
+
+export function applyStoreProperty<T>(obj: T, property: string, value: any) {
+  const props = property.split('.')
+
+  let base: any = JSON.parse(JSON.stringify(obj || {}))
+  let ref: any = base
+
+  for (let i = 0; i < props.length; i++) {
+    const prop = props[i]
+    if (i === props.length - 1) {
+      ref[prop] = value
+      break
+    }
+
+    if (!ref[prop]) {
+      ref[prop] = {}
+    }
+
+    ref = ref[prop]
+  }
+
+  return base
 }
 
 export function appendFormOptional(
@@ -793,6 +875,23 @@ export function asyncFrame() {
   return new Promise((resolve) => requestAnimationFrame(resolve))
 }
 
+export function useUsableServices() {
+  const users = getStore('user')((s) => ({ user: s.user }))
+  const cfg = getStore('settings')((s) => ({ config: s.config }))
+
+  const services = createMemo(() => {
+    const list: AIAdapter[] = []
+
+    for (const service of cfg.config.adapters) {
+      if (isUsableService(service, cfg.config, users.user)) list.push(service)
+    }
+
+    return list
+  })
+
+  return services
+}
+
 export function getUsableServices() {
   const { user } = getStore('user').getState()
   const { config } = getStore('settings').getState()
@@ -818,6 +917,7 @@ export function isUsableService(
       return match
     }
 
+    case 'claude-v2':
     case 'claude': {
       return !!user?.claudeApiKeySet || !!user?.claudeApiKey
     }
@@ -838,6 +938,7 @@ export function isUsableService(
       return !!user?.oaiKeySet || !!user?.oaiKey
     }
 
+    case 'openrouter-completion':
     case 'openrouter': {
       return (
         !!user?.adapterConfig?.openrouter?.apiKeySet || !!user?.adapterConfig?.openrouter?.apiKey
@@ -869,6 +970,38 @@ export function isUsableService(
   return false
 }
 
+export function getJsonSchema(opts: {
+  characterId?: string
+  preset: Pick<AppSchema.GenSettings, 'json' | 'jsonSource'>
+}) {
+  const { chatChars } = getStore('character').getState()
+  const { user } = getStore('user').getState()
+  const { presets } = getStore('presets').getState()
+
+  const source = opts.preset.jsonSource
+
+  switch (source) {
+    case 'character': {
+      if (!opts.characterId) return
+      const char = chatChars.map[opts.characterId]
+      return { source: 'character' as const, schema: char?.json }
+    }
+
+    case 'json-preset': {
+      if (!user?.jsonPreset) return
+      const preset = presets.find((p) => p._id === user.jsonPreset)
+
+      return { source: 'json-preset' as const, schema: preset?.json }
+    }
+
+    case 'preset':
+    case undefined:
+    default: {
+      return { source: 'preset' as const, schema: opts.preset.json }
+    }
+  }
+}
+
 export function toLocalTime(date: string) {
   const d = new Date(date)
   const Y = d.getFullYear()
@@ -890,32 +1023,32 @@ export type FieldUpdater = (index: number, path: string) => (ev: any) => void
  * @returns
  */
 export function useRowHelper<T extends object>(opts: {
-  signal: [() => T[], (v: T[]) => void]
+  getter: () => T[]
+  setter: (next: T[]) => void
   empty: () => T
 }) {
-  const items = opts.signal[0]
-  const setItems = opts.signal[1]
-
   const add = () => {
-    const next = items().concat(deepClone(opts.empty()))
-    setItems(next)
+    const next = opts.getter().concat(deepClone(opts.empty()))
+    opts.setter(next)
   }
 
   const remove = (index: number) => {
-    const prev = items()
+    const prev = opts.getter()
     const next = prev.slice(0, index).concat(prev.slice(index + 1))
-    setItems(next)
+    opts.setter(next)
   }
 
   const updateItem = (index: number, field: string, value: any) => {
-    const prev = items()
-    const item = setProperty(prev[index], field, value)
+    const prev = opts.getter()
+    const base = getProperty(opts.empty(), field)
+    const parsed = typeof base === 'number' ? +value : value
+    const item = setProperty(prev[index], field, parsed)
 
     const next = prev
       .slice(0, index)
       .concat(item)
       .concat(prev.slice(index + 1))
-    setItems(next)
+    opts.setter(next)
   }
 
   const updater = (index: number, field: string) => {
@@ -926,6 +1059,7 @@ export function useRowHelper<T extends object>(opts: {
       }
 
       // Textarea and Input fields
+
       if ('currentTarget' in ev) {
         return updateItem(index, field, ev.currentTarget.value)
       }
@@ -946,7 +1080,7 @@ export function useRowHelper<T extends object>(opts: {
     }
   }
 
-  return { add, remove, updateItem, items, updater }
+  return { add, remove, updateItem, updater }
 }
 
 function setProperty(obj: any, path: string, value: any): any {
@@ -958,8 +1092,22 @@ function setProperty(obj: any, path: string, value: any): any {
   }
 }
 
+function getProperty(obj: any, path: string) {
+  const [head, ...props] = path.split('.')
+
+  let curr = obj[head]
+  if (curr === undefined) return
+
+  for (const prop of props) {
+    if (curr === undefined) return
+    curr = curr[prop]
+  }
+
+  return curr
+}
+
 export const sticky = {
-  interval: null as any as NodeJS.Timer,
+  interval: null as any as NodeJS.Timeout,
   monitor: (ref: HTMLElement) => {
     let bottom = true
 
@@ -973,11 +1121,15 @@ export const sticky = {
       }
     }
 
+    if (sticky.interval) {
+      clearInterval(sticky.interval)
+    }
+
     sticky.interval = setInterval(() => {
       if (bottom && ref.scrollTop !== 0) {
         ref.scrollTop = 0
       }
     }, 1000 / 30)
   },
-  clear: () => clearInterval(sticky.interval),
+  clear: () => clearInterval(sticky.interval as any),
 }

@@ -31,6 +31,7 @@ const dataExtractors: Record<string, (buffer: Buffer) => Promise<string>> = {
 
   // EXIF data
   webp: extractExif,
+  json: (buffer: any) => (typeof buffer === 'string' ? JSON.parse(buffer) : buffer),
 }
 
 export async function extractCardData(file: File) {
@@ -44,9 +45,9 @@ export async function extractCardData(file: File) {
   if (!extractor) {
     throw Error('Failed parsing character card image: No known extractor')
   }
-  const data = await extractor(buffer)
 
   try {
+    const data = await extractor(buffer)
     return JSON.parse(data) as ImageCard
   } catch (ex: any) {
     throw new Error(`Failed parsing card data as JSON: ${ex.message}`)
@@ -55,7 +56,7 @@ export async function extractCardData(file: File) {
 
 async function extractExif(buffer: Buffer): Promise<string> {
   const exif = loadExif(buffer)
-  const data = exif.UserComment?.description
+  const data = (exif.UserComment as any)?.description
   if (!data) {
     throw new Error('No data found')
   }

@@ -16,7 +16,7 @@ const WorkerModal: Component<{
     workers: s.workers.slice().sort(sortWorkers).map(toWorkerItem),
   }))
 
-  const state = userStore()
+  const state = userStore((s) => ({ user: s.user }))
 
   const [selected, setSelected] = createSignal<Option[]>()
 
@@ -34,7 +34,7 @@ const WorkerModal: Component<{
     <Modal
       show={props.show}
       close={props.close}
-      title="Specify AI Horde Workers"
+      title="Select Horde Workers"
       footer={
         <>
           <Button schema="secondary" onClick={props.close}>
@@ -70,8 +70,8 @@ const WorkerModal: Component<{
 
 export default WorkerModal
 
-function sortWorkers({ models: l }: HordeWorker, { models: r }: HordeWorker) {
-  return l[0] > r[0] ? 1 : l[0] === r[0] ? 0 : -1
+function sortWorkers(left: HordeWorker, right: HordeWorker) {
+  return left.models[0] > right.models[0] ? 1 : left.models[0] === right.models[0] ? 0 : -1
 }
 
 function toWorkerItem(wkr: HordeWorker): Option {

@@ -1,17 +1,15 @@
 import needle from 'needle'
-import { defaultPresets } from '../../common/presets'
-import { AppLog, logger } from '../middleware'
+import { logger } from '../middleware'
 import { normalizeUrl } from '../api/chat/common'
-import { AdapterProps, ModelAdapter } from './type'
-import { requestStream } from './stream'
-import { llamaStream } from './dispatch'
-import { getStoppingStrings } from './prompt'
-import { ThirdPartyFormat } from '/common/adapters'
+import { AdapterProps, CompletionGenerator, ModelAdapter } from './type'
 import { decryptText } from '../db/util'
-import { getThirdPartyPayload } from './payloads'
-import * as oai from './stream'
 import { toSamplerOrder } from '/common/sampler-order'
-import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
+import { getOaiCompatibleUrl, joinUrl, sanitise } from '/common/requests/util'
+import { streamGenerator } from '/common/requests/stream'
+import { presetDefaults } from '/common/default-preset'
+import { round } from '/common/util'
+import { getStoppingStrings, getThirdPartyPayload } from '/common/requests/payloads'
+import { stripImageContent } from '/common/template-messages'
 
 /**
  * Sampler order
@@ -25,36 +23,23 @@ import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util
  */
 
 const MIN_STREAMING_KCPPVERSION = '1.30'
-const REQUIRED_SAMPLERS = defaultPresets.basic.order
+const REQUIRED_SAMPLERS = presetDefaults.order!
 
-const base = {
-  use_story: false,
-  use_memory: false,
-  use_authors_note: false,
-  use_world_info: false,
-}
+// const base = {
+//   use_story: false,
+//   use_memory: false,
+//   use_authors_note: false,
+//   use_world_info: false,
+// }
 
 export const handleThirdParty: ModelAdapter = async function* (opts) {
-  const { members, characters, prompt, mappedSettings } = opts
-
-  const body =
-    opts.gen.thirdPartyFormat === 'vllm' ||
-    opts.gen.thirdPartyFormat === 'ollama' ||
-    opts.gen.thirdPartyFormat === 'ooba' ||
-    opts.gen.thirdPartyFormat === 'mistral' ||
-    opts.gen.thirdPartyFormat === 'tabby' ||
-    opts.gen.thirdPartyFormat === 'aphrodite' ||
-    opts.gen.thirdPartyFormat === 'llamacpp' ||
-    opts.gen.thirdPartyFormat === 'exllamav2' ||
-    opts.gen.thirdPartyFormat === 'koboldcpp' ||
-    opts.gen.thirdPartyFormat === 'featherless'
-      ? getThirdPartyPayload(opts)
-      : { ...base, ...mappedSettings, prompt }
+  const body = getThirdPartyPayload(opts)
 
   // Kobold has a stop sequence parameter which automatically
   // halts generation when a certain token is generated
-  const stop_sequence = getStoppingStrings(opts).concat('END_OF_DIALOG')
+  const stop_sequence = getStoppingStrings(opts, opts.gen)
   if (opts.gen.thirdPartyFormat === 'kobold' || opts.gen.thirdPartyFormat === 'koboldcpp') {
+    stop_sequence.push('END_OF_DIALOG')
     body.stop_sequence = stop_sequence
 
     // Kobold sampler order parameter must contain all 6 samplers to be valid
@@ -75,145 +60,219 @@ export const handleThirdParty: ModelAdapter = async function* (opts) {
     }
   }
 
-  yield { prompt: body.prompt }
-
   logger.debug(`Prompt:\n${body.prompt}`)
   logger.debug(
     { ...body, prompt: null, images: null, messages: null },
     `3rd-party payload ${opts.gen.thirdPartyFormat}`
   )
 
+  const start = Date.now()
   const stream = await dispatch(opts, body)
+  yield { prompt: body.messages?.length ? stripImageContent(body.messages) : body.prompt }
 
   let accum = ''
+  let wait = 0
 
-  while (true) {
-    const generated = await stream.next()
+  for await (const generated of stream) {
+    if (!generated) break
 
-    if (!generated || !generated.value) break
-
-    if (typeof generated.value === 'string') {
-      accum = generated.value
+    if (typeof generated === 'string') {
+      accum = generated
       break
     }
 
-    if ('error' in generated.value) {
-      yield { error: generated.value.error }
+    if ('error' in generated) {
+      yield { error: generated.error }
       return
     }
 
-    if ('token' in generated.value) {
-      accum += generated.value.token
-      yield { partial: sanitiseAndTrim(accum, prompt, opts.replyAs, characters, members) }
+    if ('token' in generated) {
+      if (!wait) {
+        wait = round((Date.now() - start) / 1000)
+      }
+      accum += generated.token
+      yield { partial: accum }
     }
 
-    if ('tokens' in generated.value) {
-      const gens = 'gens' in generated.value ? generated.value.gens : undefined
+    if ('thoughts' in generated) {
+      yield { thoughts: generated.thoughts! }
+    }
+
+    if ('tokens' in generated) {
+      const gens = 'gens' in generated ? generated.gens : undefined
       if (gens) {
-        yield { gens, tokens: generated.value.tokens }
+        yield { gens, tokens: generated.tokens }
       }
 
-      accum = generated.value.tokens
+      accum = generated.tokens
       break
     }
   }
 
-  if (opts.gen.service === 'kobold' && body.model) {
-    yield { meta: { model: body.model, fmt: opts.gen.thirdPartyFormat } }
+  let meta: any = {
+    fmt: opts.conn.format,
+    wait,
+    time: round((Date.now() - start) / 1000, 2),
   }
+  if (body.model) meta.model = body.model
+  yield { meta }
 
   const parsed = sanitise(accum)
-  const trimmed = trimResponseV2(parsed, opts.replyAs, members, characters, stop_sequence)
-
-  yield trimmed || parsed
+  yield parsed
 }
 
 async function dispatch(opts: AdapterProps, body: any) {
   const baseURL = normalizeUrl(opts.gen.thirdPartyUrl || opts.user.koboldUrl)
+  const useChat = !!opts.hasAttachments
 
   const headers: any = await getHeaders(opts)
+  const base = {
+    signal: opts.signal,
+    service: '',
+    log: opts.log,
+    userId: opts.user._id,
+    body,
+    headers,
+  }
+
   await validateModel(opts, baseURL, body, headers)
 
   switch (opts.gen.thirdPartyFormat) {
     case 'llamacpp':
-      return llamaStream(baseURL, body)
-
     case 'vllm': {
-      const url = opts.gen.thirdPartyUrlNoSuffix
-        ? baseURL
-        : body.messages
-        ? `${baseURL}/v1/chat/completions`
-        : `${baseURL}/v1/completions`
+      body.messages = opts.messages
+      const url =
+        !opts.gen.providerId && opts.gen.thirdPartyUrlNoSuffix
+          ? baseURL
+          : body.messages
+          ? `${baseURL}/v1/chat/completions`
+          : `${baseURL}/v1/completions`
       return opts.gen.streamResponse
-        ? streamCompletion(url, body, headers, opts.gen.thirdPartyFormat, opts.log)
-        : fullCompletion(url, body, headers, opts.gen.thirdPartyFormat, opts.log)
+        ? streamGenerator({ ...base, url, format: opts.gen.thirdPartyFormat })
+        : fullCompletion({ ...base, url, service: opts.gen.thirdPartyFormat })
     }
 
     case 'ooba':
     case 'aphrodite':
     case 'tabby': {
-      const url = opts.gen.thirdPartyUrlNoSuffix ? baseURL : `${baseURL}/v1/completions`
+      body.messages = opts.messages
+      let url = opts.gen.thirdPartyUrlNoSuffix ? baseURL : `${baseURL}/v1/`
+      if (useChat) {
+        url += 'chat/completions'
+      } else {
+        url += 'completions'
+      }
+
       return opts.gen.streamResponse
-        ? streamCompletion(url, body, headers, opts.gen.thirdPartyFormat, opts.log)
-        : fullCompletion(url, body, headers, opts.gen.thirdPartyFormat, opts.log)
+        ? streamGenerator({ ...base, url, format: opts.gen.thirdPartyFormat })
+        : fullCompletion({ ...base, url, service: opts.gen.thirdPartyFormat })
     }
 
     case 'exllamav2': {
+      body.messages = opts.messages
       return opts.gen.streamResponse
-        ? streamCompletion(baseURL, body, headers, opts.gen.thirdPartyFormat, opts.log)
-        : fullCompletion(baseURL, body, headers, opts.gen.thirdPartyFormat, opts.log)
+        ? streamGenerator({ ...base, url: baseURL, format: opts.gen.thirdPartyFormat })
+        : fullCompletion({ ...base, url: baseURL, service: opts.gen.thirdPartyFormat })
     }
 
     case 'mistral': {
+      body.messages = opts.messages
       const url = 'https://api.mistral.ai/v1/chat/completions'
       const stream = opts.gen.streamResponse
-        ? oai.streamCompletion(opts.user._id, url, headers, body, 'mistral', opts.log)
-        : fullCompletion(url, body, headers, 'mistral', opts.log)
+        ? streamGenerator({ ...base, url, format: 'mistral' })
+        : fullCompletion({ ...base, url, service: 'mistral' })
       return stream
     }
 
     case 'ollama': {
-      const url = `${baseURL}/api/generate`
+      body.messages = opts.messages
+      body.prompt = undefined
+      const url = body.messages?.length ? `${baseURL}/chat/completions` : `${baseURL}/completions`
       return opts.gen.streamResponse
-        ? streamCompletion(url, body, headers, opts.gen.thirdPartyFormat, opts.log)
-        : fullCompletion(url, body, headers, opts.gen.thirdPartyFormat, opts.log)
+        ? streamGenerator({ ...base, url, format: opts.gen.thirdPartyFormat })
+        : fullCompletion({ ...base, url, service: opts.gen.thirdPartyFormat })
     }
 
     case 'featherless': {
-      const url = 'https://api.featherless.ai/v1/completions'
+      // Intentionally always using message format
+      if (opts.messages) {
+        body.messages = opts.messages
+        body.prompt = undefined
+      }
+      let suffix = body.messages ? 'chat/completions' : 'completions'
+
+      const url = `https://api.featherless.ai/v1/${suffix}`
       return opts.gen.streamResponse
-        ? streamCompletion(url, body, headers, opts.gen.thirdPartyFormat, opts.log)
-        : fullCompletion(url, body, headers, opts.gen.thirdPartyFormat, opts.log)
+        ? streamGenerator({ ...base, url, format: opts.gen.thirdPartyFormat })
+        : fullCompletion({ ...base, url, service: opts.gen.thirdPartyFormat })
     }
 
-    default:
+    case 'arli': {
+      body.messages = opts.messages
+      const url = 'https://api.arliai.com/v1/chat/completions'
+      return opts.gen.streamResponse
+        ? streamGenerator({ ...base, url, format: opts.gen.thirdPartyFormat })
+        : fullCompletion({ ...base, url, service: opts.gen.thirdPartyFormat })
+    }
+
+    case 'openai':
+    case 'openai-chat':
+    case 'lm-studio':
+    case 'openai-chatv2': {
+      if (opts.gen.thirdPartyFormat === 'openai') {
+        body.prompt = opts.prompt
+      } else {
+        body.messages = opts.messages
+      }
+      const url = getOaiCompatibleUrl(opts.gen, true)
+      const fullUrl =
+        !opts.gen.providerId && opts.gen.thirdPartyUrlNoSuffix
+          ? url.url
+          : joinUrl(
+              url.url,
+              opts.gen.thirdPartyFormat === 'openai' ? 'completions' : 'chat/completions'
+            )
+
+      return opts.gen.streamResponse
+        ? streamGenerator({ ...base, url: fullUrl, format: opts.gen.thirdPartyFormat })
+        : fullCompletion({ ...base, url: fullUrl, service: opts.gen.thirdPartyFormat })
+    }
+
+    case 'koboldcpp':
+    case 'kobold':
+    default: {
       const isStreamSupported = await checkStreamSupported(`${baseURL}/api/extra/version`)
+      const url =
+        opts.gen.streamResponse && isStreamSupported
+          ? `${baseURL}/api/extra/generate/stream`
+          : `${baseURL}/api/v1/generate`
+
+      body.prompt = opts.prompt
+      body.messages = undefined
+
       return opts.gen.streamResponse && isStreamSupported
-        ? streamCompletion(
-            `${baseURL}/api/extra/generate/stream`,
-            body,
-            'koboldcpp',
-            headers,
-            opts.log
-          )
-        : fullCompletion(
-            `${baseURL}/api/v1/generate`,
-            body,
-            headers,
-            opts.gen.thirdPartyFormat || opts.gen.service!,
-            opts.log
-          )
+        ? streamGenerator({ ...base, url, format: 'koboldcpp' })
+        : fullCompletion({
+            ...base,
+            url: `${baseURL}/api/v1/generate`,
+            service: opts.gen.thirdPartyFormat || opts.gen.service!,
+          })
+    }
   }
 }
 
 async function getHeaders(opts: AdapterProps) {
   const password = opts.gen.thirdPartyUrl ? opts.gen.thirdPartyKey : opts.user.thirdPartyPassword
-  const headers: any = {}
+  const headers: any = {
+    'HTTP-Referer': 'https://agnai.chat',
+    'X-Title': 'Agnai.Chat',
+  }
 
   switch (opts.gen.thirdPartyFormat) {
+    case 'koboldcpp':
     case 'aphrodite': {
       if (!password) return headers
-      const apiKey = opts.guest ? password : decryptText(password)
+      const apiKey = opts.guest ? password : decryptText(password, true)
       headers['x-api-key'] = apiKey
       headers['Authorization'] = `Bearer ${apiKey}`
       break
@@ -221,14 +280,14 @@ async function getHeaders(opts: AdapterProps) {
 
     case 'vllm': {
       if (!password) return headers
-      const apiKey = opts.guest ? password : decryptText(password)
+      const apiKey = opts.guest ? password : decryptText(password, true)
       headers['Authorization'] = `Bearer ${apiKey}`
       headers['Accept'] = 'application/json'
       break
     }
     case 'tabby': {
       if (!password) return headers
-      const apiKey = opts.guest ? password : decryptText(password)
+      const apiKey = opts.guest ? password : decryptText(password, true)
       headers['Authorization'] = `Bearer ${apiKey}`
       break
     }
@@ -245,7 +304,25 @@ async function getHeaders(opts: AdapterProps) {
         )
       }
 
-      const apiKey = key ? (opts.guest ? key : decryptText(key)) : ''
+      const apiKey = key ? (opts.guest ? key : decryptText(key, true)) : ''
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`
+      }
+      headers['Content-Type'] = 'application/json'
+      break
+    }
+
+    case 'arli': {
+      if (!opts.gen.arliModel) {
+        throw new Error(`ArliAI model not set. Check your preset`)
+      }
+
+      const key = opts.gen.thirdPartyKey || opts.user.arliApiKey
+      if (!key) {
+        throw new Error(`ArliAI API key not set. Check your Settings->AI->Third-party settings`)
+      }
+
+      const apiKey = key ? (opts.guest ? key : decryptText(key, true)) : ''
       if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`
       }
@@ -254,15 +331,30 @@ async function getHeaders(opts: AdapterProps) {
     }
 
     case 'mistral': {
-      const key = opts.user.mistralKey
+      const key = opts.gen.thirdPartyKey || opts.user.mistralKey
       if (!key)
         throw new Error(`Mistral API key not set. Check your Settings->AI->Third-party settings`)
 
-      const apiKey = opts.guest ? key : decryptText(key)
+      const apiKey = opts.guest ? key : decryptText(key, true)
       headers['Authorization'] = `Bearer ${apiKey}`
       headers['Content-Type'] = 'application/json'
       break
     }
+
+    case 'openai':
+    case 'openai-chat':
+    case 'openai-chatv2': {
+      const key = opts.gen.thirdPartyKey
+      if (!key) break
+
+      const apiKey = opts.guest ? key : decryptText(key, true)
+      headers['x-api-key'] = apiKey
+      headers['Authorization'] = `Bearer ${apiKey}`
+    }
+  }
+
+  if (headers.Authorization) {
+    headers['x-api-key'] = headers.Authorization.replace('Bearer ', '')
   }
 
   return headers
@@ -290,27 +382,22 @@ async function checkStreamSupported(versioncheckURL: any) {
   return isSupportedVersion
 }
 
-const fullCompletion = async function* (
-  genURL: string,
-  body: any,
-  headers: any,
-  service: string,
-  log: AppLog
-) {
-  const resp = await needle('post', genURL, body, {
-    headers: { 'Bypass-Tunnel-Reminder': 'true', ...headers },
+const fullCompletion: CompletionGenerator<any> = async function* (opts) {
+  const resp = await needle('post', opts.url, opts.body, {
+    signal: opts.signal.signal,
+    headers: { 'Bypass-Tunnel-Reminder': 'true', ...opts.headers },
     json: true,
   }).catch((err) => ({ error: err }))
 
   if ('error' in resp) {
-    yield { error: `${service} request failed: ${resp.error?.message || resp.error}` }
-    log.error({ error: resp.error }, `${service} request failed`)
+    yield { error: `${opts.service} request failed: ${resp.error?.message || resp.error}` }
+    opts.log?.error({ error: resp.error }, `${opts.service} request failed`)
     return
   }
 
   if (resp.statusCode && resp.statusCode >= 400) {
-    yield { error: `${service} request failed: ${resp.statusMessage}` }
-    log.error({ error: resp.body }, `${service} request failed`)
+    yield { error: `${opts.service} request failed: ${resp.statusMessage}` }
+    opts.log?.error({ error: resp.body }, `${opts.service} request failed`)
     return
   }
 
@@ -325,100 +412,24 @@ const fullCompletion = async function* (
       gens.push(text)
     }
 
-    return gens.length ? { tokens: text, gens } : { tokens: text }
+    if (gens.length) {
+      yield { tokens: text, gens }
+    } else {
+      yield { tokens: text }
+    }
+    return
   }
 
   const text = resp.body.results?.[0]?.text as string
 
   if (text) {
-    return { tokens: text }
+    yield { tokens: text }
+    return
   } else {
-    log.error({ err: resp.body }, `Failed to generate text using ${service} adapter`)
-    yield { error: `${service} failed to generate a response: ${resp.body}` }
+    opts.log?.error({ err: resp.body }, `Failed to generate text using ${opts.service} adapter`)
+    yield { error: `${opts.service} failed to generate a response: ${resp.body}` }
     return
   }
-}
-
-const streamCompletion = async function* (
-  streamUrl: any,
-  body: any,
-  headers: any,
-  format: ThirdPartyFormat,
-  log: AppLog
-) {
-  const resp = needle.post(streamUrl, body, {
-    parse: false,
-    json: true,
-    headers: {
-      Accept: format === 'featherless' ? 'application/json' : `text/event-stream`,
-      ...headers,
-    },
-  })
-
-  const tokens = []
-
-  const responses: Record<number, string> = {}
-
-  try {
-    const events = requestStream(resp, format)
-
-    for await (const event of events) {
-      if (event?.error) {
-        yield { error: event.error }
-        return
-      }
-
-      if (!event.data) continue
-      const data = JSON.parse(event.data) as {
-        index?: number
-        token: string
-        final: boolean
-        ptr: number
-        error?: string
-        choices?: Array<{ index: number; finish_reason: string; logprobs: any; text: string }>
-      }
-
-      if (data.error) {
-        yield { error: `${format} streaming request failed: ${data.error}` }
-        log.error({ error: data.error }, `${format} streaming request failed`)
-        return
-      }
-
-      const res = data.choices ? data.choices[0] : data
-      const token = 'text' in res ? res.text : res.token
-
-      /** Handle batch generations */
-      if (res.index !== undefined) {
-        const index = res.index
-        if (!responses[index]) {
-          responses[index] = ''
-        }
-
-        responses[index] += token
-
-        if (index === 0) {
-          tokens.push(token)
-          yield { token: token }
-        }
-
-        continue
-      }
-
-      tokens.push(token)
-      yield { token }
-    }
-  } catch (err: any) {
-    yield { error: `${format} streaming request failed: ${err.message || err}` }
-    return
-  }
-
-  const gens: string[] = []
-  for (const [id, text] of Object.entries(responses)) {
-    if (+id === 0) continue
-    gens.push(text)
-  }
-
-  return gens.length ? { tokens: tokens.join(''), gens } : { tokens: tokens.join('') }
 }
 
 async function validateModel(opts: AdapterProps, baseURL: string, payload: any, headers: any) {
@@ -461,10 +472,10 @@ async function validateModel(opts: AdapterProps, baseURL: string, payload: any, 
       if (low.includes(':')) {
         const [name] = m.name.split(':')
         if (name === paylow) return true
-        if (name.startsWith(paylow)) return true
+        if (name?.startsWith(paylow)) return true
       }
 
-      return low.startsWith(paylow)
+      return low?.startsWith(paylow)
     })
     if (!match) {
       payload.model = models[0].name

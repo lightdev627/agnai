@@ -57,20 +57,24 @@ export function localEmit<T extends { type: string }>(payload: T) {
 }
 
 export function subscribe<T extends string, U extends Validator>(
-  type: string,
+  type: string | string[],
   validator: U,
   handler: (body: UnwrapBody<U> & { type: T }) => void,
   once?: (body: UnwrapBody<U> & { type: T }) => boolean
 ) {
-  if (once) {
-    const handlers = onceListeners.get(type) || []
-    handlers.push({ validator, fn: handler, predicate: once })
-    onceListeners.set(type, handlers)
-    return
+  const types = Array.isArray(type) ? type : [type]
+
+  for (const type of types) {
+    if (once) {
+      const handlers = onceListeners.get(type) || []
+      handlers.push({ validator, fn: handler, predicate: once })
+      onceListeners.set(type, handlers)
+      return
+    }
+    const handlers = listeners.get(type) || []
+    handlers.push({ validator, fn: handler })
+    listeners.set(type, handlers)
   }
-  const handlers = listeners.get(type) || []
-  handlers.push({ validator, fn: handler })
-  listeners.set(type, handlers)
 }
 
 const squelched = new Set([
@@ -80,7 +84,7 @@ const squelched = new Set([
   'ping',
   'inference-partial',
   'horde-check',
-  'message-created',
+  'message-completed',
   'message-try',
 ])
 
@@ -97,25 +101,46 @@ function onMessage(msg: MessageEvent<any>) {
     const onceHandlers = onceListeners.get(payload.type) || []
 
     if (!squelched.has(payload.type)) {
-      if (payload.type === 'service-prompt' || payload.type === 'inference-prompt') {
+      const now = `[${new Date().toLocaleTimeString()}]`
+      if (payload.type === 'message-retry') {
         console.log(
-          `Prompt\n${
+          `${now} ${JSON.stringify({
+            ...payload,
+            message: '...' + payload.message?.slice(-50),
+            retries: undefined,
+          })}`
+        )
+      }
+
+      switch (payload.type) {
+        case 'service-prompt':
+        case 'inference-prompt': {
+          const printable =
             typeof payload.prompt === 'string'
               ? payload.prompt
               : JSON.stringify(payload.prompt, null, 2)
-          }`
-        )
-      } else if (payload.type !== 'image-generated') {
-        console.log(`[${new Date().toLocaleTimeString()}]`, JSON.stringify(payload))
-      } else {
-        const image = payload.image || ''
-        console.log(
-          `[${new Date().toLocaleTimeString()}]`,
-          JSON.stringify({
-            ...payload,
-            image: image.startsWith('http') ? image : `${image.slice(0, 60)}'...'`,
-          })
-        )
+          console.log(`Prompt\n${printable}`)
+          break
+        }
+
+        case 'image-generated': {
+          console.log(now, JSON.stringify(payload))
+          break
+        }
+
+        case 'message-retry': {
+          const { probs, retries, extras, ...rest } = payload
+          console.log(rest)
+          break
+        }
+
+        default: {
+          console.log(
+            now,
+            JSON.stringify(truncate(redact(payload, ['image', 'retries']), ['message']))
+          )
+          break
+        }
       }
     } else {
       // console.log(payload.type, '...')
@@ -174,3 +199,25 @@ subscribe('connected', { uid: 'string' }, (body) => {
 subscribe('ping', {}, () => {
   publish({ type: 'pong' })
 })
+
+function redact(obj: any, keys: string[]) {
+  const next = { ...obj }
+
+  for (const key of keys) {
+    if (key in next === false) continue
+    next[key] = '...'
+  }
+
+  return next
+}
+
+function truncate(obj: any, keys: string[]) {
+  const next = { ...obj }
+
+  for (const key of keys) {
+    if (typeof next[key] !== 'string') continue
+    next[key] = next[key].slice(0, 20) + '...'
+  }
+
+  return next
+}

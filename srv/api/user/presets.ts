@@ -1,10 +1,14 @@
 import { assertValid } from '/common/valid'
-import { defaultPresets, presetValidator } from '../../../common/presets'
+import { defaultPresets, getFallbackPreset, presetValidator } from '../../../common/presets'
 import { store } from '../../db'
-import { StatusError, errors, handle } from '../wrap'
+import { StatusError, handle } from '../wrap'
 import { AIAdapter } from '../../../common/adapters'
 import { AppSchema } from '/common/types'
 import { toSamplerOrder } from '/common/sampler-order'
+import { decryptText } from '/srv/db/util'
+import { getThirdPartyModels } from '/common/requests/util'
+import { isDefaultPreset } from '/common/default-preset'
+import { deepClone } from '/common/util'
 
 const createPreset = {
   ...presetValidator,
@@ -19,11 +23,110 @@ export const getUserPresets = handle(async ({ userId }) => {
   return { presets, templates }
 })
 
+export const testConnectionUrl = handle(async ({ body, userId, authed }) => {
+  assertValid({ providerId: 'string?', url: 'string', key: 'string?' }, body)
+
+  if (!body.key && body.providerId) {
+    const provider = authed?.providers?.find((p) => p._id === body.providerId)
+
+    if (provider?.key) {
+      body.key = decryptText(provider.key || '', true)
+    }
+  }
+
+  const models = await getThirdPartyModels(body.url, body.key!)
+  if (models) {
+    return { url: models.url, success: true }
+  }
+
+  return { success: false, url: '' }
+})
+
+export const getThirdPartyPresetModels = handle(async ({ userId, body, authed }) => {
+  assertValid(
+    {
+      id: 'string?',
+      providerId: 'string?',
+      key: 'string?',
+      url: 'string',
+    },
+    body
+  )
+
+  if (!body.url) {
+    throw new StatusError(`Third Party URL not provided`, 400)
+  }
+
+  if (body.providerId) {
+    const provider = authed?.providers?.find((p) => p._id === body.providerId)
+    if (provider?.key) {
+      const decrypted = decryptText(provider.key, true)
+      body.key = decrypted
+    }
+  }
+
+  // Guests or new presets
+  if ((!body.id || body.id === 'new') && body.url) {
+    const models = await getThirdPartyModels(body.url, body.key || '')
+    return models?.data ? models : { data: [] }
+  }
+
+  if (!body.id) {
+    throw new StatusError(`Preset ID not provided`, 400)
+  }
+
+  const preset = await store.presets.getUserPresetInternal(body.id)
+  if (!preset) {
+    throw new StatusError(`Preset not found`, 404)
+  }
+
+  if (preset.userId !== userId) {
+    throw new StatusError(`Invalid preset ID`, 403)
+  }
+
+  const key = preset.thirdPartyKey ? decryptText(preset.thirdPartyKey, true) : ''
+  const models = await getThirdPartyModels(body.url, body.key || key)
+  return models?.data ? models : { data: [] }
+})
+
 export const getUserPreset = handle(async ({ userId, params }) => {
-  const preset = await store.presets.getUserPreset(params.id, userId)
+  const preset = await store.presets.getSafeUserPreset(params.id, userId)
 
   if (!preset || preset.userId !== userId) {
     throw new StatusError('Preset not found', 404)
+  }
+
+  return preset
+})
+
+export const getChatPreset = handle(async ({ userId, params }) => {
+  const chat = await store.chats.getChatOnly(params.id)
+  if (!chat) {
+    throw new StatusError(`Preset not found (Invalid chat id)`, 404)
+  }
+
+  if (!chat.genPreset) {
+    return getFallbackPreset('agnaistic')
+  }
+
+  if (isDefaultPreset(chat.genPreset)) {
+    const copy = deepClone(defaultPresets[chat.genPreset])
+    return copy
+  }
+
+  const preset = await store.presets.getSafeUserPreset(chat.genPreset, userId)
+  if (!preset) {
+    const fallback = getFallbackPreset('agnaistic')
+    return fallback
+  }
+
+  if (userId === preset.userId) {
+    return preset
+  }
+
+  const members = await store.chats.getActiveMembers(params.id)
+  if (!members.includes(userId)) {
+    throw new StatusError(`Preset not found: Not allowed`, 402)
   }
 
   return preset
@@ -43,10 +146,7 @@ export const createUserPreset = handle(async ({ userId, body, authed }) => {
   }
 
   if (body.chatId) {
-    const res = await store.chats.getChat(body.chatId)
-    if (res?.chat.userId !== userId) {
-      throw errors.Forbidden
-    }
+    delete body.chatId
   }
 
   const samplers = toSamplerOrder(body.service, body.order, body.disabledSamplers)
@@ -71,6 +171,14 @@ export const createUserPreset = handle(async ({ userId, body, authed }) => {
 })
 
 export const updateUserPreset = handle(async ({ params, body, userId }) => {
+  if (!body.thirdPartyFormat?.trim()) {
+    delete body.thirdPartyFormat
+  }
+
+  if (!params.id) {
+    throw new StatusError('Invalid preset ID - Contact support to investigate', 400)
+  }
+
   assertValid(presetValidator, body, true)
 
   if (body.novelModelOverride) {
@@ -81,6 +189,10 @@ export const updateUserPreset = handle(async ({ params, body, userId }) => {
   const { order, disabledSamplers, ...rest } = body
 
   const update: Partial<AppSchema.UserGenPreset> = { ...rest }
+  if (update._id) {
+    delete update._id
+  }
+
   if (order) {
     const samplers = toSamplerOrder(body.service, order, disabledSamplers)
     if (samplers) {
@@ -89,7 +201,7 @@ export const updateUserPreset = handle(async ({ params, body, userId }) => {
     }
   }
 
-  const preset = await store.presets.updateUserPreset(userId!, params.id, update)
+  const preset = await store.presets.updateUserPreset(userId!, params.id, body)
   return preset
 })
 

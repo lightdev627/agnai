@@ -1,7 +1,7 @@
 import { A, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { Edit, Plus, Save, X } from 'lucide-solid'
 import { Component, createSignal, onMount, Show } from 'solid-js'
-import { defaultPresets, isDefaultPreset } from '../../../common/presets'
+import { defaultPresets, isDefaultPreset, presetDefaults } from '../../../common/default-preset'
 import { AppSchema } from '../../../common/types/schema'
 import Button from '../../shared/Button'
 import Select, { Option } from '../../shared/Select'
@@ -9,13 +9,13 @@ import Modal, { ConfirmModal } from '../../shared/Modal'
 import PageHeader from '../../shared/PageHeader'
 import TextInput from '../../shared/TextInput'
 import { setComponentPageTitle } from '../../shared/util'
-import { presetStore, toastStore } from '../../store'
+import { presetStore } from '../../store'
 import Loading from '/web/shared/Loading'
 import { TitleCard } from '/web/shared/Card'
 import { Page } from '/web/Layout'
 import PresetSettings from '/web/shared/PresetSettings'
-import { getPresetEditor, getPresetForm } from '/web/shared/PresetSettings/types'
 import { templates } from '/common/presets/templates'
+import { usePresetContext } from '/web/store/preset-context'
 
 export const GenerationPresetsPage: Component = () => {
   const { updateTitle } = setComponentPageTitle('Preset')
@@ -25,8 +25,7 @@ export const GenerationPresetsPage: Component = () => {
   const nav = useNavigate()
   const [selecting, setSelecting] = createSignal(false)
   const [deleting, setDeleting] = createSignal(false)
-
-  const [store, setStore] = getPresetEditor()
+  const [store, setters] = usePresetContext({ anonymous: true })
 
   const onEdit = (preset: AppSchema.UserGenPreset) => {
     nav(`/presets/${preset._id}`)
@@ -54,8 +53,11 @@ export const GenerationPresetsPage: Component = () => {
       }
 
       if (presets.importing) {
-        setStore({ ...presets.importing, _id: '', name: '' })
-        console.log(presets.importing)
+        setters.setState({
+          ...presets.importing,
+          _id: '',
+          name: presets.importing.name ? `${presets.importing.name} - Imported` : 'Imported Preset',
+        })
         presetStore.setImportPreset()
         return
       }
@@ -64,11 +66,11 @@ export const GenerationPresetsPage: Component = () => {
         ? defaultPresets[query.preset]
         : presets.presets.find((p) => p._id === query.preset)
       const preset = template ? { ...template } : { ...emptyPreset }
-      setStore({ ...emptyPreset, ...preset, _id: '' })
+      setters.setState({ ...emptyPreset, ...preset, _id: '' })
       return
     } else if (params.id === 'default') {
       if (!isDefaultPreset(query.preset)) return
-      setStore({
+      setters.setState({
         ...emptyPreset,
         ...defaultPresets[query.preset],
         _id: '',
@@ -77,19 +79,18 @@ export const GenerationPresetsPage: Component = () => {
       return
     }
 
-    if (params.id && store._id !== params.id) {
-      const preset = presets.presets.find((p) => p._id === params.id)
-      setStore(preset as any)
-      return
+    if (params.id && store.current._id !== params.id) {
+      setters.load(params.id)
+      // return
     }
 
-    if (params.id && store._id !== params.id) {
-      const preset = presets.presets.find((p) => p._id === params.id)
-      setStore(preset!)
-    }
+    // if (params.id && store._id !== params.id) {
+    //   const preset = presets.presets.find((p) => p._id === params.id)
+    //   setStore(preset!)
+    // }
 
     if (params.id && store) {
-      updateTitle(`Edit preset ${store.name}`)
+      updateTitle(`Edit preset ${store.current.name}`)
     }
   })
 
@@ -98,28 +99,19 @@ export const GenerationPresetsPage: Component = () => {
   }
 
   const deletePreset = () => {
-    presetStore.deletePreset(store._id, () => nav('/presets'))
-    setStore(emptyPreset)
+    presetStore.deletePreset(store.current._id, () => nav('/presets'))
+    setters.setState(emptyPreset)
   }
 
   const onSave = (ev?: any) => {
     ev?.preventDefault()
     if (presets.saving) return
-    const body = getPresetForm(store)
-
-    if (!body.service) {
-      toastStore.error(`You must select an AI service before saving`)
-      return
-    }
-
-    if (store?._id) {
-      presetStore.updatePreset(store._id, body as any)
-    } else {
-      presetStore.createPreset(body as any, (newPreset) => {
+    setters.upsert({
+      onCreated: (newPreset) => {
         nav(`/presets/${newPreset._id}`)
-        setStore(newPreset)
-      })
-    }
+        setters.setState(newPreset)
+      },
+    })
   }
 
   if (params.id && params.id !== 'new' && !presets.editing) {
@@ -156,22 +148,26 @@ export const GenerationPresetsPage: Component = () => {
               </Button>
             </div>
             <div class="flex flex-col">
-              <div>ID: {store._id || 'New Preset'}</div>
-              <TextInput fieldName="id" value={store._id || 'New Preset'} disabled class="hidden" />
+              <div>ID: {store.current._id || 'New Preset'}</div>
               <TextInput
-                fieldName="name"
+                fieldName="id"
+                value={store.current._id || 'New Preset'}
+                disabled
+                class="hidden"
+              />
+              <TextInput
                 label="Name"
                 helperText="A name or short description of your preset"
                 placeholder="Preset name"
-                value={store.name}
-                onChange={(ev) => setStore('name', ev.currentTarget.value)}
+                value={store.current.name}
+                onChange={(ev) => setters.setState('name', ev.currentTarget.value)}
                 required
                 parentClass="mb-2"
               />
 
-              <PresetSettings store={store} setter={setStore} noSave />
+              <PresetSettings state={store.current} setters={setters} noSave />
             </div>
-            <Show when={store.userId !== 'SYSTEM'}>
+            <Show when={store.current.userId !== 'SYSTEM'}>
               <div class="flex flex-row justify-end">
                 <Button disabled={presets.saving} onClick={onSave}>
                   <Save /> Save
@@ -195,7 +191,7 @@ export const GenerationPresetsPage: Component = () => {
 export default GenerationPresetsPage
 
 const emptyPreset: AppSchema.GenSettings = {
-  ...defaultPresets.basic,
+  ...presetDefaults,
   gaslight: templates.Universal,
   service: '' as any,
   name: '',
@@ -208,7 +204,7 @@ const EditPreset: Component<{
   select: (preset: AppSchema.UserGenPreset) => void
 }> = (props) => {
   const params = useParams()
-  const state = presetStore()
+  const state = presetStore((s) => ({ presets: s.presets }))
 
   const select = () => {
     const preset = state.presets.find((preset) => preset._id === id())

@@ -16,7 +16,7 @@ export const chatsApi = {
   getAllChats,
   getChat,
   getBotChats,
-  editChatGenPreset,
+  assignChatPreset: editChatGenPreset,
   importChat,
   deleteChat,
   addCharacter,
@@ -56,7 +56,14 @@ export async function getChat(id: string) {
     return localApi.error(`Character not found in data`)
   }
 
-  return localApi.result({ chat, character, messages, members: [profile], active: [], characters })
+  return localApi.result({
+    chat,
+    character,
+    messages,
+    members: [profile],
+    active: [],
+    characters,
+  })
 }
 
 export async function restartChat(chatId: string) {
@@ -107,10 +114,13 @@ export async function restartChat(chatId: string) {
 
 export async function editChat(
   id: string,
-  update: Partial<AppSchema.Chat> & { useOverrides: boolean | undefined }
+  update: Partial<AppSchema.Chat> & { useOverrides?: boolean }
 ) {
   if (isLoggedIn()) {
-    const res = await api.method<AppSchema.Chat>('put', `/chat/${id}`, update)
+    const res = await api.method<AppSchema.Chat>('put', `/chat/${id}`, {
+      ...update,
+      background: undefined,
+    })
     return res
   }
 
@@ -118,7 +128,7 @@ export async function editChat(
   const prev = chats.find((ch) => ch._id === id)
   if (!prev) return localApi.error(`Chat not found`)
 
-  const next = { ...prev, ...update, updatedAt: new Date().toISOString() }
+  const next = { ...prev, ...update, background: undefined, updatedAt: new Date().toISOString() }
 
   if (update.useOverrides === false) {
     delete next.overrides
@@ -169,6 +179,13 @@ export async function createChat(characterId: string, props: NewChat) {
 }
 
 export async function importChat(characterId: string, props: ImportChat) {
+  for (const msg of props.messages) {
+    if (msg.characterId === 'imported') {
+      msg.characterId = characterId
+      continue
+    }
+  }
+
   if (isLoggedIn()) {
     const res = await api.post<AppSchema.Chat>(`/chat/import`, { characterId, ...props })
     return res
@@ -221,12 +238,17 @@ export async function deleteChat(chatId: string) {
   return localApi.result<any>({ success: true })
 }
 
-export async function getAllChats() {
+export async function getAllChats(shallow?: boolean) {
   if (isLoggedIn()) {
-    const res = await api.get<{ chats: AllChat[]; characters: AppSchema.Character[] }>('/chat')
+    const query = shallow ? { shallow: 'true' } : {}
+    const res = await api.get<{ chats: AllChat[]; characters: AppSchema.Character[] }>(
+      '/chat',
+      query
+    )
     return res
   }
 
+  const presets = await loadItem('presets')
   const characters = await loadItem('characters')
   const chats = (await loadItem('chats')) as AllChat[]
 
@@ -242,6 +264,9 @@ export async function getAllChats() {
       overrides: undefined,
       useOverrides: false,
     })
+
+    chat.genPreset = presets[0]?._id
+
     await localApi.saveChats([chat])
 
     if (msg) await localApi.saveMessages(chat._id, [msg])

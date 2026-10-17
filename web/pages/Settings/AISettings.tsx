@@ -1,54 +1,54 @@
-import { ADAPTER_LABELS } from '../../../common/adapters'
 import { presetStore, settingStore, userStore } from '../../store'
-import Tabs from '../../shared/Tabs'
-import HordeAISettings from './components/HordeAISettings'
-import {
-  Component,
-  For,
-  Match,
-  Show,
-  Switch,
-  createEffect,
-  createMemo,
-  createSignal,
-} from 'solid-js'
-import OpenAISettings from './components/OpenAISettings'
-import ScaleSettings from './components/ScaleSettings'
-import NovelAISettings from './components/NovelAISettings'
-import KoboldAISettings from './components/KoboldAISettings'
-import OobaAISettings from './components/OobaAISettings'
-import ClaudeSettings from './components/ClaudeSettings'
+import { Component, Show, createMemo, createSignal } from 'solid-js'
 import { AutoPreset, getPresetOptions } from '../../shared/adapter'
-import RegisteredSettings from './components/RegisteredSettings'
-import { useSearchParams } from '@solidjs/router'
-import OpenRouterOauth from './OpenRouterOauth'
-import { SolidCard, TitleCard } from '/web/shared/Card'
+import { A } from '@solidjs/router'
+import { Card, SolidCard } from '/web/shared/Card'
 import { PresetSelect } from '/web/shared/PresetSelect'
 import TextInput from '/web/shared/TextInput'
 import Button from '/web/shared/Button'
 import { neat } from '/common/util'
-import { HelpModal } from '/web/shared/Modal'
-import { Toggle } from '/web/shared/Toggle'
-import { AppSchema } from '/common/types/index'
+import Modal, { HelpModal } from '/web/shared/Modal'
 import { SetStoreFunction } from 'solid-js/store'
+import { UserSettings } from './util'
+import { FormLabel } from '/web/shared/FormLabel'
+import Select from '/web/shared/Select'
+import { EMBED_MODELS_OPTS } from '/web/store/embeddings'
+import { Copy } from '/web/shared/Copy'
+import { usePresetContext } from '/web/store/preset-context'
+import { ModeGenSettings } from '/web/shared/Mode/ModeGenSettings'
+import { Pencil } from 'lucide-solid'
 
 const AISettings: Component<{
-  state: AppSchema.User
-  setter: SetStoreFunction<AppSchema.User>
+  state: UserSettings
+  setter: SetStoreFunction<UserSettings>
 }> = (props) => {
-  const [query] = useSearchParams()
-  const state = userStore()
+  const state = userStore((s) => ({ user: s.user, sub: s.sub, ui: s.ui }))
   const cfg = settingStore((s) => ({
-    config: s.config,
+    all: s.config,
     server: s.config.serverConfig,
   }))
-  const presets = presetStore((s) => s.presets.filter((pre) => !!pre.service))
-  const [apiKey, setApiKey] = createSignal(state.user?.apiKey || '')
 
-  const revealKey = () => {
-    userStore.revealApiKey((key) => {
+  const presets = presetStore((s) => s.presets.filter((pre) => !!pre.service))
+  const [summaryPreset, presetSetters] = usePresetContext({ anonymous: true })
+  const [apiKey, setApiKey] = createSignal(state.user?.apiKey || '')
+  const [editPreset, setEditPreset] = createSignal('')
+  const [presetFooter, setPresetFooter] = createSignal<any>()
+
+  const embeddingOpts = createMemo(() => {
+    if (!!cfg.all.embeddingsAccess && !!cfg.all.serverEmbeddings) return EMBED_MODELS_OPTS
+
+    return EMBED_MODELS_OPTS.filter((opt) => opt.value !== 'server')
+  })
+
+  const revealKey = async () => {
+    const prev = apiKey()
+    if (prev && !prev.includes('***')) return prev
+
+    await userStore.revealApiKey((key) => {
       setApiKey(key)
     })
+
+    return apiKey()
   }
 
   const generateKey = () => {
@@ -57,37 +57,6 @@ const AISettings: Component<{
     })
   }
 
-  createEffect(() => {
-    const tabs = cfg.config.adapters
-      .filter((adp) => {
-        if (adp === 'ooba') return false
-        const reg = cfg.config.registered.find((r) => r.name === adp)
-        if (!reg) return true
-        for (const opt of reg.settings) {
-          if (!opt.preset) return true
-        }
-        return false
-      })
-      .map((a) => ADAPTER_LABELS[a] || a)
-
-    setTabs(tabs)
-
-    if (!ready() && cfg.config.adapters?.length) {
-      const queryTab = tabs.findIndex((label) => label.toLowerCase() === query.service)
-      setTab(queryTab !== -1 ? queryTab : 0)
-      setReady(true)
-    }
-  })
-
-  const [tabs, setTabs] = createSignal<string[]>([])
-  const [tab, setTab] = createSignal(-1)
-  const [ready, setReady] = createSignal(false)
-
-  const currentTab = createMemo(() => {
-    const list = tabs()
-    const next = list[tab()]
-    return next
-  })
   const presetOptions = createMemo(() => {
     const opts = getPresetOptions(presets, { builtin: true }).filter(
       (pre) => pre.value !== AutoPreset.chat && pre.value !== AutoPreset.service
@@ -106,143 +75,184 @@ const AISettings: Component<{
     return true
   })
 
-  const tabClass = `flex flex-col gap-4`
+  const openPreset = (id: string) => {
+    setEditPreset(id)
+    presetSetters.load(id)
+  }
 
   return (
     <>
-      <Show when={!ready()}>
-        <div>Loading...</div>
+      <FormLabel
+        label={
+          <div class="flex flex-wrap items-center gap-1">
+            <div>Embeddings/Long-Term Memory</div>
+            <Select
+              parentClass="text-sm py-1 px-2"
+              items={embeddingOpts()}
+              value={state.ui.embeddingModel || ''}
+              onChange={(ev) => userStore.updateEmbeddingModel(ev.value)}
+            />
+          </div>
+        }
+        helperMarkdown={`Improves site performance when disabled. Disable long-term memory if your chat is _laggy_ and unresponsive.`}
+      />
+
+      {/* <Show when={cfg.flags.caption}>
+          <FormLabel
+            label={
+              <div class="flex flex-wrap items-center gap-1">
+                <div>Enable Embeddings/Long-Term Memory</div>
+                <Select
+                  parentClass="text-sm py-1 px-2"
+                  items={CAPTION_MODELS_OPTS}
+                  value={state.ui.captionModel || ''}
+                  onChange={(ev) => userStore.updateCaptionModel(ev.value)}
+                />
+              </div>
+            }
+            helperMarkdown={`Improves site performance when disabled. Disable long-term memory if your chat is _laggy_ and unresponsive.`}
+          />
+        </Show> */}
+
+      <Card>
+        <div class="font-bold">Presets</div>
+
+        <div class="flex flex-col gap-2">
+          <div class="flex items-end gap-2">
+            <PresetSelect
+              helperText="Character Field Generation"
+              options={presetOptions()}
+              selected={props.state.chargenPreset}
+              setPresetId={(ev) => props.setter('chargenPreset', ev)}
+              noneOption={{ label: 'Use Server Default', value: '' }}
+            />
+            <Button disabled={!props.state.chargenPreset}>
+              <Pencil size={20} onClick={() => openPreset(props.state.chargenPreset || '')} />
+            </Button>
+          </div>
+
+          <div class="flex items-end gap-2">
+            <PresetSelect
+              helperText="Chat Summary"
+              options={presetOptions()}
+              selected={props.state.summaryPreset || state.user?.images?.summaryPresetId}
+              setPresetId={(ev) => props.setter('summaryPreset', ev)}
+              noneOption={{ label: 'Use Active Chat Preset', value: '' }}
+            />
+            <Button disabled={!props.state.summaryPreset && !state.user?.images?.summaryPresetId}>
+              <Pencil
+                size={20}
+                onClick={() =>
+                  openPreset(props.state.summaryPreset || state.user?.images?.summaryPresetId || '')
+                }
+              />
+            </Button>
+          </div>
+
+          <div class="flex items-end gap-2">
+            <PresetSelect
+              helperText="JSON Schemas/Output"
+              options={presetOptions()}
+              selected={props.state.jsonPreset}
+              setPresetId={(ev) => props.setter('jsonPreset', ev)}
+              noneOption={{ label: 'Use Active Chat Preset', value: '' }}
+            />
+            <Button disabled={!props.state.jsonPreset}>
+              <Pencil size={20} onClick={() => openPreset(props.state.jsonPreset || '')} />
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      <Show when={!canUseApi()}>
+        <PresetSelect
+          label="Default Preset"
+          helperText="The initially selected preset when creating a new chat. "
+          options={presetOptions()}
+          selected={props.state.defaultPreset}
+          setPresetId={(ev) => props.setter('defaultPreset', ev)}
+        />
       </Show>
 
-      <Show when={ready()}>
-        <Toggle
-          value={!props.state.disableLTM}
-          label="Enable Embeddings/Long-Term Memory"
-          helperMarkdown={`Improves site performance when disabled. Disable long-term memory if your chat is _laggy_ and unresponsive.`}
-          onChange={(ev) => props.setter('disableLTM', ev)}
-        />
+      <Show when={canUseApi()}>
+        <SolidCard class="flex flex-col gap-2">
+          <HelpModal
+            title="Agnaistic API Access"
+            cta={
+              <div>
+                <a class="link">How to use API Access</a>
+              </div>
+            }
+            markdown={ApiAccessHelp}
+          />
 
-        <Show when={!canUseApi()}>
           <PresetSelect
-            label="Default Preset"
-            helperText="The initially selected preset when creating a new chat. "
+            fieldName="defaultPreset"
+            label="Default/API Access Preset"
+            helperText="Preset used when using API access. Also the initially selected preset when creating a new chat."
             options={presetOptions()}
             selected={props.state.defaultPreset}
             setPresetId={(ev) => props.setter('defaultPreset', ev)}
-          />
-        </Show>
+          >
+            <Show when={props.state.defaultPreset}>
+              <Copy text={props.state.defaultPreset!} size={24} />
+            </Show>
+          </PresetSelect>
 
-        <Show when={canUseApi()}>
-          <SolidCard class="flex flex-col gap-2">
-            <HelpModal
-              title="Agnaistic API Access"
-              cta={
-                <div>
-                  <a class="link">How to use API Access</a>
-                </div>
-              }
-              markdown={ApiAccessHelp}
-            />
-
-            <PresetSelect
-              fieldName="defaultPreset"
-              label="Default/API Access Preset"
-              helperText="Preset used when using API access. Also the initially selected preset when creating a new chat."
-              options={presetOptions()}
-              selected={props.state.defaultPreset}
-              setPresetId={(ev) => props.setter('defaultPreset', ev)}
-            />
-
-            <TextInput
-              fieldName="apiKeyPlaceholder"
-              helperText={
-                <div class="text-900 flex gap-1">
-                  <Show when={apiKey().includes('***')}>
-                    <Button size="pill" onClick={revealKey}>
-                      Reveal Key
-                    </Button>
-                  </Show>
-                  <Show when={apiKey() === 'Not set'}>
-                    <Button size="pill" onClick={generateKey}>
-                      Generate Key
-                    </Button>
-                  </Show>
-                  <Show when={apiKey() !== 'Not set'}>
-                    <Button size="pill" onClick={generateKey}>
-                      Regenerate Key
-                    </Button>
-                  </Show>
-                </div>
-              }
-              label="API Key"
-              readonly
-              placeholder="API Key Hidden"
-              value={apiKey()}
-            />
-          </SolidCard>
-        </Show>
-
-        <div class="my-2">
-          <SolidCard bg="orange-500" class="mb-2">
-            Are you using an external AI service such as OpenAI, NovelAI, or Horde? Provide your API
-            key below.
-          </SolidCard>
-          <Tabs tabs={tabs()} selected={tab} select={setTab} />
-        </div>
+          <div class="flex items-center gap-1">
+            <FormLabel label="API Key" />
+            <Show when={apiKey().includes('***')}>
+              <Button size="pill" onClick={revealKey}>
+                Reveal Key
+              </Button>
+            </Show>
+            <Show when={apiKey() === 'Not set'}>
+              <Button size="pill" onClick={generateKey}>
+                Generate Key
+              </Button>
+            </Show>
+            <Show when={apiKey() !== 'Not set'}>
+              <Button size="pill" onClick={generateKey}>
+                Regenerate Key
+              </Button>
+            </Show>
+          </div>
+          <div class="flex w-full items-center gap-1">
+            <TextInput readonly placeholder="API Key Hidden" value={apiKey()} />
+            <Show when={apiKey() !== ''}>
+              <Copy text={apiKey()} onClick={revealKey} size={24} />
+            </Show>
+          </div>
+        </SolidCard>
       </Show>
 
-      <div class={currentTab() === ADAPTER_LABELS.horde ? tabClass : 'hidden'}>
-        <HordeAISettings state={props.state} setter={props.setter} />
+      <div class="my-2">
+        <SolidCard bg="premium-700" class="mb-2">
+          Looking for the Providers section? Head to the{' '}
+          <A class="link font-bold" href="/presets?preset_tab=1">
+            Presets
+          </A>{' '}
+          page
+        </SolidCard>
       </div>
 
-      <div class={currentTab() === ADAPTER_LABELS.kobold ? tabClass : 'hidden'}>
-        <KoboldAISettings state={props.state} setter={props.setter} />
-      </div>
-
-      <div class={currentTab() === ADAPTER_LABELS.ooba ? tabClass : 'hidden'}>
-        <OobaAISettings state={props.state} setter={props.setter} />
-      </div>
-
-      <div class={currentTab() === ADAPTER_LABELS.openai ? tabClass : 'hidden'}>
-        <OpenAISettings state={props.state} setter={props.setter} />
-      </div>
-
-      <div class={currentTab() === ADAPTER_LABELS.scale ? tabClass : 'hidden'}>
-        <ScaleSettings state={props.state} setter={props.setter} />
-      </div>
-
-      <div class={currentTab() === ADAPTER_LABELS.novel ? tabClass : 'hidden'}>
-        <NovelAISettings state={props.state} setter={props.setter} />
-      </div>
-
-      <div class={currentTab() === ADAPTER_LABELS.claude ? tabClass : 'hidden'}>
-        <ClaudeSettings state={props.state} setter={props.setter} />
-      </div>
-
-      <For each={cfg.config.registered}>
-        {(each) => (
-          <div class={currentTab() === ADAPTER_LABELS[each.name] ? tabClass : 'hidden'}>
-            {/** Optionally show adapter specific information for registered adapters */}
-            <Switch>
-              <Match when={each.name === 'openrouter'}>
-                <OpenRouterOauth />
-              </Match>
-
-              <Match when={each.name === 'replicate'}>
-                <TitleCard>
-                  Head to{' '}
-                  <a class="link" target="_blank" href="https://replicate.com/">
-                    Replicate.com
-                  </a>{' '}
-                  to get started.
-                </TitleCard>
-              </Match>
-            </Switch>
-
-            <RegisteredSettings service={each} state={props.state} setter={props.setter} />
-          </div>
-        )}
-      </For>
+      <Modal
+        title="Edit Summary Preset"
+        show={!!editPreset()}
+        close={() => setEditPreset('')}
+        maxWidth="half"
+        footer={presetFooter()}
+      >
+        <ModeGenSettings
+          page="image-settings"
+          preset={summaryPreset.current}
+          setters={presetSetters}
+          close={() => setEditPreset('')}
+          presetId={editPreset()}
+          onPresetChanged={() => setEditPreset('')}
+          footer={setPresetFooter}
+        />
+      </Modal>
     </>
   )
 }
@@ -259,5 +269,5 @@ const ApiAccessHelp = neat`
   **Instructions**:
   1. Select your \`API Access Preset\`: This preset will be used for your API calls. Change this on your settings page.
   2. Generate your API Key.
-  3. Use the API URL \`https://api.agnai.chat\` and your generated API key.
+  3. Use the API URL \`https://api.agnai.chat\` or \`https://api.agnai.chat/v1\` and your generated API key.
 `

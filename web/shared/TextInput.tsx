@@ -43,6 +43,12 @@ type Props = {
   children?: any
   initialValue?: number | string
   hide?: boolean
+  variant?: 'outline'
+
+  /** Specificy `parentClass.max-height` when using this */
+  growup?: boolean
+
+  adornment?: JSX.Element
 
   /** Do not update the input value if the value property receives a new value */
   static?: boolean
@@ -104,6 +110,7 @@ const TextInput: Component<Props> = (props) => {
   })
 
   const resize = () => {
+    if (props.growup || props.static) return
     if (inputRef?.value === '') {
       setHeight(MIN_HEIGHT + 'px')
       return
@@ -113,6 +120,8 @@ const TextInput: Component<Props> = (props) => {
 
     if (inputRef) {
       const next = +inputRef.scrollHeight < MIN_HEIGHT ? MIN_HEIGHT : inputRef.scrollHeight
+      const curr = height()
+      if (curr === `${next}px`) return
       setHeight(next + 'px')
     }
   }
@@ -123,26 +132,35 @@ const TextInput: Component<Props> = (props) => {
       () => {
         if (props.value === undefined) return // Unsure about this
         if (props.static) return
-        if (inputRef && inputRef.value !== props.value) inputRef.value = props.value.toString()
+
+        if (inputRef) {
+          inputRef.value = props.value.toString()
+        }
+
         resize()
         updateCount()
       }
     )
   )
 
-  createEffect(() => {
-    if (!inputRef) return
-    if (props.isMultiline) {
-      value()
-      resize()
-    }
-  })
+  createEffect(
+    on(
+      () => [inputRef, value(), props.isMultiline, props.growup],
+      () => {
+        if (!inputRef) return
+        if (props.isMultiline && !props.growup) {
+          value()
+          resize()
+        }
+      }
+    )
+  )
 
   const onRef = (ref: any) => {
     props.ref?.(ref)
     setTimeout(() => {
       inputRef = ref
-      if (props.value) {
+      if (props.value !== undefined) {
         ref.value = props.value
       }
       resize()
@@ -154,44 +172,52 @@ const TextInput: Component<Props> = (props) => {
   ) => {
     resize()
     props.onChange?.(ev)
+
+    // On the next tick: Evaluate if the props.value and input.value are inconsistent
+    // If the component caller 'clamps' the value, the createEffect that monitors the props.value won't be called
+    // Therefore we must also monitor it on-input
+    setTimeout(() => {
+      if (props.value === undefined || !inputRef) return
+      if (!props.onChange) return
+      if (props.value.toString().trim() !== inputRef.value.toString().trim()) {
+        inputRef.value = props.value.toString()
+      }
+    })
   }
 
   return (
     <div
-      class={`${props.parentClass || ''}`}
+      class={`${props.parentClass || ''} box-border`}
       classList={{
         'flex gap-0': !!props.prelabel && !props.isMultiline,
         hidden: props.parentClass?.includes('hidden') || props.hide,
+        'variable-textarea-container': props.growup,
       }}
     >
       <Show when={props.prelabel && !props.isMultiline}>
-        <div class="bg-600 flex h-[40px] items-center rounded-l-md px-1 text-center text-sm font-bold">
+        <div class="bg-600 flex min-w-fit items-center rounded-l-md px-2 text-center text-sm font-bold">
           {props.prelabel}
         </div>
       </Show>
       <Show when={!!props.label || !!props.helperText}>
-        <label for={props.fieldName}>
-          <Show when={!!props.label}>
-            <div class="flex items-center gap-1" classList={{ 'pb-1': !props.helperText }}>
-              {props.label}{' '}
-              <Show when={props.tokenCount}>
-                <em class="ml-1 text-xs">({tokens()} tokens)</em>
-              </Show>
-              <Show when={props.isMultiline}>
-                <IsVisible onEnter={resize} />
-              </Show>
-            </div>
-          </Show>
-          <Show when={!!props.helperText}>
-            <p class="helper-text">{props.helperText}</p>
-          </Show>
-          <Show when={!!props.helperMarkdown}>
-            <p
-              class="helper-text markdown"
-              innerHTML={markdown.makeHtml(props.helperMarkdown!)}
-            ></p>
-          </Show>
-        </label>
+        <label for={props.fieldName}></label>
+        <Show when={!!props.label}>
+          <div class="flex items-center gap-1" classList={{ 'pb-1': !props.helperText }}>
+            {props.label}{' '}
+            <Show when={props.tokenCount}>
+              <em class="ml-1 text-xs">({tokens()} tokens)</em>
+            </Show>
+            <Show when={props.isMultiline}>
+              <IsVisible onEnter={resize} />
+            </Show>
+          </div>
+        </Show>
+        <Show when={!!props.helperText}>
+          <p class="helper-text">{props.helperText}</p>
+        </Show>
+        <Show when={!!props.helperMarkdown}>
+          <p class="helper-text markdown" innerHTML={markdown.makeHtml(props.helperMarkdown!)}></p>
+        </Show>
       </Show>
       <Switch>
         <Match when={props.isMultiline}>
@@ -205,16 +231,23 @@ const TextInput: Component<Props> = (props) => {
             aria-placeholder={placeholder()}
             value={props.initialValue ?? value()}
             class={
-              'form-field focusable-field text-900 min-h-[40px] w-full rounded-md px-4 ' +
+              'form-field focusable-field text-900 box-border min-h-[40px] w-full rounded-md border border-[var(--bg-600)] px-4 hover:border-white/20 ' +
               (props.class || '')
             }
             style={{ transition: 'height 0.2s ease-in-out', height: height() }}
-            classList={{ 'py-2': !props.class?.includes('py-'), ...props.classList }}
+            classList={{
+              'py-2': !props.class?.includes('py-'),
+              'border-0.25': props.variant === 'outline',
+              'border-[var(--bg-600)]': props.variant === 'outline',
+              'variable-textarea': !!props.growup,
+              ...props.classList,
+            }}
             disabled={props.disabled}
             spellcheck={props.spellcheck}
             lang={props.lang}
             onKeyUp={(ev) => props.onKeyUp?.(ev)}
             onKeyDown={(ev) => props.onKeyDown?.(ev)}
+            onPaste={handleInput}
             onchange={handleInput}
             onInput={handleInput}
             {...props.textarea}
@@ -223,6 +256,7 @@ const TextInput: Component<Props> = (props) => {
         <Match when={!props.children}>
           <input
             id={props.fieldName}
+            ref={onRef}
             name={props.fieldName}
             type={props.type || 'text'}
             required={props.required}
@@ -230,24 +264,31 @@ const TextInput: Component<Props> = (props) => {
             placeholder={placeholder()}
             aria-placeholder={placeholder()}
             value={props.initialValue ?? value()}
-            class={'form-field focusable-field rounded-md px-4 ' + (props.class || '')}
+            class={
+              'form-field focusable-field box-border rounded-md border border-[var(--bg-600)] px-4 hover:border-white/20 ' +
+              (props.class || '')
+            }
             classList={{
               'w-full': !props.class?.includes('w-'),
+              'border-[1px]': props.variant === 'outline',
+              'border-[var(--bg-600)]': props.variant === 'outline',
               'py-2': !props.class?.includes('p-') && !props.class?.includes('py-'),
+              'rounded-l-none': !!props.prelabel,
               ...props.classList,
             }}
-            onkeyup={(ev) => {
+            onKeyUp={(ev) => {
+              ev.preventDefault()
               updateCount()
               props.onKeyUp?.(ev)
             }}
             onKeyDown={(ev) => props.onKeyDown?.(ev)}
             onChange={handleInput}
             onInput={handleInput}
+            onPaste={handleInput}
             disabled={props.disabled}
             pattern={props.pattern}
             spellcheck={props.spellcheck}
             lang={props.lang}
-            ref={onRef}
             step={props.step}
             {...props.input}
           />
@@ -263,18 +304,24 @@ const TextInput: Component<Props> = (props) => {
               placeholder={placeholder()}
               aria-placeholder={placeholder()}
               value={value()}
-              class={'form-field focusable-field rounded-xl px-4 py-2 ' + (props.class || '')}
+              class={
+                'form-field focusable-field rounded-xl border border-[var(--bg-600)] px-4 py-2 ' +
+                (props.class || '')
+              }
               classList={{
                 'w-full': !props.class?.includes('w-'),
+                'border-[1px]': props.variant === 'outline',
+                'border-[var(--bg-600)]': props.variant === 'outline',
                 ...props.classList,
               }}
-              onkeyup={(ev) => {
+              onKeyUp={(ev) => {
                 updateCount()
                 props.onKeyUp?.(ev)
               }}
               onKeyDown={(ev) => props.onKeyDown?.(ev)}
               onChange={handleInput}
               onInput={handleInput}
+              onPaste={handleInput}
               disabled={props.disabled}
               pattern={props.pattern}
               spellcheck={props.spellcheck}

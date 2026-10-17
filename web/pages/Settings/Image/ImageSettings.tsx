@@ -1,608 +1,395 @@
-import {
-  Component,
-  Match,
-  Show,
-  Switch,
-  createEffect,
-  createMemo,
-  createSignal,
-  on,
-  onMount,
-} from 'solid-js'
-import {
-  NOVEL_IMAGE_MODEL,
-  NOVEL_SAMPLER_REV,
-  SD_SAMPLER,
-  SD_SAMPLER_REV,
-} from '../../../../common/image'
+import { Match, Show, Switch, createMemo, createSignal } from 'solid-js'
 import Divider from '../../../shared/Divider'
-import RangeInput from '../../../shared/RangeInput'
-import Select from '../../../shared/Select'
+import { InlineRangeInput } from '../../../shared/RangeInput'
 import TextInput from '../../../shared/TextInput'
-import { characterStore, chatStore, settingStore, userStore } from '../../../store'
+import { chatStore, imageStore, presetStore, userStore } from '../../../store'
 import { IMAGE_SUMMARY_PROMPT } from '/common/image'
 import { Toggle } from '/web/shared/Toggle'
 import { SolidCard } from '/web/shared/Card'
-import Tabs, { useTabs } from '/web/shared/Tabs'
-import { getStrictForm } from '/web/shared/util'
-import Button from '/web/shared/Button'
-import { Save, X } from 'lucide-solid'
-import { RootModal } from '/web/shared/Modal'
-import { ImageSettings } from '/common/types/image-schema'
-import { isChatPage } from '/web/shared/hooks'
-
-const imageForm = {
-  imageType: ['horde', 'sd', 'novel', 'agnai'],
-  imageSteps: 'number',
-  imageClipSkip: 'number',
-  imageCfg: 'number',
-  imageWidth: 'number',
-  imageHeight: 'number',
-  imagePrefix: 'string?',
-  imageSuffix: 'string?',
-  imageNegative: 'string?',
-  summariseChat: 'boolean?',
-  summaryPrompt: 'string?',
-
-  novelImageModel: 'string',
-  novelSampler: 'string',
-
-  hordeSampler: 'string',
-  hordeImageModel: 'string?',
-
-  sdUrl: 'string',
-  sdSampler: 'string',
-
-  agnaiModel: 'string?',
-  agnaiSampler: 'string?',
-} as const
+import Tabs from '/web/shared/Tabs'
+import Button, { ToggleButton } from '/web/shared/Button'
+import { Pencil, Save, X } from 'lucide-solid'
+import Modal, { RootModal } from '/web/shared/Modal'
+import { isChatPageMemo } from '/web/shared/hooks'
+import { FormLabel } from '/web/shared/FormLabel'
+import { PresetSelect } from '/web/shared/PresetSelect'
+import { getPresetOptions } from '/web/shared/adapter'
+import Accordian from '/web/shared/Accordian'
+import { ModeGenSettings } from '/web/shared/Mode/ModeGenSettings'
+import { usePresetContext } from '/web/store/preset-context'
+import { useImageContext } from './image-context'
+import { SelectImageProvider } from './ImageProvider'
 
 export const ImageSettingsModal = () => {
-  let formRef: any
-  const state = userStore()
-  const settings = settingStore()
+  const isChat = isChatPageMemo(true)
+  const [ctx] = useImageContext()
+  const settings = imageStore((s) => ({ showImgSettings: s.showImgSettings }))
+
+  const [summaryPreset, presetSetters] = usePresetContext({ anonymous: true })
+  const [presetFooter, setPresetFooter] = createSignal<any>()
+  const presets = presetStore((s) => ({
+    list: s.presets,
+    options: s.presets.map((pre) => ({ label: pre.name, value: pre._id })),
+  }))
 
   const entity = chatStore((s) => ({
-    chat: s.active?.chat,
-    char: s.active?.char,
+    chat: s.details[s.lastChatId]?.chat,
+    char: s.details[s.lastChatId]?.char,
   }))
 
-  const isChat = isChatPage(true)
-  const [type, setType] = createSignal(state.user?.images?.type || 'horde')
+  const [editPreset, setEditPreset] = createSignal(false)
 
-  onMount(() => {
-    settingStore.getServerConfig()
-  })
+  const isAllEnabled = createMemo(() => Array.from(Object.values(ctx.defaults)).every((v) => !!v))
 
-  const tabs = createMemo(() => {
-    const tabs = ['App']
-
-    if (isChat()) {
-      if (entity.chat) {
-        tabs.push('Chat')
-      }
-
-      if (entity.char) {
-        tabs.push('Character')
-      }
-    }
-
-    return tabs
-  })
-
-  const tab = useTabs(
-    tabs(),
-    isChat()
-      ? entity.chat?.imageSource === 'chat'
-        ? 1 //
-        : !entity.chat?.imageSource || entity.chat?.imageSource === 'settings'
-        ? 0
-        : 2
-      : 0
-  )
-
-  const canUseImages = createMemo(() => {
-    const access = state.sub?.tier.imagesAccess || state.user?.admin
-    return (
-      settings.config.serverConfig?.imagesEnabled &&
-      access &&
-      settings.config.serverConfig?.imagesModels?.length > 0
-    )
-  })
-
-  const agnaiModel = createMemo(() => {
-    if (!canUseImages()) return
-    if (type() !== 'agnai') return
-
-    const id = state.user?.images?.agnai?.model
-    return settings.config.serverConfig?.imagesModels?.find((m) => m.name === id)
-  })
-
-  const imageTypes = createMemo(() => {
-    const list = [
-      { label: 'Horde', value: 'horde' },
-      { label: 'NovelAI', value: 'novel' },
-      { label: 'Stable Diffusion', value: 'sd' },
-    ]
-
-    if (canUseImages()) {
-      list.push({ label: 'Agnaistic', value: 'agnai' })
-    }
-
-    return list
-  })
-
-  createEffect(
-    on(
-      () => cfg(),
-      (cfg) => {
-        if (!cfg) return
-        setType(cfg.type)
-      }
-    )
-  )
-
-  const cfg = createMemo(() => {
-    switch (tab.current()) {
-      case 'App':
-        return state.user?.images
-
-      case 'Chat':
-        return entity.chat?.imageSettings
-
-      case 'Character':
-        return entity.char?.imageSettings
-
-      default:
-        return state.user?.images
-    }
-  })
-
-  const subclass = 'flex flex-col gap-4'
-
-  const save = async () => {
-    const body = getStrictForm(formRef, imageForm)
-    const providers = {
-      horde: {
-        sampler: body.hordeSampler,
-        model: body.hordeImageModel || '',
-      },
-      novel: {
-        model: body.novelImageModel,
-        sampler: body.novelSampler,
-      },
-      sd: {
-        sampler: body.sdSampler,
-        url: body.sdUrl,
-      },
-      agnai: { model: body.agnaiModel || '', sampler: body.agnaiSampler || '' },
-    }
-    const payload = {
-      type: body.imageType,
-      cfg: body.imageCfg,
-      clipSkip: body.imageClipSkip,
-      height: body.imageHeight,
-      width: body.imageWidth,
-      steps: body.imageSteps,
-      negative: body.imageNegative,
-      prefix: body.imagePrefix,
-      suffix: body.imageSuffix,
-      summariseChat: body.summariseChat,
-      summaryPrompt: body.summaryPrompt,
-      ...providers,
-    }
-
-    switch (tab.current()) {
-      case 'App': {
-        await userStore.updatePartialConfig({ images: { ...payload, ...providers } })
-        return
-      }
-
-      case 'Chat': {
-        chatStore.editChat(entity.chat?._id!, { imageSettings: payload }, undefined)
-        return
-      }
-
-      case 'Character': {
-        characterStore.editPartialCharacter(entity.char?._id!, { imageSettings: payload })
-        return
-      }
-
-      default:
-        return state.user?.images
-    }
+  const editPresetClicked = () => {
+    if (!ctx.store.summaryPresetId) return
+    presetSetters.load(ctx.store.summaryPresetId)
+    setEditPreset(true)
   }
 
-  return (
-    <RootModal
-      maxWidth="half"
-      show={settings.showImgSettings}
-      close={() => settingStore.imageSettings(false)}
-      footer={
-        <>
-          <Button onClick={() => settingStore.imageSettings(false)}>
-            <X /> Close
-          </Button>
-          <Button onClick={save}>
-            <Save /> Save
-          </Button>
-        </>
-      }
-    >
-      <form ref={formRef} class="flex flex-col gap-4">
-        <Switch>
-          <Match when={tab.current() === 'App'}>
-            <SolidCard type="hl">
-              <div>App Settings</div>
-              <Show when={!isChat()}>
-                <div class="text-500 text-sm italic">
-                  Note: <b>Chat</b> and <b>Character</b> image settings are only available when a
-                  chat is open.
-                </div>
-              </Show>
-            </SolidCard>
-          </Match>
-          <Match when={tab.current() === 'Character'}>
-            <SolidCard type="hl">
-              <div>Character Settings</div>
-              <div class="text-500 text-sm italic">Editing: {entity.char?.name}</div>
-            </SolidCard>
-          </Match>
-          <Match when={tab.current() === 'Chat'}>
-            <SolidCard type="hl">
-              <div>Current Chat Settings</div>
-              <div class="text-500 text-sm italic">Chatting with: {entity.char?.name}</div>
-            </SolidCard>
-          </Match>
-        </Switch>
-
-        <Tabs tabs={tab.tabs} select={tab.select} selected={tab.selected} />
-
-        <div class={type() === 'novel' ? subclass : 'hidden'}>
-          <NovelSettings cfg={cfg() as ImageSettings} />
-        </div>
-
-        <div class={type() === 'horde' ? subclass : 'hidden'}>
-          <HordeSettings cfg={cfg() as ImageSettings} />
-        </div>
-
-        <div class={tab.current() === 'App' && type() === 'sd' ? subclass : 'hidden'}>
-          <SDSettings cfg={cfg() as ImageSettings} />
-        </div>
-
-        <div class={type() === 'agnai' ? subclass : 'hidden'}>
-          <AgnaiSettings cfg={cfg() as ImageSettings} />
-        </div>
-
-        <Divider />
-
-        <Select
-          fieldName="imageType"
-          items={imageTypes()}
-          value={cfg()?.type ?? 'horde'}
-          onChange={(value) => setType(value.value as any)}
-        />
-
-        <Show when={type() === 'agnai'}>
-          <SolidCard bg="rose-600">
-            Refer to the recommended settings at the bottom of the page when using Agnaistic image
-            models
-          </SolidCard>
-        </Show>
-
-        <RangeInput
-          fieldName="imageSteps"
-          min={5}
-          max={128}
-          step={1}
-          value={cfg()?.steps ?? agnaiModel()?.init.steps ?? 50}
-          label="Sampling Steps"
-          helperText="(Novel Anlas Threshold: 28)"
-        />
-
-        <RangeInput
-          fieldName="imageClipSkip"
-          min={0}
-          max={4}
-          step={1}
-          value={cfg()?.clipSkip ?? agnaiModel()?.init.clipSkip ?? 0}
-          label="Clip Skip"
-          helperText="The larger the image, the less that can be retained in your local cache. (Novel Anlas Threshold: 512)"
-        />
-
-        <RangeInput
-          fieldName="imageWidth"
-          min={256}
-          max={1280}
-          step={128}
-          value={cfg()?.width ?? agnaiModel()?.init.width ?? 1024}
-          label="Image Width"
-          helperText="The larger the image, the less that can be retained in your local cache. (Novel Anlas Threshold: 512)"
-        />
-
-        <RangeInput
-          fieldName="imageHeight"
-          min={256}
-          max={1280}
-          step={128}
-          value={cfg()?.height ?? agnaiModel()?.init.height ?? 1024}
-          label="Image Height"
-          helperText="The larger the image, the less that can be retain in your local cache. (Novel Anlas Threshold: 512)"
-        />
-
-        <TextInput
-          fieldName="imageCfg"
-          value={cfg()?.cfg ?? agnaiModel()?.init.cfg ?? 9}
-          label="CFG Scale"
-          helperText="Prompt Guidance. Classifier Free Guidance Scale - how strongly the image should conform to prompt - lower values produce more creative results."
-        />
-
-        <TextInput
-          fieldName="imagePrefix"
-          value={cfg()?.prefix}
-          label="Prompt Prefix"
-          helperText="(Optional) Text to prepend to your image prompt"
-          placeholder={`E.g.: best quality, masterpiece`}
-        />
-
-        <TextInput
-          fieldName="imageSuffix"
-          value={cfg()?.suffix}
-          label="Prompt Suffix"
-          helperText="(Optional) Text to append to your image prompt"
-          placeholder={`E.g.: full body, visible legs, dramatic lighting`}
-        />
-
-        <TextInput
-          fieldName="imageNegative"
-          value={cfg()?.negative}
-          label="Negative Prompt"
-          helperText="(Optional) Negative Prompt"
-          placeholder={`E.g.: painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, disfigured`}
-        />
-
-        <TextInput
-          fieldName="summaryPrompt"
-          value={cfg()?.summaryPrompt}
-          label="Summary Prompt"
-          helperText='When summarising the chat to an image caption, this is the "prompt" sent to OpenAI to summarise your conversation into an image prompt.'
-          placeholder={`Default: ${IMAGE_SUMMARY_PROMPT.other}`}
-        />
-
-        <Toggle
-          fieldName="summariseChat"
-          label="Summarise Chat"
-          helperText="When available use your AI service to summarise the chat into an image prompt. Only available with services with Instruct capabilities (Agnai, NovelAI, OpenAI, Claude, etc)"
-          value={cfg()?.summariseChat}
-        />
-      </form>
-    </RootModal>
+  const presetOptions = createMemo(() =>
+    getPresetOptions(presets.list, { builtin: true, base: true })
   )
-}
 
-const NovelSettings: Component<{ cfg: ImageSettings | undefined }> = (props) => {
-  const state = userStore()
-
-  const models = Object.entries(NOVEL_IMAGE_MODEL).map(([key, value]) => ({ label: key, value }))
-  const samplers = Object.entries(NOVEL_SAMPLER_REV).map(([key, value]) => ({
-    label: value,
-    value: key,
-  }))
   return (
     <>
-      <div class="text-xl">NovelAI</div>
-      <Show when={!state.user?.novelVerified && !state.user?.novelApiKey}>
-        <div class="font-bold text-red-600">
-          You do not have a valid NovelAI key set. You will not be able to generate images using
-          Novel.
-        </div>
-      </Show>
-      <em>
-        Note: The <b>Anlas Threshold</b> means anything above this value is cost Anlas credits
-      </em>
-      <Select
-        fieldName="novelImageModel"
-        items={models}
-        label="Model"
-        value={props.cfg?.novel?.model}
-      />
-      <Select
-        fieldName="novelSampler"
-        items={samplers}
-        label="Sampler"
-        value={props.cfg?.novel?.sampler || NOVEL_SAMPLER_REV.k_dpmpp_2m}
-      />
-    </>
-  )
-}
-
-const HordeSettings: Component<{ cfg: ImageSettings | undefined }> = (props) => {
-  const cfg = settingStore()
-
-  const models = createMemo(() => {
-    const map = new Map<string, number>()
-
-    for (const worker of cfg.imageWorkers) {
-      for (const model of worker.models) {
-        if (!map.has(model)) {
-          map.set(model, 0)
+      <RootModal
+        maxWidth="half"
+        show={settings.showImgSettings}
+        close={() => imageStore.imageSettings(false)}
+        footer={
+          <>
+            <Button onClick={() => imageStore.imageSettings(false)}>
+              <X /> Close
+            </Button>
+            <Button onClick={() => ctx.save()}>
+              <Save /> Save
+            </Button>
+          </>
         }
+      >
+        <form class="flex flex-col gap-4">
+          <Switch>
+            <Match when={ctx.tab.current() === 'Shared'}>
+              <SolidCard type="hl">
+                <div>Shared Settings</div>
+                <div class="text-500 text-sm italic">
+                  <Show
+                    when={!isChat()}
+                    fallback={
+                      <>
+                        <b>Global/Default</b> Image Settings
+                      </>
+                    }
+                  >
+                    Note: <b>Chat</b> and <b>Character</b> image settings are only available when a
+                    chat is open.
+                  </Show>
+                </div>
+              </SolidCard>
+            </Match>
+            <Match when={ctx.tab.current() === 'Character'}>
+              <SolidCard type="hl">
+                <div>Character Settings</div>
+                <div class="text-500 text-sm italic">Character: {entity.char?.name}</div>
+              </SolidCard>
+            </Match>
+            <Match when={ctx.tab.current() === 'Chat'}>
+              <SolidCard type="hl">
+                <div>Current Chat Settings</div>
+                <div class="text-500 text-sm italic">Chatting with: {entity.char?.name}</div>
+              </SolidCard>
+            </Match>
+          </Switch>
 
-        const current = map.get(model) ?? 0
-        map.set(model, current + 1)
-      }
+          <Tabs tabs={ctx.tab.tabs()} select={ctx.tab.select} selected={ctx.tab.selected} />
+
+          <Show when={isChat()}>
+            <div class="flex flex-col gap-1">
+              <FormLabel
+                label={`Current Chat Image Settings Source`}
+                helperText='Control which image settings are used when generating "Chat Images"'
+              />
+              <Button
+                size="sm"
+                class="w-fit"
+                onClick={() =>
+                  chatStore.editChat(entity.chat?._id!, { imageSource: ctx.state.editing })
+                }
+              >
+                <Show
+                  when={ctx.state.source === ctx.state.editing}
+                  fallback={`Use ${ctx.tab.current()} Settings`}
+                >
+                  Use {ctx.tab.current()} Settings (Active)
+                </Show>
+              </Button>
+            </div>
+          </Show>
+
+          <PresetSelect
+            label={<span class="!text-lg">Summary Preset</span>}
+            helperText="Choose which service and model is used for creating summaries for chat images"
+            options={presetOptions()}
+            setPresetId={(id) => ctx.update('summaryPresetId', id)}
+            selected={ctx.store.summaryPresetId}
+          >
+            <Button disabled={!ctx.store.summaryPresetId} onClick={editPresetClicked}>
+              <Pencil size={20} />
+            </Button>
+          </PresetSelect>
+
+          <Accordian title="Summary Settings" titleClickOpen open={false}>
+            <Toggle
+              fieldName="summariseChat"
+              label="Summarise Chat"
+              helperText="Use your AI service to summarise the chat into an image prompt."
+              value={ctx.store.summariseChat}
+              onChange={(ev) => ctx.update('summariseChat', ev)}
+            />
+
+            <TextInput
+              fieldName="summaryPrompt"
+              label="Summary Prompt"
+              isMultiline
+              helperText='When summarising the chat to an image caption, this is the "prompt" is used summarise your conversation into an image prompt.'
+              placeholder={`Default: ${IMAGE_SUMMARY_PROMPT.other}`}
+              value={ctx.store.summaryPrompt}
+              onChange={(ev) => ctx.update('summaryPrompt', ev.currentTarget.value)}
+            />
+
+            <div class="flex gap-1">
+              <Button size="sm" onClick={() => ctx.update('summaryPrompt', SUMMARY_PROMPTS.booru)}>
+                Booru/Tag Style
+              </Button>
+              <Button size="sm" onClick={() => ctx.update('summaryPrompt', SUMMARY_PROMPTS.plain)}>
+                Flux/Plain Style
+              </Button>
+            </div>
+          </Accordian>
+
+          <div class="flex gap-2">
+            <FormLabel label="Image Provider"></FormLabel>
+            <SelectImageProvider ctx={ctx} />
+          </div>
+
+          <Show when={ctx.state.canUseImages && ctx.store.type === 'agnai'}>
+            <FormLabel
+              label="Use Recommended Settings"
+              helperText="Use the image model's recommended settings when available."
+            />
+            <div class="flex flex-wrap justify-center gap-2">
+              <ToggleButton
+                size="sm"
+                value={isAllEnabled()}
+                onChange={(ev) => ctx.toggleDefaults(ev)}
+              >
+                Toggle All
+              </ToggleButton>
+              <ToggleButton
+                size="sm"
+                value={ctx.defaults.affixes}
+                onChange={(ev) => ctx.updateDefaults('affixes', ev)}
+              >
+                Affixes
+              </ToggleButton>
+              <ToggleButton
+                size="sm"
+                value={ctx.defaults.size}
+                onChange={(ev) => ctx.updateDefaults('size', ev)}
+              >
+                Size
+              </ToggleButton>
+              <ToggleButton
+                size="sm"
+                value={ctx.defaults.guidance}
+                onChange={(ev) => ctx.updateDefaults('guidance', ev)}
+              >
+                Guidance
+              </ToggleButton>
+              <ToggleButton
+                size="sm"
+                value={ctx.defaults.steps}
+                onChange={(ev) => ctx.updateDefaults('steps', ev)}
+              >
+                Steps
+              </ToggleButton>
+              <ToggleButton
+                size="sm"
+                value={ctx.defaults.negative}
+                onChange={(ev) => ctx.updateDefaults('negative', ev)}
+              >
+                Negative Prompt
+              </ToggleButton>
+              <ToggleButton
+                size="sm"
+                value={ctx.defaults.sampler}
+                onChange={(ev) => ctx.updateDefaults('sampler', ev)}
+              >
+                Sampler
+              </ToggleButton>
+            </div>
+          </Show>
+          <Divider />
+
+          <Show when={ctx.store.type === 'agnai'}>
+            <SolidCard bg="rose-600">
+              Refer to the recommended settings when using Agnaistic image models
+            </SolidCard>
+          </Show>
+
+          <InlineRangeInput
+            fieldName="imageSteps"
+            min={5}
+            max={128}
+            step={1}
+            value={ctx.store.steps ?? ctx.state.agnaiModel?.init.steps ?? 50}
+            label="Sampling Steps"
+            onChange={(ev) => ctx.update('steps', ev)}
+          />
+
+          <InlineRangeInput
+            fieldName="imageClipSkip"
+            min={0}
+            max={4}
+            step={1}
+            value={ctx.store.clipSkip ?? ctx.state.agnaiModel?.init.clipSkip ?? 0}
+            label="Clip Skip"
+            onChange={(ev) => ctx.update('clipSkip', ev)}
+          />
+
+          <InlineRangeInput
+            fieldName="imageWidth"
+            min={256}
+            max={1280}
+            step={128}
+            value={ctx.store.width ?? ctx.state.agnaiModel?.init.width ?? 1024}
+            label="Image Width"
+            onChange={(ev) => ctx.update('width', ev)}
+          />
+
+          <InlineRangeInput
+            fieldName="imageHeight"
+            min={256}
+            max={1280}
+            step={128}
+            value={ctx.store.height ?? ctx.state.agnaiModel?.init.height ?? 1024}
+            label="Image Height"
+            onChange={(ev) => ctx.update('height', ev)}
+          />
+
+          <InlineRangeInput
+            fieldName="imageCfg"
+            value={ctx.store.cfg ?? ctx.state.agnaiModel?.init.cfg ?? 9}
+            label="Guidance Scale"
+            min={1}
+            max={10}
+            step={0.2}
+            onChange={(ev) => ctx.update('cfg', ev)}
+          />
+
+          <Toggle
+            label="Auto-santisize Prompt"
+            helperText="Prompts have underscores replaced and excess whitespace/commas removed"
+            value={ctx.store.autofix ?? false}
+            onChange={(ev) => ctx.update('autofix', ev)}
+          />
+
+          <TextInput
+            fieldName="seed"
+            value={ctx.store.seed ?? 0}
+            label="Seed"
+            type="number"
+            helperText="Seed number (0 = random). Note: The seed will not be consistent across different servers."
+            onChange={(ev) =>
+              ctx.update(
+                'seed',
+                Math.max(0, Math.min(+ev.currentTarget.value, Number.MAX_SAFE_INTEGER))
+              )
+            }
+          />
+
+          <TextInput
+            fieldName="imagePrefix"
+            value={ctx.store.prefix}
+            label="Prompt Prefix"
+            helperText="(Optional) Text to prepend to your image prompt"
+            placeholder={`E.g.: best quality, masterpiece`}
+            onChange={(ev) => ctx.update('prefix', ev.currentTarget.value)}
+          />
+
+          <TextInput
+            fieldName="imageSuffix"
+            value={ctx.store.suffix}
+            label="Prompt Suffix"
+            helperText="(Optional) Text to append to your image prompt"
+            placeholder={`E.g.: full body, visible legs, dramatic lighting`}
+            onChange={(ev) => ctx.update('suffix', ev.currentTarget.value)}
+          />
+
+          <TextInput
+            fieldName="imageNegative"
+            label="Negative Prompt"
+            helperText="(Optional) Negative Prompt"
+            placeholder={`E.g.: painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, disfigured`}
+            value={ctx.store.negative}
+            onChange={(ev) => ctx.update('negative', ev.currentTarget.value)}
+          />
+        </form>
+      </RootModal>
+
+      <Modal
+        title="Edit Summary Preset"
+        show={editPreset()}
+        close={() => setEditPreset(false)}
+        maxWidth="half"
+        footer={presetFooter()}
+      >
+        <ModeGenSettings
+          page="image-settings"
+          preset={summaryPreset.current}
+          setters={presetSetters}
+          close={() => setEditPreset(false)}
+          presetId={ctx.store.summaryPresetId}
+          onPresetChanged={() => setEditPreset(false)}
+          footer={setPresetFooter}
+        />
+      </Modal>
+    </>
+  )
+}
+
+export type ChatImageSettings = ReturnType<ReturnType<typeof useCurrentChatImageSettings>>
+
+export function useCurrentChatImageSettings() {
+  const isChat = isChatPageMemo()
+
+  const user = userStore((s) => ({ cfg: s.user?.images }))
+  const entity = chatStore((s) => ({
+    chat: s.details[s.lastChatId]?.chat,
+    char: s.details[s.lastChatId]?.char,
+  }))
+
+  const cfg = createMemo(() => {
+    if (!isChat() || !entity.chat) return { chatId: undefined, ...user.cfg }
+
+    if (
+      !entity.chat.imageSource ||
+      entity.chat.imageSource === 'chat' ||
+      !entity.char?.imageSettings
+    ) {
+      return { chatId: entity.chat._id, ...entity.chat.imageSettings }
     }
 
-    const items = Array.from(map.entries())
-      .sort(([, l], [, r]) => (l > r ? -1 : l === r ? 0 : 1))
-      .map(([name, count]) => ({
-        label: `${name} (${count})`,
-        value: name,
-      }))
-    return items
+    return { chatId: entity.chat._id, ...entity.char.imageSettings }
   })
 
-  createEffect(() => {
-    settingStore.getHordeImageWorkers()
-  })
-
-  const samplers = Object.entries(SD_SAMPLER_REV).map(([key, value]) => ({
-    label: value,
-    value: key,
-  }))
-  return (
-    <>
-      <div class="text-xl">Horde</div>
-      <Select
-        fieldName="hordeImageModel"
-        items={models()}
-        label="Model"
-        value={props.cfg?.horde?.model || 'stable_diffusion'}
-      />
-      <Select
-        fieldName="hordeSampler"
-        items={samplers}
-        label="Sampler"
-        value={props.cfg?.horde?.sampler || SD_SAMPLER['DPM++ 2M']}
-      />
-    </>
-  )
+  return cfg
 }
 
-const SDSettings: Component<{ cfg: ImageSettings | undefined }> = (props) => {
-  const samplers = Object.entries(SD_SAMPLER_REV).map(([key, value]) => ({
-    label: value,
-    value: key,
-  }))
-  return (
-    <>
-      <div class="text-xl">Stable Diffusion</div>
-      <TextInput
-        fieldName="sdUrl"
-        label="Stable Diffusion WebUI URL"
-        helperText="Base URL for Stable Diffusion. E.g. https://local-tunnel-url-10-20-30-40.loca.lt. If you are self-hosting, you can use http://localhost:7860"
-        placeholder="E.g. https://local-tunnel-url-10-20-30-40.loca.lt"
-        value={props.cfg?.sd?.url}
-      />
-      <Select
-        fieldName="sdSampler"
-        items={samplers}
-        label="Sampler"
-        value={props.cfg?.sd?.sampler || SD_SAMPLER['DPM++ 2M']}
-      />
-    </>
-  )
+const SUMMARY_PROMPTS = {
+  booru: `Write an image caption of the current moment using physical descriptions without names. Respond using comma-separated BOORU TAGS`,
+  plain: `Write an image caption of the current moment using physical descriptions without names. Respond using comma-separated simple descriptors`,
+  simple: `Write a Brief image caption of the current moment using physical descriptions without names. Respond using comma-separated simple descriptors`,
 }
-
-const AgnaiSettings: Component<{ cfg: ImageSettings | undefined }> = (props) => {
-  const settings = settingStore((s) => {
-    const models = s.config.serverConfig?.imagesModels || []
-    return {
-      models,
-      names: models.map((m) => ({ label: m.desc.trim(), value: m.id || m.name })),
-    }
-  })
-
-  const [curr, setCurr] = createSignal(props.cfg?.agnai?.model)
-  const [sampler, setSampler] = createSignal(props.cfg?.agnai?.sampler)
-
-  createEffect(
-    on(
-      () => props.cfg,
-      () => {
-        setCurr(props.cfg?.agnai?.model)
-        setSampler(props.cfg?.agnai?.sampler || SD_SAMPLER['Euler a'])
-      }
-    )
-  )
-
-  const model = createMemo(() => {
-    const original = props.cfg?.agnai?.model
-    const id =
-      settings.models.length === 1
-        ? settings.models[0].id || settings.models[0].name
-        : curr() || original
-    const match = settings.models.find((m) => m.id === id || m.name === id)
-    return match
-  })
-
-  const samplers = createMemo(() => {
-    return Object.entries(SD_SAMPLER_REV).map(([key, value]) => ({
-      label: value,
-      value: key,
-    }))
-  })
-
-  return (
-    <>
-      <div class="text-xl">Agnaistic</div>
-      <Show when={settings.models.length === 0}>
-        <i>No additional options available</i>
-      </Show>
-      <Select
-        fieldName="agnaiModel"
-        label="Agnaistic Image Model"
-        items={settings.names}
-        value={curr()}
-        disabled={settings.models.length <= 1}
-        classList={{ hidden: settings.models.length === 0 }}
-        onChange={(ev) => setCurr(ev.value)}
-      />
-
-      <Select
-        fieldName="agnaiSampler"
-        items={samplers()}
-        label={`Sampler ${sampler()}`}
-        value={sampler()}
-        onChange={(ev) => setSampler(ev.value)}
-      />
-
-      <Show when={!!model()}>
-        <div>
-          <table class="table-auto border-separate border-spacing-2 ">
-            <thead>
-              <tr>
-                <Th />
-                <Th>Steps</Th>
-                <Th>CFG</Th>
-                <Th>Width</Th>
-                <Th>Height</Th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <Td>Recommended</Td>
-                <Td>{model()?.init.steps}</Td>
-                <Td>{model()?.init.cfg}</Td>
-                <Td>{model()?.init.width}</Td>
-                <Td>{model()?.init.height}</Td>
-              </tr>
-
-              <tr>
-                <Td>Maximums</Td>
-                <Td>{model()?.limit.steps}</Td>
-                <Td>{model()?.limit.cfg}</Td>
-                <Td>{model()?.limit.width}</Td>
-                <Td>{model()?.limit.height}</Td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </Show>
-    </>
-  )
-}
-
-const Th: Component<{ children?: any }> = (props) => (
-  <th
-    class="rounded-md border-[var(--bg-600)] p-2 font-bold"
-    classList={{ border: !!props.children, 'bg-[var(--bg-700)]': !!props.children }}
-  >
-    {props.children}
-  </th>
-)
-const Td: Component<{ children?: any }> = (props) => (
-  <td class="rounded-md border-[var(--bg-600)] p-2 " classList={{ border: !!props.children }}>
-    {props.children}
-  </td>
-)
+// `Write an image caption of the current moment in time using physical descriptions without names. Respond using comma-separate BOORU TAGS.`

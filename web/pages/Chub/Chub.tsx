@@ -1,7 +1,6 @@
 import { Component, Show, createEffect, createMemo, createSignal, onMount } from 'solid-js'
 import PageHeader from '../../shared/PageHeader'
 import { setComponentPageTitle } from '../../shared/util'
-import Tabs from '../../shared/Tabs'
 import FilterSettings from './FilterSettings'
 import CharList from './CharList'
 import BookList from './BookList'
@@ -14,6 +13,8 @@ import { Page } from '/web/Layout'
 import { ListFilter } from 'lucide-solid'
 import Button from '/web/shared/Button'
 import Modal from '/web/shared/Modal'
+import { ChubEntity, chubStore } from '/web/store/chub'
+import Tabs from '/web/shared/Tabs'
 
 const chubTabs = {
   characters: 'Characters',
@@ -25,11 +26,20 @@ type Tab = keyof typeof chubTabs
 const Chub: Component = () => {
   const params = useParams()
   const nav = useNavigate()
+
   const tabs: Tab[] = ['characters', 'lorebooks']
 
   const [tab, setTab] = createSignal(0)
-  const [charModal, setCharModal] = createSignal<{ char: NewCharacter; fullPath: string }>()
-  const [bookModal, setBookModal] = createSignal<{ book: AppSchema.MemoryBook; fullPath: string }>()
+  const [charModal, setCharModal] = createSignal<{
+    char: NewCharacter
+    fullPath: string
+    entity: ChubEntity
+  }>()
+  const [bookModal, setBookModal] = createSignal<{
+    book: AppSchema.MemoryBook
+    fullPath: string
+    entity: ChubEntity
+  }>()
   const [loading, setLoading] = createSignal(false)
   const [filter, setFilter] = createSignal(false)
 
@@ -40,6 +50,7 @@ const Chub: Component = () => {
 
   onMount(() => {
     window.flag('chub', true)
+    chubStore.initTags()
   })
 
   const currentTab = createMemo(() => tabs[tab()])
@@ -65,19 +76,25 @@ const Chub: Component = () => {
         />
       </div>
       <div class="flex flex-col gap-4">
-        <div class={currentTab() === 'characters' ? tabClass : 'hidden'}>
-          <CharList
-            loading={() => setLoading(true)}
-            setChar={(char, fullPath) => {
-              setCharModal({ char, fullPath })
-              setLoading(false)
-            }}
-          />
-        </div>
+        <Show when={currentTab() === 'characters'}>
+          <div class={currentTab() === 'characters' ? tabClass : 'hidden'}>
+            <CharList
+              loading={() => setLoading(true)}
+              setChar={(char, fullPath, entity) => {
+                setCharModal({ char, fullPath, entity })
+                setLoading(false)
+              }}
+            />
+          </div>
+        </Show>
 
-        <div class={currentTab() === 'lorebooks' ? tabClass : 'hidden'}>
-          <BookList setBook={(book, fullPath) => setBookModal({ book, fullPath })} />
-        </div>
+        <Show when={currentTab() === 'lorebooks'}>
+          <div class={currentTab() === 'lorebooks' ? tabClass : 'hidden'}>
+            <BookList
+              setBook={(book, fullPath, entity) => setBookModal({ book, fullPath, entity })}
+            />
+          </div>
+        </Show>
       </div>
       <div>
         <sub>
@@ -91,7 +108,12 @@ const Chub: Component = () => {
         </sub>
       </div>
       <Show when={loading() || !!charModal()}>
-        <ChubImportCharModal show={true} close={() => setCharModal()} char={charModal()?.char} />
+        <ChubImportCharModal
+          show={true}
+          close={() => setCharModal()}
+          char={charModal()?.char}
+          entity={charModal()?.entity}
+        />
       </Show>
       <Show when={bookModal()}>
         <ChubImportBookModal
@@ -99,12 +121,28 @@ const Chub: Component = () => {
           close={() => setBookModal()}
           fullPath={bookModal()!.fullPath}
           book={bookModal()!.book}
+          entity={bookModal()!.entity}
         />
       </Show>
       <Modal
         show={filter()}
         close={() => setFilter(false)}
-        footer={<Button onClick={() => setFilter(false)}>Close</Button>}
+        footer={
+          <>
+            <Button schema="secondary" onClick={() => setFilter(false)}>
+              Close
+            </Button>
+
+            <Button
+              onClick={() => {
+                chubStore.setPage(1)
+                chubStore.getEntities()
+              }}
+            >
+              Search
+            </Button>
+          </>
+        }
       >
         <FilterSettings />
       </Modal>

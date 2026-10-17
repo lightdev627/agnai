@@ -1,96 +1,65 @@
-import { AdapterProps } from './type'
-import { replaceTags } from '/common/presets/templates'
-import { getContextLimit } from '/common/prompt'
-import { promptOrderToSections } from '/common/prompt-order'
-import { parseTemplate } from '/common/template-parser'
-import { AppSchema, TokenCounter } from '/common/types'
+import { AppLog } from '../middleware'
 
-export function renderMessagesToPrompt(
-  preset: AppSchema.GenSettings,
-  messages: Array<{ role: string; content: string }>
+/**
+ * @destructive
+ * mutates the messages list: adds the image data (base64) to the last user message
+ */
+export function remapMessages(
+  messages: Array<{ role: string; content: any }>,
+  maps: { image?: (image: string) => any; text?: (text: string) => any }
 ) {
-  const output: string[] = []
+  if (!messages) return messages
 
-  const systems: string[] = []
-  let lastTag: 'system' | 'user' | 'bot' = messages[0]?.role as any
-
-  for (let i = 0; i < messages.length; ++i) {
-    const msg = messages[i]
-    const tag = msg.role === 'system' ? 'system' : msg.role === 'user' ? 'user' : 'bot'
-
-    if (tag === 'system') {
-      systems.push(msg.content)
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) {
+      continue
     }
 
-    if (systems.length && tag !== 'system') {
-      output.push(`<system>${systems.join('\n\n')}</system>`)
-      systems.length = 0
-    }
+    for (let i = 0; i < msg.content.length; i++) {
+      const item = msg.content[i]
+      if (item.type === 'text') {
+        msg.content[i] = maps.text?.(item.text) || item
+        continue
+      }
 
-    if (tag !== 'system') {
-      output.push(`<${tag}>${msg.content}</${tag}>`)
+      if (!item.image_url?.url) continue
+      msg.content[i] = maps.image?.(item.image_url.url) || item
+      continue
     }
   }
 
-  if (systems.length) {
-    output.push(`<system>${systems.join('\n\n')}</system>`)
-  }
-
-  if (lastTag !== 'bot') {
-    output.push(`<bot>`)
-  }
-
-  const template = output.join('\n\n')
-  const prompt = replaceTags(template, preset.modelFormat || 'ChatML')
-  return { prompt, stop: replaceTags('</bot>', preset.modelFormat || 'ChatML') }
-}
-
-export async function toChatMessages(opts: AdapterProps, counter: TokenCounter) {
-  const sections = promptOrderToSections({
-    format: opts.gen.modelFormat,
-    order: opts.gen.promptOrder,
-  })
-
-  const maxContext = getContextLimit(opts.user, opts.gen)
-
-  const system = await parse(opts, counter, sections.system)
-  const defs = await parse(opts, counter, sections.defs)
-  const post = await parse(opts, counter, sections.post)
-  const note = opts.char.insert
-    ? await parse(opts, counter, opts.char.insert.prompt)
-    : { parsed: '', count: 0 }
-
-  let limit = maxContext - system.count - defs.count - post.count - note.count
-  const history = await parse(opts, counter, sections.history, limit)
-
-  const messages = [
-    { role: 'system', content: system.parsed },
-    { role: 'user', content: defs.parsed },
-  ]
-
-  const sender = (opts.impersonate?.name || opts.sender.handle) + ':'
-  for (const line of history.sections.sections.history) {
-    const role = line.startsWith(sender) ? 'user' : 'assistant'
-    messages.push({ role, content: line })
-  }
-
-  messages.push({ role: 'assistant', content: post.parsed })
   return messages
 }
 
-async function parse(opts: AdapterProps, counter: TokenCounter, text: string, limit?: number) {
-  const template = replaceTags(text, 'None')
-  const { parsed, sections } = await parseTemplate(template, {
-    char: opts.char,
-    chat: opts.chat,
-    jsonValues: {},
-    sender: opts.sender,
-    impersonate: opts.impersonate,
-    lines: opts.lines,
-    limit: limit ? { context: limit, encoder: counter } : undefined,
-  })
+/**
+ * @destructive
+ * mutates the messages list: adds the image data (base64) to the last user message
+ */
+export function remapImageContent(
+  messages: Array<{ role: string; content: any }>,
+  block: (image: string) => any
+) {
+  if (!messages) return messages
 
-  const count = await counter(parsed)
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue
 
-  return { parsed, count, sections }
+    for (let i = 0; i < msg.content.length; i++) {
+      const item = msg.content[i]
+      if (item.type === 'text') continue
+      if (item.image_url?.url) continue
+      msg.content[i] = block(item.image_url.url)
+    }
+  }
+
+  return messages
+}
+
+export function logPayload(logger: AppLog, payload: any) {
+  if (!payload.messages) {
+    logger.debug({ ...payload, prompt: null }, 'Payload')
+    return
+  }
+
+  logger.debug({ ...payload, messages: null }, 'Payload')
 }

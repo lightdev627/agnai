@@ -1,17 +1,16 @@
 import { Edit, Save } from 'lucide-solid'
-import { Component, createEffect, createMemo, createSignal, JSX, on, onMount, Show } from 'solid-js'
+import { Component, createEffect, createMemo, createSignal, JSX, on, Show } from 'solid-js'
 import { AppSchema } from '../../../../common/types/schema'
 import Button from '../../../shared/Button'
 import Divider from '../../../shared/Divider'
-import Select, { Option } from '../../../shared/Select'
+import Select from '../../../shared/Select'
 import { chatStore } from '../../../store'
 import { memoryStore } from '../../../store'
-import EditMemoryForm, { EntrySort } from '../../Memory/EditMemory'
 import EmbedContent from '../../Memory/EmbedContent'
 import { EditEmbedModal } from '/web/shared/EditEmbedModal'
 import { Portal } from 'solid-js/web'
-import { createStore } from 'solid-js/store'
-import { emptyBook } from '/common/memory'
+import { embedApi } from '/web/store/embeddings'
+import { ManageMemoryBooks } from './ManageMemoryBooks'
 
 const ChatMemoryModal: Component<{
   chat: AppSchema.Chat | undefined
@@ -24,16 +23,8 @@ const ChatMemoryModal: Component<{
     embeds: s.embeds,
   }))
 
-  const [id, setId] = createSignal('')
   const [embedId, setEmbedId] = createSignal(props.chat?.userEmbedId)
   const [editingEmbed, setEditingEmbed] = createSignal<boolean>(false)
-  const [state, setState] = createStore<AppSchema.MemoryBook>(emptyBook())
-  const [entrySort, setEntrySort] = createSignal<EntrySort>('creationDate')
-  const updateEntrySort = (item: Option<string>) => {
-    if (item.value === 'creationDate' || item.value === 'alpha') {
-      setEntrySort(item.value)
-    }
-  }
 
   createEffect(
     on(
@@ -45,100 +36,32 @@ const ChatMemoryModal: Component<{
     )
   )
 
-  const changeBook = async (id: string) => {
-    const nextId = id === 'new' ? '' : id
-    setId(nextId)
-    console.log('nextid', nextId)
-    await Promise.resolve()
-
-    const match: AppSchema.MemoryBook | undefined =
-      id === 'new' || id === ''
-        ? {
-            _id: '',
-            userId: '',
-            entries: [],
-            kind: 'memory',
-            name: '',
-            description: '',
-          }
-        : books.books.list.find((book) => book._id === nextId)
-
-    if (match) setState(match)
-  }
-
-  createEffect(() => {
-    if (!props.chat) return
-    if (!props.chat.memoryId) return
-
-    if (props.chat.memoryId) {
-      changeBook(props.chat.memoryId)
-    }
-  })
-
-  const onSubmit = () => {
-    if (id() === '') {
-      memoryStore.create(state, (next) => {
-        setId(next._id)
-        useMemoryBook()
-      })
-    } else {
-      memoryStore.update(id(), state)
-    }
-  }
-
-  const useMemoryBook = (nextId?: string) => {
-    if (!props.chat?._id) return
-    chatStore.editChat(
-      props.chat._id,
-      { memoryId: nextId === undefined ? id() : nextId },
-      undefined
-    )
-  }
-
   const useUserEmbed = () => {
     if (!props.chat?._id) return
-    chatStore.editChat(props.chat._id, { userEmbedId: embedId() }, undefined)
-  }
+    const id = embedId()
+    chatStore.editChat(props.chat._id, { userEmbedId: id })
 
-  const Footer = (
-    <>
-      <Button schema="secondary" onClick={props.close}>
-        Close
-      </Button>
-      <Button onClick={onSubmit} disabled={!state.entries.length}>
-        <Save />
-        Save Memory Book
-      </Button>
-    </>
-  )
+    if (id) {
+      embedApi.loadDocument(id)
+    }
+  }
 
   const embeds = createMemo(() => {
     return [{ label: 'None', value: '' }].concat(
-      books.embeds.map((em) => ({ label: `${em.id} [${em.state}]`, value: em.id }))
+      books.embeds.map((em) => ({ label: `${em.name} [${em.state}]`, value: em.id }))
     )
-  })
-
-  onMount(() => {
-    props.footer?.(Footer)
   })
 
   return (
     <>
       <div class="flex flex-col gap-2">
-        <Select
-          fieldName="memoryId"
-          label="Chat Memory Book"
-          helperText="The memory book your chat will use"
-          items={[{ label: 'None', value: '' }].concat(books.items)}
-          value={id()}
-          onChange={(item) => {
-            changeBook(item.value)
-            useMemoryBook(item.value)
+        <ManageMemoryBooks
+          bookIds={props.chat?.memoryId || ''}
+          updateIds={(next) => {
+            if (!props.chat?._id) return
+            chatStore.editChat(props.chat?._id, { memoryId: next })
           }}
         />
-        <div>
-          <Button onClick={() => changeBook('new')}>Create New Memory Book</Button>
-        </div>
 
         <Divider />
         <Show when={books.embeds.length > 0}>
@@ -160,17 +83,23 @@ const ChatMemoryModal: Component<{
               Use Embedding
             </Button>
 
-            <Show when={embedId() === props.chat?.userEmbedId}>
-              <Button
-                class="w-fit"
-                schema="secondary"
-                disabled={editingEmbed() || !props.chat?.userEmbedId}
-                onClick={() => setEditingEmbed(true)}
-              >
-                <Edit size={16} />
-                Edit
-              </Button>
-            </Show>
+            <Button
+              class="w-fit"
+              disabled={editingEmbed() || !embedId()}
+              onClick={() => setEditingEmbed(true)}
+            >
+              <Edit size={16} />
+              Edit
+            </Button>
+
+            <Button
+              schema="error"
+              class="w-fit"
+              disabled={!embedId()}
+              onClick={() => embedApi.removeDocument(embedId()!)}
+            >
+              Remove
+            </Button>
           </div>
           <Portal>
             <EditEmbedModal
@@ -182,16 +111,6 @@ const ChatMemoryModal: Component<{
           <Divider />
         </Show>
         <EmbedContent />
-
-        <div class="text-sm">
-          <EditMemoryForm
-            hideSave
-            state={state}
-            entrySort={entrySort()}
-            updateEntrySort={updateEntrySort}
-            setter={setState}
-          />
-        </div>
       </div>
     </>
   )

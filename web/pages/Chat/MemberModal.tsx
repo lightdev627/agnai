@@ -1,19 +1,32 @@
-import { ArchiveRestore, ArrowBigLeft, Crown, Eye, EyeOff, Mail, Plus, Trash } from 'lucide-solid'
+import {
+  ArchiveRestore,
+  ArrowBigLeft,
+  Crown,
+  Eye,
+  EyeOff,
+  HatGlasses,
+  Mail,
+  Plus,
+  Speech,
+  Trash,
+} from 'lucide-solid'
 import { Component, createMemo, createSignal, For, Match, onMount, Show, Switch } from 'solid-js'
 import { AppSchema } from '../../../common/types/schema'
 import AvatarIcon, { CharacterAvatar } from '../../shared/AvatarIcon'
 import Button from '../../shared/Button'
 import { ConfirmModal } from '../../shared/Modal'
-import { characterStore, chatStore, toastStore, userStore } from '../../store'
+import { characterStore, chatStore, responseStore, toastStore, userStore } from '../../store'
 import TextInput from '../../shared/TextInput'
 import { v4 } from 'uuid'
 import { isLoggedIn } from '/web/store/api'
 import CharacterSelectList from '/web/shared/CharacterSelectList'
-import { getActiveBots } from './util'
+import { useEditableBots, useParticipantList } from './util'
 import Divider from '/web/shared/Divider'
 import Convertible from '../../shared/Mode/Convertible'
 import { CreateCharacterForm } from '../Character/CreateCharacterForm'
 import Accordian from '/web/shared/Accordian'
+import CharacterSelect from '/web/shared/CharacterSelect'
+import { wait } from '/common/util'
 
 type View = 'list' | 'invite_user' | 'add_character' | 'temp_character'
 
@@ -26,6 +39,22 @@ const MemberModal: Component<{
   const [view, setView] = createSignal<View>('list')
   const [editCharId, setEditCharId] = createSignal<string>()
   const [footer, setFooter] = createSignal<any>()
+
+  const editableChars = useEditableBots()
+
+  const charBeingEdited = createMemo(() => {
+    return editableChars().find((ch) => ch._id === editCharId())
+  })
+
+  const changeEditingChar = async (char: AppSchema.Character | undefined) => {
+    const prev = editCharId()
+    if (prev === char?._id) return
+
+    setEditCharId('')
+    if (!char) return
+    await wait(0.2)
+    setEditCharId(char._id)
+  }
 
   const Footer = (
     <>
@@ -95,7 +124,17 @@ const MemberModal: Component<{
                 close={closeEditor}
                 temp={editCharId()?.startsWith('temp') || !editCharId()}
                 onSuccess={(char) => setEditCharId(char._id)}
-              />
+              >
+                <Show when={editableChars().length > 1}>
+                  <CharacterSelect
+                    class="w-full"
+                    fieldName="editingId"
+                    items={editableChars()}
+                    value={charBeingEdited()}
+                    onChange={changeEditingChar}
+                  />
+                </Show>
+              </CreateCharacterForm>
             </Match>
             <Match when={view() === 'add_character'}>
               <AddCharacter setView={setView} />
@@ -115,43 +154,12 @@ const ParticipantsList: Component<{
   charId: string
   edit: (charId: string) => void
 }> = (props) => {
-  const self = userStore()
-  const chars = characterStore()
-  const state = chatStore()
+  const self = userStore((s) => ({ user: s.user, profile: s.profile }))
+  const state = chatStore((s) => ({ active: s.details[s.lastChatId], chatId: s.lastChatId }))
+
+  const lists = useParticipantList()
 
   const [deleting, setDeleting] = createSignal<AppSchema.Profile>()
-
-  const charMembers = createMemo<AppSchema.Character[]>(() => {
-    const active = getActiveBots(
-      state.active?.chat!,
-      chars.characters.map,
-      state.active?.chat.tempCharacters || {}
-    )
-
-    const needsImpersonate =
-      chars.impersonating && active.every((a) => a._id !== chars.impersonating?._id)
-    if (needsImpersonate) {
-      active.unshift(chars.impersonating!)
-    }
-
-    active.sort((left, right) => left.name.localeCompare(right.name))
-
-    return active
-  })
-
-  const temps = createMemo(() => {
-    const chat = state.active?.chat
-    if (!chat) return { active: [], inactive: [], deleted: [] }
-
-    if (!chat.tempCharacters) return { active: [], inactive: [], deleted: [] }
-
-    const all = Object.values(chat.tempCharacters)
-    const active = all.filter((char) => char.favorite !== false && !char.deletedAt)
-    const inactive = all.filter((char) => char.favorite === false && !char.deletedAt)
-    const deleted = all.filter((ch) => !!ch.deletedAt)
-
-    return { active, inactive, deleted }
-  })
 
   const isOwner = createMemo(() => self.user?._id === state.active?.chat.userId)
 
@@ -162,12 +170,6 @@ const ParticipantsList: Component<{
     chatStore.uninviteUser(state.active?.chat._id, member.userId)
   }
 
-  const users = createMemo(() => {
-    if (!self.profile) return []
-    const participants = state.active?.participantIds?.map((id) => state.memberIds[id]) || []
-    return [self.profile].concat(participants.sort((a, b) => a.handle.localeCompare(b.handle)))
-  })
-
   const removeChar = (charId: string) => {
     if (!state.active?.chat) return
     chatStore.removeCharacter(state.active.chat._id, charId)
@@ -175,7 +177,7 @@ const ParticipantsList: Component<{
 
   return (
     <>
-      <For each={users()}>
+      <For each={lists().users}>
         {(member) => (
           <UserParticipant
             member={member}
@@ -185,7 +187,7 @@ const ParticipantsList: Component<{
           />
         )}
       </For>
-      <For each={charMembers()}>
+      <For each={lists().chars}>
         {(char) => (
           <CharacterParticipant
             char={char}
@@ -193,16 +195,17 @@ const ParticipantsList: Component<{
             canRemove={props.charId !== char._id}
             isMain={props.charId === char._id}
             edit={props.edit}
+            chat={state.active.chat}
           />
         )}
       </For>
 
-      <Show when={temps().active.length > 0 || temps().inactive.length > 0}>
+      <Show when={lists().tempsActive.length > 0 || lists().tempsInactive.length > 0}>
         <Divider />
         <h3>Temporary Characters</h3>
       </Show>
 
-      <For each={temps().active}>
+      <For each={lists().tempsActive}>
         {(char) => (
           <CharacterParticipant
             chat={state.active?.chat}
@@ -215,11 +218,11 @@ const ParticipantsList: Component<{
         )}
       </For>
 
-      <Show when={temps().active.length > 0 || temps().inactive.length > 0}>
+      <Show when={lists().tempsActive.length > 0 || lists().tempsInactive.length > 0}>
         <Divider />
       </Show>
 
-      <For each={temps().inactive}>
+      <For each={lists().tempsInactive}>
         {(char) => (
           <CharacterParticipant
             chat={state.active?.chat}
@@ -232,13 +235,13 @@ const ParticipantsList: Component<{
         )}
       </For>
 
-      <Show when={temps().deleted.length > 0}>
+      <Show when={lists().tempsDeleted.length > 0}>
         <Accordian
           open={false}
           title={<span class="text-600">Deleted Temporary Characters</span>}
           class="bg-800"
         >
-          <For each={temps().deleted}>
+          <For each={lists().tempsDeleted}>
             {(char) => (
               <CharacterParticipant
                 chat={state.active?.chat}
@@ -264,8 +267,8 @@ const ParticipantsList: Component<{
 }
 
 const AddCharacter: Component<{ setView: (view: View) => {} }> = (props) => {
-  const state = chatStore()
-  const chars = characterStore()
+  const state = chatStore((s) => ({ active: s.details[s.lastChatId] }))
+  const chars = characterStore((s) => ({ characters: s.characters }))
 
   onMount(() => {
     if (!chars.characters.loaded) {
@@ -315,7 +318,7 @@ const AddCharacter: Component<{ setView: (view: View) => {} }> = (props) => {
 
 const InviteUser: Component<{ setView: (view: View) => {} }> = (props) => {
   let ref: any
-  const state = chatStore()
+  const state = chatStore((s) => ({ active: s.details[s.lastChatId] }))
 
   const [userId, setUserId] = createSignal('')
 
@@ -394,10 +397,10 @@ const CharacterParticipant: Component<{
   canRemove: boolean
   isMain: boolean
   remove: (charId: string) => void
-  chat?: AppSchema.Chat
+  chat: AppSchema.Chat | undefined
   edit?: (charId: string) => void
 }> = (props) => {
-  const isTemp = createMemo(() => props.char._id.startsWith('temp-'))
+  const isTemp = createMemo(() => props.char._id?.startsWith('temp-'))
 
   const toggleTempChar = (state: boolean) => {
     if (!props.chat) return
@@ -437,53 +440,70 @@ const CharacterParticipant: Component<{
           <div class="text-xs italic text-[var(--text-600)]">
             {props.isMain
               ? 'Main Character'
-              : props.char._id.startsWith('temp-')
+              : props.char._id?.startsWith('temp-')
               ? 'Temporary Character'
               : 'Character'}
           </div>
         </div>
       </div>
 
-      <Show when={!isTemp()}>
-        <Show when={!props.canRemove}>
-          <Button schema="clear" onClick={() => {}} disabled>
-            <Trash size={16} class="opacity-50" />
+      <div class="flex gap-2">
+        <Show when={!props.char.deletedAt}>
+          <Button
+            schema="clear"
+            class="px-2"
+            onClick={() => responseStore.request(props.chat?._id!, props.char._id)}
+          >
+            <Speech size={16} />
           </Button>
         </Show>
-        <Show when={props.canRemove}>
-          <Button schema="clear" onClick={() => props.remove(props.char._id)}>
-            <Trash size={16} />
-          </Button>
-        </Show>
-      </Show>
 
-      <Show when={props.chat && isTemp()}>
-        <div class="flex gap-2">
+        <Show when={!isTemp()}>
+          <Button schema="clear" onClick={() => characterStore.impersonate(props.char)}>
+            <HatGlasses size={16} />{' '}
+          </Button>
+          <Show when={!props.canRemove}>
+            <Button schema="clear" onClick={() => {}} disabled>
+              <Trash size={16} class="opacity-50" />
+            </Button>
+          </Show>
+          <Show when={props.canRemove}>
+            <Button schema="clear" onClick={() => props.remove(props.char._id)}>
+              <Trash size={16} />
+            </Button>
+          </Show>
+        </Show>
+
+        <Show when={props.chat && isTemp()}>
           <Show when={!props.char.deletedAt && props.char.favorite !== false}>
-            <Button schema="clear" class="px-2" size="sm" onClick={() => toggleTempChar(false)}>
+            <Button schema="clear" class="px-2" onClick={() => toggleTempChar(false)}>
               <Eye size={16} />
             </Button>
           </Show>
 
           <Show when={!props.char.deletedAt && props.char.favorite === false}>
-            <Button schema="clear" class="px-2" size="sm" onClick={() => toggleTempChar(true)}>
+            <Button schema="clear" class="px-2" onClick={() => toggleTempChar(true)}>
               <EyeOff size={16} color="var(--bg-500)" />
             </Button>
           </Show>
 
+          <Button schema="clear" onClick={() => characterStore.impersonate(props.char)}>
+            <HatGlasses size={16} />{' '}
+          </Button>
+
           <Show when={!props.char.deletedAt}>
-            <Button schema="clear" class="px-2" size="sm" onClick={() => deleteTempChar()}>
+            <Button schema="clear" class="px-2" onClick={() => deleteTempChar()}>
               <Trash size={16} />
             </Button>
           </Show>
 
           <Show when={!!props.char.deletedAt}>
-            <Button schema="clear" class="px-2" size="sm" onClick={() => restoreTempChar()}>
+            <Button schema="clear" class="px-2" onClick={() => restoreTempChar()}>
               <ArchiveRestore size={16} />
             </Button>
           </Show>
-        </div>
-      </Show>
+        </Show>
+      </div>
     </div>
   )
 }

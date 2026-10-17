@@ -15,6 +15,15 @@ let notifier: Notifier = {
 }
 let emitter = (_payload: { type: string }) => {}
 
+export function joinThoughtTokens(accum: string, thoughts: string) {
+  if (!thoughts.trim()) return accum
+  if (!accum.trim() && thoughts) {
+    return thoughts
+  }
+
+  return `<think>${thoughts}</think>${accum}`
+}
+
 export function setEmitter(emit: (payload: { type: string }) => void) {
   emitter = emit
 }
@@ -31,69 +40,83 @@ export function notify() {
   return notifier
 }
 
-export function sanitiseAndTrim(
-  text: string,
-  prompt: string,
-  char: AppSchema.Character,
-  characters: Record<string, AppSchema.Character> | undefined,
-  members: AppSchema.Profile[]
-) {
-  const parsed = sanitise(text.replace(prompt, ''))
-  const trimmed = trimResponseV2(parsed, char, members, characters, ['END_OF_DIALOG'])
-    .split(`${char.name}:`)
-    .join('')
-  return trimmed || parsed
-}
-
 export function sanitise(generated: string) {
   // If want to support code blocks we need to remove the excess whitespace removal as it breaks indents
   return (generated || '').trim()
 }
 
-export function trimResponseV2(
-  generated: string,
-  char: AppSchema.Character,
-  members: AppSchema.Profile[],
-  bots: Record<string, AppSchema.Character> | undefined,
-  endTokens: string[] = []
-) {
-  const allEndTokens = getEndTokens(null, members)
+export function getChoiceProp<T = any>(json: any, prop: string, assign?: any) {
+  const choice = json?.choices?.[0]
+  let value = choice?.delta?.[prop] || choice?.[prop] || json?.[prop]
 
-  generated = generated.split(`${char.name} :`).join(`${char.name}:`)
+  const isThought = prop === 'reasoning' || prop === 'thought'
+  const isToken = prop === 'content' || prop === 'text'
 
-  for (const member of members) {
-    if (!member.handle) continue
-    generated = generated.split(`${member.handle} :`).join(`${member.handle}:`)
+  // Mistral returns arrays as in their deltas for some bizarre reason
+  if (Array.isArray(value)) {
+    if (!isThought) return
+    const first = value[0]
+    if (!first) return
+
+    if (first.type !== 'thinking') return
+    if (!first.thinking?.[0]) return
+    return first.thinking?.[0]?.text
   }
 
-  if (bots) {
-    for (const bot of Object.values(bots)) {
-      if (!bot) continue
-      if (bot?._id === char._id) continue
-      endTokens.push(`${bot.name}:`)
-    }
+  if (typeof value !== 'string' && (isToken || isThought)) return
+
+  if (assign && value) {
+    assign[prop] = value
   }
 
-  let index = -1
-  let trimmed = allEndTokens.concat(...endTokens).reduce((prev, endToken) => {
-    const idx = generated.indexOf(endToken)
+  return value as T
+}
 
-    if (idx === -1) return prev
+export function getNextTokens(json: any) {
+  const props = ['content', 'text']
 
-    const text = generated.slice(0, idx)
-    if (index === -1 || idx < index) {
-      index = idx
-      return text
-    }
+  const choice = json?.choices?.[0]
+  let value: any = undefined
 
-    return prev
-  }, '')
+  for (const prop of props) {
+    const match = choice?.delta?.[prop] || choice?.[prop] || json?.[prop]
+    if (!match) continue
 
-  if (index === -1) {
-    return sanitise(generated.split(`${char.name}:`).join(''))
+    value = match
+    break
   }
 
-  return sanitise(trimmed.split(`${char.name}:`).join(''))
+  return value
+}
+
+export function getNextThoughts(json: any) {
+  const props = ['reasoning', 'thought', 'reasoning_content']
+  const choice = json?.choices?.[0]
+
+  let value: any = undefined
+  for (const prop of props) {
+    const match = choice?.delta?.[prop] || choice?.[prop] || json?.[prop]
+    if (!match) continue
+
+    value = match
+    break
+  }
+
+  if (!value) return
+
+  if (typeof value === 'string') return value
+
+  // Mistral returns thoughts in an array for some reason string
+  if (Array.isArray(value)) {
+    const first = value[0]
+    if (!first) return
+
+    if (first.type !== 'thinking') return
+    if (!first.thinking?.[0]) return
+    return first.thinking?.[0]?.text
+  }
+
+  return
 }
 
 export function getEndTokens(
@@ -113,4 +136,87 @@ export function getEndTokens(
 
   const uniqueTokens = Array.from(new Set(baseEndTokens))
   return uniqueTokens
+}
+
+export function joinUrl(base: string, path: string) {
+  if (base.endsWith('/')) {
+    base = base.slice(0, -1)
+  }
+
+  if (path?.startsWith('/')) {
+    path = path.slice(1)
+  }
+
+  return `${base}/${path}`
+}
+
+export async function getThirdPartyModels(url: string, key: string) {
+  const headers: any = {
+    Accept: 'application/json',
+    'anthropic-version': '2023-06-01',
+    'Content-Type': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:58.0) Gecko/20100101 Firefox/58.0',
+  }
+
+  if (key) {
+    headers.Authorization = `Bearer ${key}`
+    headers['x-api-key'] = key
+  }
+
+  {
+    const res = await fetch(joinUrl(url, 'models'), { headers, method: 'GET' })
+      .then((res) => res.json())
+      .catch((err) => ({ err }))
+
+    if (res && 'err' in res === false) {
+      if (Array.isArray(res)) {
+        return { data: res, url }
+      }
+
+      if (Array.isArray(res?.data)) {
+        res.url = url
+        return res
+      }
+    }
+  }
+  const autoUrl = joinUrl(url, 'v1')
+  const res = await fetch(joinUrl(autoUrl, 'models'), { headers, method: 'GET' })
+    .then((res) => res.json())
+    .catch((err) => ({ err }))
+
+  if (res && 'err' in res === false) {
+    if (Array.isArray(res?.data)) {
+      res.url = autoUrl
+      return res
+    }
+
+    if (Array.isArray(res)) {
+      return { data: res, url: autoUrl }
+    }
+  }
+
+  return
+}
+
+const OFFICIAL_OAI_URL = `https://api.openai.com`
+
+export function getOaiCompatibleUrl(
+  preset: Partial<AppSchema.GenSettings>,
+  isThirdParty?: boolean
+) {
+  if (isThirdParty && preset.thirdPartyUrl) {
+    if (!preset.providerId && preset.thirdPartyUrlNoSuffix) {
+      return { url: preset.thirdPartyUrl, changed: true }
+    }
+
+    // If the user provides a versioned API URL for their third-party API, use that. Otherwise
+    // fall back to the standard /v1 URL.
+    const version = preset.thirdPartyUrl.match(/\/v\d+/) ? '' : '/v1'
+    return { url: preset.thirdPartyUrl + version, changed: true }
+  }
+
+  return {
+    url: OFFICIAL_OAI_URL.includes('/v1') ? OFFICIAL_OAI_URL : `${OFFICIAL_OAI_URL}/v1`,
+    changed: false,
+  }
 }

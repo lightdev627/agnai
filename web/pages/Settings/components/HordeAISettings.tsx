@@ -1,9 +1,9 @@
-import { Component, For, Show, createEffect, createMemo, createSignal } from 'solid-js'
+import { Component, For, Show, createEffect, createMemo, createSignal, on } from 'solid-js'
 import TextInput from '../../../shared/TextInput'
 import { settingStore, userStore } from '../../../store'
 import Button from '../../../shared/Button'
 import { Option } from '../../../shared/Select'
-import { Save, X } from 'lucide-solid'
+import { Check, Save, X } from 'lucide-solid'
 import { RootModal } from '../../../shared/Modal'
 import MultiDropdown from '../../../shared/MultiDropdown'
 import { HordeModel, HordeWorker } from '../../../../common/adapters'
@@ -11,11 +11,11 @@ import { Toggle } from '../../../shared/Toggle'
 import { toArray } from '/common/util'
 import { Pill } from '/web/shared/Card'
 import { SetStoreFunction } from 'solid-js/store'
-import { AppSchema } from '/common/types'
+import { UserSettings } from '../util'
 
 const HordeAISettings: Component<{
-  state: AppSchema.User
-  setter: SetStoreFunction<AppSchema.User>
+  state: UserSettings
+  setter: SetStoreFunction<UserSettings>
 }> = (props) => {
   const state = userStore((s) => ({
     stats: s.metadata?.hordeStats,
@@ -119,7 +119,6 @@ const HordeAISettings: Component<{
           props.state.hordeName || props.state.hordeKey ? 'API key has been verified' : ''
         }
         type="password"
-        value={props.state.hordeKey}
         onChange={(ev) => props.setter('hordeKey', ev.currentTarget.value)}
       />
 
@@ -143,7 +142,7 @@ const HordeAISettings: Component<{
       </div>
 
       <ModelModal show={showModels()} close={() => setShowModels(false)} save={onSaveHordeModels} />
-      <WorkerModal show={show()} close={() => setShow(false)} save={onSaveHordeWorkers} />
+      <HordeWorkerModal show={show()} close={() => setShow(false)} save={onSaveHordeWorkers} />
     </>
   )
 }
@@ -151,8 +150,8 @@ const HordeAISettings: Component<{
 export default HordeAISettings
 
 export const HordeDetails: Component<{ maxTokens: number; maxContextLength: number }> = (props) => {
-  const user = userStore()
-  const cfg = settingStore((c) => c.config.horde)
+  const user = userStore((s) => ({ user: s.user }))
+  const cfg = settingStore((c) => ({ horde: c.config.horde }))
 
   const status = createMemo(() => {
     const m = new Set(
@@ -167,7 +166,7 @@ export const HordeDetails: Component<{ maxTokens: number; maxContextLength: numb
     let excluded = 0
     let unwanted = 0
 
-    const matches = cfg.workers.filter((wrk) => {
+    const matches = cfg.horde.workers.filter((wrk) => {
       if (m.size > 0) {
         if (!wrk.models.some((model) => m.has(model))) {
           unwanted++
@@ -200,7 +199,7 @@ export const HordeDetails: Component<{ maxTokens: number; maxContextLength: numb
     <>
       <div class="text-lg font-bold">Horde Status</div>
       Number of Horde Workers that match your preset: {status().matches.length} /{' '}
-      {cfg.workers.length}.<br />
+      {cfg.horde.workers.length}.<br />
       Workers excluded by your Max Tokens ({props.maxTokens}) / Max Context Length (
       {props.maxContextLength}): {status().excluded}
     </>
@@ -213,7 +212,7 @@ const ModelModal: Component<{
   save: (items: Option[]) => void
 }> = (props) => {
   const cfg = settingStore((s) => ({
-    models: s.models.slice().map(toItem),
+    models: s.models.slice().map(toHordeModelItem),
   }))
 
   const state = userStore((s) => ({
@@ -233,14 +232,14 @@ const ModelModal: Component<{
     <RootModal
       show={props.show}
       close={props.close}
-      title="Specify AI Horde Models"
+      title="Select Horde Models"
       footer={
         <>
           <Button schema="secondary" onClick={props.close}>
             <X /> Cancel
           </Button>
           <Button onClick={save}>
-            <Save /> Select Model(s)
+            <Save /> Save
           </Button>
         </>
       }
@@ -265,24 +264,38 @@ const ModelModal: Component<{
   )
 }
 
-const WorkerModal: Component<{
+export const HordeWorkerModal: Component<{
   show: boolean
   close: () => void
+  initial?: string[]
   save: (items: Option[]) => void
 }> = (props) => {
   const cfg = settingStore((s) => ({
     workers: s.workers.slice().sort(sortWorkers).map(toWorkerItem),
   }))
 
-  const state = userStore()
+  const state = userStore((s) => ({ user: s.user }))
 
   const [selected, setSelected] = createSignal<Option[]>()
+
+  createEffect(
+    on(
+      () => props.show,
+      (showing) => {
+        if (!showing) return
+
+        const set = new Set(props.initial || [])
+        const curr = cfg.workers.filter((w) => set.has(w.value))
+        setSelected(curr)
+      }
+    )
+  )
 
   const save = () => {
     if (selected()) {
       props.save(selected()!)
     } else if (state.user?.hordeWorkers) {
-      props.save(cfg.workers.filter((w) => state.user?.hordeWorkers!.includes(w.value)))
+      props.save([])
     }
 
     props.close()
@@ -292,14 +305,14 @@ const WorkerModal: Component<{
     <RootModal
       show={props.show}
       close={props.close}
-      title="Specify AI Horde Workers"
+      title="Select Horde Workers"
       footer={
         <>
           <Button schema="secondary" onClick={props.close}>
             <X /> Cancel
           </Button>
           <Button onClick={save}>
-            <Save /> Select Workers
+            <Check /> Accept
           </Button>
         </>
       }
@@ -330,15 +343,15 @@ const WorkerModal: Component<{
   )
 }
 
-function toItem(model: HordeModel) {
+export function toHordeModelItem(model: HordeModel) {
   return {
     label: `${model.name} - (count: ${model.count}, queue: ${model.queued}, eta: ${model.eta})`,
     value: model.name,
   }
 }
 
-function sortWorkers({ models: l }: HordeWorker, { models: r }: HordeWorker) {
-  return l[0] > r[0] ? 1 : l[0] === r[0] ? 0 : -1
+function sortWorkers(l: HordeWorker, r: HordeWorker) {
+  return l.models[0] > r.models[0] ? 1 : l.models[0] === r.models[0] ? 0 : -1
 }
 
 function toWorkerItem(wkr: HordeWorker): Option {

@@ -5,24 +5,32 @@ import { Star, Users } from 'lucide-solid'
 import TextInput from './TextInput'
 import { chatStore } from '../store'
 import { toMap } from './util'
-import Divider from './Divider'
+import { Pill } from './Card'
+import { isChatPageMemo, useLocalStorage } from './hooks'
+import { Toggle } from './Toggle'
 
 export type Option<T extends string = string> = {
   label: string
   value: T
 }
 
+const MAX_DISPLAY = 50
+
 const CharacterSelectList: Component<{
   items: AppSchema.Character[]
   emptyLabel?: string
   ignoreActive?: boolean
   onSelect: (item: AppSchema.Character | undefined) => void
+  adornment?: Component<{ char: AppSchema.Character }>
 }> = (props) => {
-  const chats = chatStore()
+  const chats = chatStore((s) => ({ active: s.details[s.lastChatId] }))
   const [_ref, setRef] = createSignal<any>()
   const [search, setSearch] = createSignal('')
+  const [noDesc, setNoDesc] = useLocalStorage('impersonate-no-descriptions', false)
+  const chatPage = isChatPageMemo()
 
   const current = createMemo(() => {
+    if (!chatPage()) return
     if (!chats.active?.chat || props.ignoreActive) return
 
     const chars: AppSchema.Character[] = []
@@ -44,7 +52,7 @@ const CharacterSelectList: Component<{
   })
 
   const sorted = createMemo(() => {
-    return narrow(props.items, search(), current()?.map)
+    return narrow(props.items, search(), noDesc(), current()?.map)
   })
 
   const onChange = (value: AppSchema.Character | undefined) => {
@@ -66,6 +74,21 @@ const CharacterSelectList: Component<{
             onKeyUp={(e) => setSearch(e.currentTarget.value)}
             ref={assignRef}
           />
+
+          <Toggle
+            reverse
+            value={noDesc()}
+            onChange={(ev) => setNoDesc(ev)}
+            helperText={`Don't Search Descriptions`}
+          />
+
+          <Show when={props.items.length > MAX_DISPLAY}>
+            <div class="flex w-full justify-center">
+              <Pill type="orange" small>
+                Too many characters to display - Use the search field
+              </Pill>
+            </div>
+          </Show>
           <Show when={props.emptyLabel}>
             <div
               class="bg-700 flex w-full cursor-pointer flex-row items-center justify-between gap-4 rounded-xl px-2 py-1"
@@ -84,52 +107,13 @@ const CharacterSelectList: Component<{
           <Show when={current()?.list?.length}>
             <For each={current()?.list}>
               {(item) => (
-                <div
-                  class="bg-700 flex w-full cursor-pointer flex-row items-center justify-between gap-4 rounded-xl px-2 py-1"
-                  onClick={() => onChange(item)}
-                >
-                  <div class="ellipsis flex h-3/4 items-center gap-4">
-                    <CharacterAvatar char={item} format={{ size: 'sm', corners: 'circle' }} />
-
-                    <div class="ellipsis flex w-full flex-col">
-                      <div class="ellipsis font-bold">{item.name}</div>
-                      <div class="ellipsis">{item.description}</div>
-                    </div>
-                  </div>
-                  <div>
-                    <div class="hidden flex-row items-center justify-center gap-2 sm:flex">
-                      <Show when={item.favorite}>
-                        <Star class="icon-button fill-[var(--text-900)] text-[var(--text-900)]" />
-                      </Show>
-                    </div>
-                  </div>
-                </div>
+                <CharacterSelectItem char={item} onClick={onChange} adornment={props.adornment} />
               )}
             </For>
-            <Divider />
           </Show>
           <For each={sorted()}>
             {(item) => (
-              <div
-                class="bg-700 flex w-full cursor-pointer flex-row items-center justify-between gap-4 rounded-xl px-2 py-1"
-                onClick={() => onChange(item)}
-              >
-                <div class="ellipsis flex h-3/4 items-center gap-4">
-                  <CharacterAvatar char={item} format={{ size: 'sm', corners: 'circle' }} />
-
-                  <div class="ellipsis flex w-full flex-col">
-                    <div class="ellipsis font-bold">{item.name}</div>
-                    <div class="ellipsis">{item.description}</div>
-                  </div>
-                </div>
-                <div>
-                  <div class="hidden flex-row items-center justify-center gap-2 sm:flex">
-                    <Show when={item.favorite}>
-                      <Star class="icon-button fill-[var(--text-900)] text-[var(--text-900)]" />
-                    </Show>
-                  </div>
-                </div>
-              </div>
+              <CharacterSelectItem char={item} onClick={onChange} adornment={props.adornment} />
             )}
           </For>
         </div>
@@ -138,9 +122,49 @@ const CharacterSelectList: Component<{
   )
 }
 
-function wordMatch(char: AppSchema.Character, word: string) {
+export const CharacterSelectItem: Component<{
+  char: AppSchema.Character
+  nodesc?: boolean
+  onClick: (char: AppSchema.Character) => void
+  adornment?: Component<{ char: AppSchema.Character }>
+}> = (props) => {
+  return (
+    <div class="flex w-full max-w-full gap-2">
+      <div
+        class="bg-700 flex flex-1 cursor-pointer flex-row items-center justify-between gap-4 overflow-auto rounded-xl px-2 py-1"
+        onClick={() => props.onClick(props.char)}
+      >
+        <div class="ellipsis flex items-center gap-4">
+          <CharacterAvatar char={props.char} format={{ size: 'sm', corners: 'circle' }} />
+
+          <div class="ellipsis flex w-full flex-col">
+            <div class="ellipsis font-bold">{props.char.name}</div>
+            <div class="ellipsis" classList={{ hidden: !!props.nodesc }}>
+              {props.char.description}
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="hidden flex-row items-center justify-center gap-2 sm:flex">
+            <Show when={props.char.favorite}>
+              <Star class="icon-button fill-[var(--text-900)] text-[var(--text-900)]" />
+            </Show>
+          </div>
+        </div>
+      </div>
+      <Show when={props.adornment}>
+        <div class="flex w-fit min-w-fit items-center">
+          {props.adornment!({ char: props.char })}
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+function wordMatch(char: AppSchema.Character, word: string, noDesc?: boolean) {
   if (char.name.toLowerCase().includes(word)) return true
-  if (char.description && char.description.toLowerCase().includes(word)) return true
+  if (!noDesc && char.description && char.description.toLowerCase().includes(word)) return true
+
   return false
 }
 
@@ -149,7 +173,8 @@ export default CharacterSelectList
 function narrow(
   chars: AppSchema.Character[],
   search: string,
-  exclude?: Record<string, AppSchema.Character>
+  noDesc: boolean,
+  exclude: Record<string, AppSchema.Character> | undefined
 ) {
   const words = search
     .trim()
@@ -163,10 +188,11 @@ function narrow(
       if (exclude && i._id in exclude) return false
       if (!words.length) return true
       for (let word of words) {
-        return wordMatch(i, word)
+        return wordMatch(i, word, noDesc)
       }
     })
     .sort(faveSort)
+    .slice(0, MAX_DISPLAY)
 }
 
 function faveSort(a: AppSchema.Character, b: AppSchema.Character) {

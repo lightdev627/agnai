@@ -1,5 +1,5 @@
-import { Component, createEffect, createSignal } from 'solid-js'
-import { RequestDocEmbed } from '/web/store/embeddings/types'
+import { Component, createEffect, createSignal, on } from 'solid-js'
+import { EmbeddedDocument } from '/web/store/embeddings/types'
 import { embedApi } from '/web/store/embeddings'
 import { toastStore } from '/web/store'
 import Button from '/web/shared/Button'
@@ -10,31 +10,36 @@ import TextInput from '/web/shared/TextInput'
 export const EditEmbedModal: Component<{ show: boolean; embedId?: string; close: () => void }> = (
   props
 ) => {
-  let form: HTMLFormElement | undefined
-
   const [loading, setLoading] = createSignal(false)
+  const [name, setName] = createSignal('')
   const [text, setText] = createSignal('')
 
-  createEffect(async () => {
-    if (!props.show || !props.embedId) return
+  createEffect(
+    on(
+      () => [props.show, props.embedId],
+      async () => {
+        if (!props.show || !props.embedId) return
 
-    setLoading(true)
-    let doc: RequestDocEmbed | undefined
-    try {
-      doc = await embedApi.cache.getDoc(props.embedId)
-    } finally {
-      setLoading(false)
-    }
+        setLoading(true)
+        let doc: EmbeddedDocument | undefined
+        try {
+          doc = await embedApi.cache.getDoc(props.embedId)
+        } finally {
+          setLoading(false)
+        }
 
-    if (doc) {
-      // get the content of the document by combining all the lines
-      const lines = doc.documents.map((d) => d.msg).join('\n')
-      setText(lines)
-    } else {
-      toastStore.error(`Failed to load embedding ${props.embedId}`)
-      props.close()
-    }
-  })
+        if (doc) {
+          // get the content of the document by combining all the lines
+          const lines = doc.documents.map((d) => d.msg).join('\n')
+          setName(doc.name)
+          setText(lines)
+        } else {
+          toastStore.error(`Failed to load embedding ${props.embedId}`)
+          props.close()
+        }
+      }
+    )
+  )
 
   const cancel = () => {
     setText('')
@@ -42,17 +47,23 @@ export const EditEmbedModal: Component<{ show: boolean; embedId?: string; close:
   }
 
   const updateEmbed = async () => {
-    if (!form || !props.embedId) return
+    if (!props.embedId) return
 
     setLoading(true)
     try {
+      const embedName = name()
+      if (!embedName.trim()) {
+        toastStore.warn(`Embedding name cannot be empty`)
+        return
+      }
+
       const embedText = text()
       if (!embedText) {
         toastStore.warn(`Embedding content cannot be empty`)
         return
       }
 
-      await embedApi.embedPlainText(props.embedId, embedText)
+      await embedApi.embedPlainText(props.embedId, embedName, embedText)
       toastStore.success('Successfully updated embedding')
       cancel()
     } finally {
@@ -79,7 +90,12 @@ export const EditEmbedModal: Component<{ show: boolean; embedId?: string; close:
       footer={Footer}
       maxWidth="half"
     >
-      <form ref={form}>
+      <div class="flex flex-col gap-2">
+        <TextInput
+          label="Document Name"
+          value={name()}
+          onChange={(ev) => setName(ev.currentTarget.value)}
+        />
         <TextInput
           label="Content"
           helperText="The content to be embedded. Use line breaks to seperate lines."
@@ -89,7 +105,7 @@ export const EditEmbedModal: Component<{ show: boolean; embedId?: string; close:
           required
           disabled={loading()}
         />
-      </form>
+      </div>
     </Modal>
   )
 }

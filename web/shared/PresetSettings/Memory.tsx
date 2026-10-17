@@ -1,13 +1,11 @@
 import { Component } from 'solid-js'
-import { Card } from '../Card'
 import RangeInput from '../RangeInput'
-import { PresetTabProps } from './types'
-import { defaultPresets } from '/common/default-preset'
+import { PresetTabProps } from '/web/store/preset-context'
 
 export const MemorySettings: Component<PresetTabProps> = (props) => {
   return (
     <div class="flex flex-col gap-4" classList={{ hidden: props.tab !== 'Memory' }}>
-      <Card class="flex flex-col gap-2">
+      <div class="flex flex-col gap-2">
         <RangeInput
           fieldName="memoryContextLimit"
           label="Memory: Context Limit"
@@ -15,9 +13,9 @@ export const MemorySettings: Component<PresetTabProps> = (props) => {
           min={1}
           max={2000}
           step={1}
-          value={props.state.memoryContextLimit || defaultPresets.basic.memoryContextLimit}
+          value={props.state.memoryContextLimit ?? 500}
           disabled={props.state.disabled}
-          onChange={(ev) => props.setter('memoryContextLimit', ev)}
+          onChange={(ev) => props.setters.setState('memoryContextLimit', ev)}
         />
 
         <RangeInput
@@ -27,9 +25,9 @@ export const MemorySettings: Component<PresetTabProps> = (props) => {
           min={1}
           max={10000}
           step={1}
-          value={props.state.memoryChatEmbedLimit || defaultPresets.basic.memoryContextLimit}
+          value={props.state.memoryChatEmbedLimit ?? 500}
           disabled={props.state.disabled}
-          onChange={(ev) => props.setter('memoryChatEmbedLimit', ev)}
+          onChange={(ev) => props.setters.setState('memoryChatEmbedLimit', ev)}
         />
 
         <RangeInput
@@ -39,9 +37,9 @@ export const MemorySettings: Component<PresetTabProps> = (props) => {
           min={1}
           max={10000}
           step={1}
-          value={props.state.memoryUserEmbedLimit || defaultPresets.basic.memoryContextLimit}
+          value={props.state.memoryUserEmbedLimit ?? 500}
           disabled={props.state.disabled}
-          onChange={(ev) => props.setter('memoryUserEmbedLimit', ev)}
+          onChange={(ev) => props.setters.setState('memoryUserEmbedLimit', ev)}
         />
 
         <RangeInput
@@ -51,11 +49,11 @@ export const MemorySettings: Component<PresetTabProps> = (props) => {
           min={1}
           max={100}
           step={1}
-          value={props.state.memoryDepth || defaultPresets.basic.memoryDepth}
+          value={props.state.memoryDepth || 50}
           disabled={props.state.disabled}
-          onChange={(ev) => props.setter('memoryDepth', ev)}
+          onChange={(ev) => props.setters.setState('memoryDepth', ev)}
         />
-      </Card>
+      </div>
     </div>
   )
 }

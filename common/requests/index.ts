@@ -1,15 +1,17 @@
+import { getPresetConnection } from '../providers'
 import { handleOAI } from './openai'
 import { getLocalPayload } from './payloads'
 import { PayloadOpts } from './types'
 import { emit } from './util'
 import { GenerateRequestV2 } from '/srv/adapter/type'
 
-export async function handleLocalRequest(body: GenerateRequestV2, prompt: string) {
-  if (body.settings?.service !== 'kobold') {
-    throw new Error(`Cannot run local request: Preset is not a third-party preset`)
-  }
+export async function handleLocalRequest(
+  body: GenerateRequestV2,
+  signal: AbortController,
+  prompt: string
+) {
+  const stream = startRequest(body, signal, prompt)
 
-  const stream = startRequest(body, prompt)
   let response = ''
 
   for await (const gen of stream) {
@@ -34,7 +36,7 @@ export async function handleLocalRequest(body: GenerateRequestV2, prompt: string
     }
 
     if ('error' in gen) {
-      const message = typeof gen.error === 'string' ? gen.error : gen.error.message
+      const message = typeof gen.error === 'string' ? gen.error : gen.error?.message
       emit({
         type: 'message-error',
         requestId: body.requestId,
@@ -53,15 +55,17 @@ export async function handleLocalRequest(body: GenerateRequestV2, prompt: string
   return { result: { response, requestId: body.requestId }, error: undefined }
 }
 
-function startRequest(request: GenerateRequestV2, prompt: string) {
+function startRequest(request: GenerateRequestV2, signal: AbortController, prompt: string) {
   const opts: PayloadOpts = { ...request, prompt }
   const payload = getLocalPayload(opts)
+
+  const conn = getPresetConnection(request.settings || {}, request.user.providers)
+  opts.settings = conn.preset
 
   switch (request.settings!.thirdPartyFormat) {
     case 'openai':
     case 'openai-chat':
-      return handleOAI(opts, payload)
-
+    case 'openai-chatv2':
     case 'aphrodite':
     case 'exllamav2':
     case 'llamacpp':
@@ -71,6 +75,9 @@ function startRequest(request: GenerateRequestV2, prompt: string) {
     case 'ollama':
     case 'koboldcpp':
     case 'kobold':
+    case 'lm-studio':
+      return handleOAI(opts, signal, payload)
+
     case 'mistral':
     case 'claude':
     default: {

@@ -1,10 +1,14 @@
 import { AppSchema } from '../../common/types/schema'
 import { AppLog } from '../middleware'
-import { ImageSettings } from '/common/types/image-schema'
+import { BaseImageSettings, ImageProviderSettings } from '/common/types/image-schema'
 
 export type ImageGenerateRequest = {
   user: AppSchema.User
   prompt: string
+
+  /** Prompt without any prefix or suffix applied */
+  raw_prompt?: string
+
   source: string
 
   sync?: boolean
@@ -17,14 +21,27 @@ export type ImageGenerateRequest = {
   characterId?: string
   requestId?: string
   parentId: string | undefined
+  params?: {
+    clip_skip?: number
+    cfg_scale?: number
+    width?: number
+    height?: number
+    negative?: string
+    steps?: number
+    sampler?: string
+    seed?: number
+  }
 }
 
 export type ImageRequestOpts = {
   user: AppSchema.User
   prompt: string
   negative: string
-  settings: ImageSettings | undefined
+  settings: BaseImageSettings | undefined
+  provider: ImageProviderSettings
   override?: string
+  raw_prompt: string | undefined
+  params?: ImageGenerateRequest['params']
 }
 
 export type ImageAdapter = (

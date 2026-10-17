@@ -7,7 +7,7 @@ config.json
 .config.json
 log.txt
 __pycache__
-.token_secret
+.token_secret*
 __pycache__
 runtime
 bin
@@ -26,3 +26,5 @@ settings.json
 !llama3.js
 *.key
 *.pub
+.todos.md
+.DS_Store

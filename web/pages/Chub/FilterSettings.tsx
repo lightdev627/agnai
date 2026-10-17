@@ -3,53 +3,15 @@ import TextInput from '../../shared/TextInput'
 import { Toggle } from '../../shared/Toggle'
 import Select from '../../shared/Select'
 import { toDropdownItems } from '../../shared/util'
-import { chubStore } from '../../store/chub'
-
-const sorts = [
-  'Download Count',
-  'ID',
-  'Rating',
-  'Rating Count',
-  'Last Activity',
-  'Creation Date',
-  'Name',
-  'Token Count',
-]
+import { CHUB_SORTS, chubStore } from '../../store/chub'
 
 const FilterSettings: Component = () => {
-  const state = chubStore()
-  // const [include, setInclude] = createSignal<string[]>([])
-  // const [exclude, setExclude] = createSignal<string[]>([])
-
-  const update = () => {
-    chubStore.setPage(1)
-    chubStore.getChars()
-    chubStore.getBooks()
-  }
-
-  // const available = createMemo(() => {
-  //   const inc = new Set(include())
-  //   const exc = new Set(exclude())
-
-  //   return state.officialTags
-  //     .filter((tag) => !inc.has(tag.name) && !exc.has(tag.name))
-  //     .map((t) => ({
-  //       label: `${t.name} (${t.non_private_projects_count})`,
-  //       value: t.name,
-  //     }))
-  // })
-
-  // createEffect(() => {
-  //   const includes = include()
-  //   chubStore.setTags(includes.join(','))
-  //   update()
-  // })
-
-  // createEffect(() => {
-  //   const excludes = exclude()
-  //   chubStore.setExcludeTags(excludes.join(','))
-  //   update()
-  // })
+  const state = chubStore((s) => ({
+    nsfw: s.nsfw,
+    tags: s.tags,
+    excludeTags: s.excludeTags,
+    sort: s.sort as keyof typeof CHUB_SORTS,
+  }))
 
   return (
     <div class="relative flex flex-col gap-2">
@@ -60,25 +22,8 @@ const FilterSettings: Component = () => {
         value={state.nsfw}
         onChange={(v) => {
           chubStore.setNSFW(v)
-          update()
         }}
       />
-
-      {/* <TagInput
-        label="Includes"
-        helperText="Tags to include from search"
-        availableTags={available()}
-        onSelect={setInclude}
-        fieldName="chub_includes"
-      />
-
-      <TagInput
-        label="Excludes"
-        helperText="Tags to exclude from search"
-        availableTags={available()}
-        onSelect={setExclude}
-        fieldName="chub_excludes"
-      /> */}
 
       <TextInput
         fieldName="tags"
@@ -88,7 +33,6 @@ const FilterSettings: Component = () => {
         value={state.tags}
         onChange={(ev) => {
           chubStore.setTags(ev.currentTarget.value)
-          update()
         }}
       />
       <TextInput
@@ -98,18 +42,16 @@ const FilterSettings: Component = () => {
         value={state.excludeTags}
         onChange={(ev) => {
           chubStore.setExcludeTags(ev.currentTarget.value)
-          update()
         }}
       />
 
       <Select
         fieldName="sort"
         label="Sort By"
-        items={toDropdownItems(sorts)}
-        value={state.sort}
+        items={toDropdownItems(CHUB_SORTS)}
+        value={CHUB_SORTS[state.sort] ? state.sort : 'default'}
         onChange={(v) => {
           chubStore.setSort(v.value)
-          update()
         }}
       />
     </div>

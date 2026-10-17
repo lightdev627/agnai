@@ -1,10 +1,131 @@
-import { AppSchema } from './types/schema'
-import { GenerateRequestV2 } from '/srv/adapter/type'
+import { getSchemaAliases, parseVariableName, StructureEntities } from './guidance/json-schema'
+import { Admin } from './types'
+import { FeatureAccess, UserType } from './types/admin'
+import type { AppSchema } from './types/schema'
+import type { GenerateRequestV2 } from '/srv/adapter/type'
 
 export const PING_INTERVAL_MS = 30000
 
+export function stopResponse(opts: { text: string; author: string; stops: string[] }) {
+  let generated = opts.text
+
+  if (opts.author) {
+    generated = generated.split(`${opts.author}:`).join('').trim()
+  }
+
+  let index = -1
+  let trimmed = opts.stops.reduce((prev, endToken) => {
+    const idx = generated.indexOf(endToken)
+
+    if (idx === -1) return prev
+
+    const text = generated.slice(0, idx)
+    if (index === -1 || idx < index) {
+      index = idx
+      return text
+    }
+
+    return prev
+  }, '')
+
+  return trimmed || generated
+}
+
+// this is an edited and inverted ver of https://stackoverflow.com/a/70385497
+export function incompleteJson(data: string) {
+  if (data?.startsWith('{') && !data.endsWith('}')) return true
+  try {
+    const parsed = JSON.parse(data)
+    if (parsed && typeof parsed === 'object') {
+      return false
+    }
+  } catch {
+    return true
+  }
+  return false
+}
+
+export function getUserType(user: AppSchema.User): UserType {
+  if (!user) return 'guests'
+  if (user.admin) return 'admins'
+  if (user.role === 'admin') return 'admins'
+  if (user.role === 'moderator') return 'moderators'
+  if (user.sub?.level && user.sub.level > 0) return 'subscribers'
+  if (user._id === 'anon') return 'guests'
+  return 'users'
+}
+
+export function randomElement<T>(elems: T[]) {
+  const rand = Math.floor(Math.random() * elems.length)
+  return elems[rand]
+}
+
+export function parseEvent(msg: string) {
+  const event: any = {}
+  for (const line of msg.split(/\r?\n/)) {
+    const pos = line.indexOf(':')
+    if (pos === -1) {
+      continue
+    }
+
+    const prop = line.slice(0, pos)
+    const value = line.slice(pos + 1).trim()
+    event[prop] = prop === 'data' ? value.trimStart() : value.trim()
+  }
+
+  return event
+}
+
+export function getMimeTypeBase64(base64: string) {
+  const [start, encode] = base64.split(';')
+  if (!start?.startsWith('data:')) return { mimeType: 'image/jpeg', data: base64 }
+
+  return { mimeType: start.slice(5), data: encode.replace('base64,', '') }
+}
+
 export function replace<T extends { _id: string }>(id: string, list: T[], item: Partial<T>) {
   return list.map((li) => (li._id === id ? { ...li, ...item } : li))
+}
+
+export function updateList<T extends { _id: string }>(original: T[], incoming: T[]) {
+  const map = toMap(incoming)
+  const next: T[] = []
+
+  for (const item of original) {
+    const inc = map[item._id]
+    if (!inc) {
+      next.push(item)
+      continue
+    }
+
+    next.push({ ...item, ...inc })
+  }
+
+  return next
+}
+
+/**
+ * Replace original items with incoming.
+ * Items that don't cause a replacement are appended.
+ */
+export function combine<T extends { _id: string }>(original: T[], incoming: T[]) {
+  const map = toMap(incoming)
+  const replaced: Record<string, boolean> = {}
+
+  const next: T[] = original.map((item) => {
+    if (map[item._id]) {
+      replaced[item._id] = true
+      return map[item._id]
+    }
+    return item
+  })
+
+  for (const inc of incoming) {
+    if (replaced[inc._id]) continue
+    next.push(inc)
+  }
+
+  return next
 }
 
 export function exclude<T extends { _id: string }>(list: T[], ids: string[]) {
@@ -16,6 +137,33 @@ export function findOne<T extends { _id: string }>(id: string, list: T[]): T | v
   for (const item of list) {
     if (item._id === id) return item
   }
+}
+
+export function findLast<T>(list: T[], pred: (value: T) => boolean) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (pred(list[i])) return i
+  }
+
+  return -1
+}
+
+export function joinImagePrompts(prompts: string[]) {
+  const joined = prompts.filter((v) => !!v?.trim()).join(', ')
+  return formatImagePrompt(joined)
+}
+
+export function formatImagePrompt(text: string) {
+  return text
+    .split(',')
+    .filter((v) => !!v?.trim())
+    .join(', ')
+    .replace(/,+/g, ', ')
+    .replace(/ +/g, ' ')
+}
+
+export function round(value: number, places = 2) {
+  const pow = Math.pow(10, places)
+  return Math.round(value * pow) / pow
 }
 
 export function toArray<T>(values?: T | T[]): T[] {
@@ -36,6 +184,7 @@ export function distinct<T extends { _id: string }>(values: T[]) {
 
   return next
 }
+
 export function wait(secs: number) {
   return new Promise((res) => setTimeout(res, secs * 1000))
 }
@@ -71,7 +220,7 @@ export function toDuration(valueSecs: number, full?: boolean) {
 
   if (full) {
     return [`${days}d`, `${hours}h`, `${minutes}m`, `${seconds}s`]
-      .filter((time) => !time.startsWith('0'))
+      .filter((time) => !time?.startsWith('0'))
       .join(':')
   }
 
@@ -143,6 +292,13 @@ const END_SYMBOLS = new Set(`."”;’'*!！?？)}]\`>~`.split(''))
 const MID_SYMBOLS = new Set(`.)}’'!?\``.split(''))
 
 export function trimSentence(text: string) {
+  if (text.trim().endsWith('```')) {
+    // We want pairs of code block symbols
+    const count = text.match(/```/g)?.length
+
+    if (count && count % 2 === 0) return text.trimEnd()
+  }
+
   let index = -1,
     checkpoint = -1
   for (let i = text.length - 1; i >= 0; i--) {
@@ -189,6 +345,21 @@ export function slugify(str: string) {
     .replace(/^-+|-+$/g, '')
 }
 
+export function cleanPrompt(prompt: string) {
+  const next = prompt
+    .replace(/[^0-9a-z_\-,\s\.\(\)\[\]]/gi, '')
+    .trim()
+    .split('\n')
+    .map((line) => line.trim())
+    .join(',')
+    .replace(/ +/, ' ')
+    .replace(/,+/g, ',')
+    .split(',')
+    .map((t) => t.trim().replace(/_/g, ' '))
+    .join(', ')
+  return next
+}
+
 // https://stackoverflow.com/a/3561711
 export function escapeRegex(string: string) {
   return string.replace(/[/\-\\^$*+?.()|[\]{}]/g, '\\$&')
@@ -201,23 +372,39 @@ export function getMessageAuthor(opts: {
   chars: Record<string, AppSchema.Character>
   members: Map<string, AppSchema.Profile>
   sender: AppSchema.Profile
-  impersonate?: AppSchema.Character
-}) {
+  impersonate: AppSchema.Character | undefined
+  replyAs: AppSchema.Character | undefined
+}): { role: 'user' | 'model'; name: string } {
   const { chat, msg, chars, members, sender, impersonate } = opts
 
+  /**
+   * All messages not from the `replying` character should be role:user
+   */
   if (msg.characterId) {
+    if (opts.replyAs?._id === msg.characterId) {
+      return { role: 'model', name: opts.replyAs.name || 'Assistant' }
+    }
+
+    if (opts.impersonate?._id === msg.characterId) {
+      return { role: 'user', name: opts.impersonate.name || 'You' }
+    }
+
     const char =
       msg.characterId === impersonate?._id
         ? impersonate
         : chars[msg.characterId] || chat.tempCharacters?.[msg.characterId]
-    return char?.name || msg.name || 'Unknown'
+
+    return {
+      role: 'user',
+      name: char?.name || msg.name || 'Unknown',
+    }
   }
 
   if (msg.userId) {
-    return members.get(msg.userId)?.handle || sender.handle || 'You'
+    return { role: 'user', name: members.get(msg.userId)?.handle || sender.handle || 'You' }
   }
 
-  return impersonate?.name || sender.handle || 'You'
+  return { role: 'user', name: impersonate?.name || sender.handle || 'You' }
 }
 
 export function getBotName(
@@ -232,7 +419,7 @@ export function getBotName(
   const charId = msg.characterId || ''
   if (!charId) return replyAs?.name || main.name
 
-  if (charId.startsWith('temp-')) {
+  if (charId?.startsWith('temp-')) {
     const temp = chat.tempCharacters?.[charId]
     if (!temp) return main.name
     return temp.name
@@ -362,21 +549,30 @@ export function getUserSubscriptionTier(
   previous?: UserSub
 ): UserSub | undefined {
   let nativeTier = tiers.find((t) => user.sub && t._id === user.sub.tierId)
-  let patronTier = tiers.find((t) => user.patreon?.sub && t._id === user.patreon.sub.tierId)
+  let patronTier = getPatreonEntitledTier(user, tiers)
 
   const manualId = !isExpired(user.manualSub?.expiresAt) ? user.manualSub?.tierId : null
   let manualTier = manualId ? tiers.find((t) => t._id === manualId) : undefined
 
   const nativeExpired = isExpired(user.billing?.validUntil) || user.billing?.status === 'cancelled'
-  const patronExpired =
-    isExpired(user.patreon?.member?.attributes.next_charge_date) ||
-    user.patreon?.member?.attributes.patron_status !== 'active_patron'
+  const patronGifted = user.patreon?.member?.attributes?.is_gifted === true
+  let patronExpired = isExpired(user.patreon?.member?.attributes.next_charge_date)
+
+  // There is a several hour window when subscriptions renew
+  // We will give the benefit of the doubt during this period
+  if (patronExpired) {
+    const isActive = user.patreon?.member?.attributes.patron_status === 'active_patron'
+    const isEntitled = +(user.patreon?.member?.attributes.currently_entitled_amount_cents || 0) > 0
+    const isPaid = user.patreon?.member?.attributes.last_charge_status === 'Paid'
+
+    patronExpired = !isActive || !isEntitled || !isPaid
+  }
 
   if (nativeExpired) {
     nativeTier = undefined
   }
 
-  if (patronExpired) {
+  if (patronExpired && !patronGifted) {
     patronTier = undefined
   }
 
@@ -396,6 +592,35 @@ export function getUserSubscriptionTier(
   }
 
   return result
+}
+
+export function getPatreonEntitledTier(
+  user: Pick<AppSchema.User, 'patreon'>,
+  tiers: AppSchema.SubscriptionTier[]
+) {
+  if (!user.patreon?.tier) return
+  const entitlement = user.patreon.tier.attributes?.amount_cents
+  if (!entitlement) return
+
+  return getPatreonEntitledTierByCost(entitlement, tiers)
+}
+
+export function getPatreonEntitledTierByCost(
+  entitlement: number,
+  tiers: AppSchema.SubscriptionTier[]
+) {
+  if (!entitlement) return
+
+  const tier = tiers.reduce<AppSchema.SubscriptionTier | undefined>((prev, curr) => {
+    if (!curr.enabled || curr.deletedAt) return prev
+    if (!curr.patreon) return prev
+    if (!curr.patreon.tierId) return prev
+    if (curr.patreon.cost > entitlement) return prev
+    if (prev && prev.patreon?.cost! > curr.patreon.cost) return prev
+    return curr
+  }, undefined)
+
+  return tier
 }
 
 function isExpired(expiresAt?: string, graceHrs = 3) {
@@ -422,43 +647,87 @@ function getHighestTier(
   return sorted[0] as any
 }
 
-export function tryParse<T = any>(value?: any): T | undefined {
-  if (!value) return
+export function tryParseConcat<T = any>(value: string, prev?: string): T | undefined {
   try {
-    const obj = JSON.parse(value)
+    const parsed = JSON.parse(value)
+    return parsed
+  } catch (ex) {}
+
+  try {
+    const parsed = JSON.parse(prev + value)
+    return parsed
+  } catch (ex) {}
+
+  return
+}
+
+export function tryParse<T = any>(value?: any, aliases?: Record<string, string>): T | undefined {
+  if (!value) return
+
+  try {
+    const obj =
+      typeof value === 'string' ? JSON.parse(value) : typeof value === 'object' ? value : null
+
+    if (!obj) return
+
+    if (aliases) {
+      for (const key in aliases) {
+        if (key in obj === false) continue
+        const rename = aliases[key]
+        const orig = obj[key]
+        obj[rename] = orig
+        delete obj[key]
+      }
+    }
     return obj
   } catch (ex) {}
 }
 
-export function parsePartialJson(value: string) {
+export function parsePartialJson(value: string, aliases?: Record<string, string>) {
+  if (!value.trim().startsWith('{')) {
+    const index = value.indexOf('{')
+    if (index > -1) {
+      value = value.slice(index)
+    }
+  }
   {
-    const obj = tryParse(value.trim())
+    const obj = tryParse(value.trim(), aliases)
     if (obj) return obj
   }
   {
-    const obj = tryParse(value.trim() + '}')
+    const obj = tryParse(value.trim() + '}', aliases)
     if (obj) return obj
   }
   {
-    const obj = tryParse(value.trim() + '"}')
+    const obj = tryParse(value.trim() + '"}', aliases)
     if (obj) return obj
   }
+
+  return {}
 }
 
 const SAFE_NAME = /[_\/'"!@#$%^&*()\[\],\.:;=+-]+/g
 
-export function hydrateTemplate(def: Ensure<AppSchema.Character['json']>, json: any) {
+export function hydrateTemplate(
+  def: Ensure<AppSchema.Character['json']>,
+  values: any,
+  opts: StructureEntities,
+  aliases?: Record<string, string>
+) {
+  const json = values || {}
   const map = new Map<string, string>()
+  const allAliases = { ...aliases, ...getSchemaAliases(def.schema) }
 
-  for (const key in def.schema) {
-    map.set(key.toLowerCase().replace(SAFE_NAME, ' '), key)
+  for (const field of def.schema) {
+    const parsed = parseVariableName(field.name, opts, allAliases)
+    map.set(parsed.toLowerCase().replace(SAFE_NAME, ' '), field.name)
   }
 
   const output: any = {}
 
   for (const [key, value] of Object.entries(json)) {
-    const safe = key.replace(SAFE_NAME, ' ')
-    const alias = map.get(safe)
+    // const safe = key.replace(SAFE_NAME, ' ')
+    const alias = map.get(key)
 
     if (alias) {
       output[alias] = value
@@ -469,15 +738,19 @@ export function hydrateTemplate(def: Ensure<AppSchema.Character['json']>, json: 
 
   let response = def.response || ''
   let history = def.history || ''
+  let imageCaption = def.imageCaption || ''
 
   const resVars = response.match(JSON_NAME_RE())
   const histVars = history.match(JSON_NAME_RE())
+  const captionVars = imageCaption.match(JSON_NAME_RE())
 
   if (resVars) {
     for (const holder of resVars) {
       const trimmed = holder.slice(2, -2)
-      const safe = trimmed.replace(SAFE_NAME, ' ')
-      const value = output[safe] ?? output[trimmed]
+      const parsed = parseVariableName(trimmed, opts, allAliases)
+      const safe = parsed //.replace(SAFE_NAME, ' ')
+      const value =
+        output[safe] ?? output[parsed] ?? output[trimmed] ?? json[trimmed] ?? json[parsed]
 
       response = response.split(holder).join(value ?? '')
     }
@@ -486,71 +759,47 @@ export function hydrateTemplate(def: Ensure<AppSchema.Character['json']>, json: 
   if (histVars) {
     for (const holder of histVars) {
       const trimmed = holder.slice(2, -2)
-      const safe = trimmed.replace(SAFE_NAME, ' ')
-      const value = output[safe] ?? output[trimmed]
+      const parsed = parseVariableName(trimmed, opts, allAliases)
+      const safe = parsed //.replace(SAFE_NAME, ' ')
+      const value =
+        output[safe] ?? output[parsed] ?? output[trimmed] ?? json[trimmed] ?? json[parsed]
 
       history = history.split(holder).join(value ?? '')
     }
   }
 
-  return { values: output, response, history }
-}
+  if (captionVars) {
+    for (const holder of captionVars) {
+      const trimmed = holder.slice(2, -2)
+      const parsed = parseVariableName(trimmed, opts, allAliases)
+      const safe = parsed //.replace(SAFE_NAME, ' ')
+      const value =
+        output[safe] ?? output[parsed] ?? output[trimmed] ?? json[trimmed] ?? json[parsed]
 
-export type HydratedJson = {
-  values: any
-  response: string
-  history: string
+      imageCaption = imageCaption.split(holder).join(value ?? '')
+    }
+  }
+
+  return { values: output, response, history, imageCaption }
 }
 
 export const JSON_NAME_RE = () => /{{[a-zA-Z0-9 _'!@#$&*%()^=+-:;",\.<>?\/\[\]]+}}/g
 
-export function jsonHydrator(def: Ensure<AppSchema.Character['json']>) {
+export function jsonHydrator(
+  def: Ensure<AppSchema.Character['json']>,
+  opts: StructureEntities,
+  aliases?: Record<string, string>
+) {
   const map = new Map<string, string>()
-  const resVars = (def.response || '').match(JSON_NAME_RE())
-  const histVars = (def.history || '').match(JSON_NAME_RE())
 
   for (const key in def.schema) {
     map.set(key.toLowerCase().replace(SAFE_NAME, ' '), key)
   }
 
-  const hydrate = (json: any) => {
-    const output: any = {}
-
-    for (const [key, value] of Object.entries(json)) {
-      const safe = key.replace(SAFE_NAME, ' ')
-      const alias = map.get(safe)
-
-      if (alias) {
-        output[alias] = value
-      } else {
-        output[key] = value
-      }
-    }
-
-    let response = def.response || ''
-    let history = def.history || ''
-
-    if (resVars) {
-      for (const holder of resVars) {
-        const trimmed = holder.slice(2, -2)
-        const safe = trimmed.replace(SAFE_NAME, ' ')
-        const value = output[safe] ?? output[trimmed]
-
-        response = response.split(holder).join(value ?? '')
-      }
-    }
-
-    if (histVars) {
-      for (const holder of histVars) {
-        const trimmed = holder.slice(2, -2)
-        const safe = trimmed.replace(SAFE_NAME, ' ')
-        const value = output[safe] ?? output[trimmed]
-
-        history = history.split(holder).join(value ?? '')
-      }
-    }
-
-    return { values: output, response, history }
+  const hydrate = (incoming: any) => {
+    const json = typeof incoming === 'string' ? parsePartialJson(incoming, aliases) : incoming
+    const hydrated = hydrateTemplate(def, json, opts, aliases)
+    return hydrated
   }
 
   return hydrate
@@ -561,7 +810,7 @@ export function getSubscriptionModelLimits(
     | Pick<AppSchema.SubscriptionModel, 'subLevel' | 'levels' | 'maxContextLength' | 'maxTokens'>
     | undefined,
   level: number
-) {
+): AppSchema.SubscriptionModelLevel | undefined {
   if (!model) return
 
   const levels = Array.isArray(model.levels) ? model.levels.slice() : []
@@ -577,11 +826,204 @@ export function getSubscriptionModelLimits(
   for (const candidate of levels) {
     if (candidate.level > level) continue
 
-    if (!match || match.level < candidate.level) {
+    if (!match) {
+      match = candidate
+      continue
+    }
+
+    if (match.level < candidate.level) {
+      match = candidate
+      continue
+    }
+
+    // Use the level with the higher context if there is a duplicate
+    // E.g. if the 'model.subLevel' settings and 'model.levels[]' settings conflict
+    if (match.level === candidate.level && match.maxContextLength < candidate.maxContextLength) {
       match = candidate
       continue
     }
   }
 
   return match
+}
+
+export function parseSearchQuery<T = any>(search: string) {
+  const parts = search.startsWith('?') ? search.slice(1).split('&') : search.split('&')
+  return parts.reduce((prev, curr) => {
+    const [key, value] = curr.split('=')
+    prev[key] = value
+    return prev
+  }, {} as any) as T
+}
+
+/**
+ * Converts objects to strings `{ key: value | key: value | ... }` for the purposes of logging.
+ */
+export function inline(obj: object): string {
+  if (typeof obj === 'number' || typeof obj === 'string' || typeof obj === 'boolean') return obj
+
+  const output = Object.entries(obj)
+    .filter(([_, value]) => value !== undefined && value !== null && typeof value !== 'function')
+    .map(([key, value]) => {
+      if (Array.isArray(value)) {
+        const next = value.map(inline).join(', ')
+        return `${bold(key)}: [${next}]`
+      }
+
+      if (value instanceof Date) {
+        return `${bold(key)}: ${value.toISOString()}`
+      }
+
+      if (typeof value === 'object') {
+        return `${bold(key)}: ${inline(value)}`
+      }
+
+      return `${bold(key)}: ${value}`
+    })
+    .join(' | ')
+  return `{ ${output} }`
+}
+
+function bold(text: string) {
+  return `\x1b[1m${text}\x1b[0m`
+}
+
+export function toMap<T extends { _id: string }>(list: T[]): Record<string, T> {
+  const map = list.reduce((prev, curr) => Object.assign(prev, { [curr._id]: curr }), {})
+  return map
+}
+
+export function toPropMap<T extends object, U extends PickProps<T, string>>(
+  list: T[],
+  prop: U
+): Record<string, T> {
+  const map: Record<string, T> = list.reduce((prev, curr) => {
+    const value = curr[prop] as string
+    const next = Object.assign(prev, { [value]: curr })
+    return next
+  }, {})
+  return map
+}
+
+type PickProps<T, U = string> = keyof { [key in keyof T as T[key] extends U ? key : never]: T[key] }
+
+export type LazyPromise<T = any> = {
+  resolve: (result: T) => void
+  reject: (error: any) => void
+  promise: Promise<T>
+}
+
+export function lazyPromise<T = any>() {
+  const parts = {
+    state: 'pending' as 'pending' | 'resolved' | 'rejected',
+    resolve: (result: T) => {},
+    reject: (error: any) => {},
+    promise: {} as any as Promise<{ result?: T; error?: any }>,
+  }
+
+  parts.promise = new Promise<{ result?: T; error?: any }>((resolve, reject) => {
+    parts.resolve = (result: any) => {
+      if (parts.state !== 'pending') return
+      if (parts.state === 'pending') parts.state = 'resolved'
+
+      resolve({ result, error: undefined })
+    }
+    parts.reject = (error: any) => {
+      if (parts.state !== 'pending') return
+      if (parts.state === 'pending') parts.state = 'rejected'
+      reject(error)
+    }
+  })
+
+  return parts
+}
+
+export function lazySimplePromise<T = any>() {
+  const parts = {
+    state: 'pending' as 'pending' | 'resolved' | 'rejected',
+    resolve: (result: T) => {},
+    reject: (error: any) => {},
+    promise: {} as any as Promise<T>,
+  }
+
+  parts.promise = new Promise<T>((resolve, reject) => {
+    parts.resolve = (result: any) => {
+      if (parts.state !== 'pending') return
+      if (parts.state === 'pending') parts.state = 'resolved'
+      resolve(result)
+    }
+    parts.reject = (error: any) => {
+      if (parts.state !== 'pending') return
+      if (parts.state === 'pending') parts.state = 'rejected'
+      reject(error)
+    }
+  })
+
+  return parts
+}
+
+export function sortAlpha<T extends {}>(opts: {
+  prop: keyof T
+
+  /** Descending order? */
+  desc?: boolean
+
+  /** Case insensitive */
+  ignoreCase?: boolean
+}) {
+  const sorter = (left: T, right: T) => {
+    let l = '' + (left[opts.prop] || '')
+    let r = '' + (right[opts.prop] || '')
+
+    if (opts.ignoreCase) {
+      l = l.toLowerCase()
+      r = r.toLowerCase()
+    }
+
+    return l.localeCompare(r) * (opts.desc ? -1 : 1)
+  }
+
+  return sorter
+}
+
+export function getUserFeatureAccess(
+  user: AppSchema.User | undefined,
+  tier: UserSub | undefined
+): Admin.UserType {
+  if (!user) return 'guests'
+  if (user.admin) return 'admins'
+  if (tier && tier.level > 0) return 'subscribers'
+  if (tier && tier.level === 0) return 'users'
+  if (user._id !== 'anon') return 'users'
+
+  return 'guests'
+}
+
+export function canUseFeature(requires: FeatureAccess, userType: UserType): boolean {
+  switch (requires) {
+    case 'off': {
+      return false
+    }
+
+    case 'admins': {
+      return userType === 'admins'
+    }
+
+    case 'subscribers': {
+      return userType === 'subscribers' || userType === 'moderators' || userType === 'admins'
+    }
+
+    case 'users': {
+      return (
+        userType === 'users' ||
+        userType === 'subscribers' ||
+        userType === 'moderators' ||
+        userType === 'admins'
+      )
+    }
+
+    case 'all': {
+      return true
+    }
+  }
 }

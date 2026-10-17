@@ -4,6 +4,8 @@ import { encryptPassword } from './util'
 import { AppSchema } from '../../common/types/schema'
 import { domain } from '../domains'
 import { config } from '../config'
+import { StatusError } from '../api/wrap'
+import { v4 } from 'uuid'
 
 type UsersOpts = {
   username?: string
@@ -31,6 +33,7 @@ export async function getServerConfiguration() {
     imagesEnabled: false,
     imagesHost: '',
     imagesModels: [],
+    imagesLoraUrl: '',
     supportEmail: '',
     ttsAccess: 'off',
     ttsApiKey: '',
@@ -39,14 +42,12 @@ export async function getServerConfiguration() {
     maxGuidanceVariables: 15,
     googleClientId: '',
     googleEnabled: false,
-    charlibPublish: 'off',
-    charlibGuidelines: '',
-    modFieldPrompt: '',
-    modPresetId: '',
-    modPrompt: '',
-    modSchema: [],
     actionCalls: [],
     lockSeconds: 0,
+    stripeCustomerPortal: '',
+    defaultImageModel: '',
+    embedding: '',
+    embeddings: [],
   }
 
   await db('configuration').insertOne(next)
@@ -57,6 +58,60 @@ export async function updateServerConfiguration(update: Partial<AppSchema.Config
   await db('configuration').updateOne({ kind: 'configuration' }, { $set: update }, { upsert: true })
   const cfg = await getServerConfiguration()
   return cfg
+}
+
+export async function createServerEmbedding(embed: AppSchema.ServerEmbedding) {
+  const cfg = await getServerConfiguration()
+  const embeddings = cfg.embeddings || []
+
+  if (!embed._id) {
+    embed._id = v4()
+  }
+
+  embeddings.push(embed)
+
+  await updateServerConfiguration({ embeddings })
+  cfg.embeddings = embeddings
+
+  return cfg
+}
+
+export async function updateServerEmbedding(embed: AppSchema.ServerEmbedding) {
+  const cfg = await getServerConfiguration()
+  const embeddings = cfg.embeddings || []
+
+  if (!cfg.embeddings) {
+    throw new StatusError('Cannot update embedding: Embeddings not found in config', 500)
+  }
+
+  if (!embed._id) {
+    throw new StatusError('Cannot update embedding: ID not supplied', 400)
+  }
+
+  let updated = false
+  const next = embeddings.map((e) => {
+    if (e._id !== embed._id) return e
+
+    updated = true
+    if (!embed.key) embed.key = e.key
+    return embed
+  })
+
+  if (!updated) {
+    throw new StatusError('Cannot update embedding: Embedding not found', 400)
+  }
+
+  await updateServerConfiguration({ embeddings: next })
+  cfg.embeddings = next
+  return cfg
+}
+
+export async function setPasswordResetCode(userId: string) {
+  const code = v4()
+
+  await db('user').updateOne({ _id: userId }, { $set: { resetCode: code } })
+
+  return { code }
 }
 
 export async function getUsers(opts: UsersOpts = {}) {
@@ -88,6 +143,21 @@ export async function getUsers(opts: UsersOpts = {}) {
   }
 
   const list = await db('user').find(filter).skip(skip).limit(200).toArray()
+
+  if (!list.length && opts.username) {
+    const char = await db('character').findOne({ _id: opts.username })
+    const preset = await db('gen-setting').findOne({ _id: opts.username })
+    const chat = await db('chat').findOne({ _id: opts.username })
+
+    const userId = char?.userId || preset?.userId || chat?.userId
+    if (!userId) {
+      return []
+    }
+
+    const user = await db('user').findOne({ _id: userId })
+    return user ? [user] : []
+  }
+
   return list
 }
 
@@ -109,21 +179,57 @@ export async function getUserInfo(userId: string) {
         patreon: 1,
         stripeSessions: 1,
         google: 1,
+        banned: 1,
       },
     }
   )
   const profile = await db('profile').findOne({ userId })
-  const chats = await db('chat').countDocuments({ userId })
-  const characters = await db('character').countDocuments({ userId })
+  // const chats = await db('chat').countDocuments({ userId })
+  // const characters = await db('character').countDocuments({ userId })
   const state = await domain.subscription.getAggregate(userId)
 
   return {
     userId,
-    chats,
-    characters,
+    chats: 0,
+    characters: 0,
     handle: profile?.handle,
     avatar: profile?.avatar,
     state,
     ...billing,
   }
+}
+
+export async function banUser(userId: string, reason: string) {
+  await db('user').updateOne(
+    { _id: userId },
+    {
+      $set: {
+        banned: {
+          at: new Date(),
+          reason: reason || 'No reason given',
+        },
+      },
+    }
+  )
+
+  const next = await getUserInfo(userId)
+  return next
+}
+
+export async function unbanUser(userId: string) {
+  const user = await db('user').findOne({ _id: userId })
+  if (!user) {
+    throw new StatusError(`User not found`, 404)
+  }
+
+  if (!user.banned) {
+    throw new StatusError(`User not banned`, 400)
+  }
+
+  const banHistory = user.banHistory || []
+  banHistory.push(user.banned)
+
+  await db('user').updateOne({ _id: userId }, { $set: { banHistory, banned: null as any } })
+  const next = await getUserInfo(userId)
+  return next
 }

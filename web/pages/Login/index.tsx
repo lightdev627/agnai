@@ -12,11 +12,13 @@ import { TitleCard } from '/web/shared/Card'
 import { Page } from '/web/Layout'
 import { useGoogleReady } from '/web/shared/hooks'
 import { createStore } from 'solid-js/store'
+import { wait } from '/common/util'
 
 const LoginPage: Component = () => {
   setComponentPageTitle('Login')
-  const store = userStore()
-  const cfg = settingStore()
+  const store = userStore((s) => ({ error: s.error, loggedIn: s.loggedIn, loading: s.loading }))
+  const cfg = settingStore((s) => ({ config: s.config }))
+  const [query] = useSearchParams()
 
   const [register, setRegister] = createSignal(false)
 
@@ -34,17 +36,26 @@ const LoginPage: Component = () => {
     <Page class="flex w-full flex-col items-center">
       <div class="my-4 border-b border-white/5" />
       <PageHeader
-        title={<div class="flex w-full justify-center">Welcome</div>}
+        title={
+          <div class="flex w-full justify-center">
+            <Show when={query.callback} fallback="Welcome">
+              Authorizing
+            </Show>
+          </div>
+        }
         subtitle={
           <div class="flex flex-wrap items-center justify-center">
-            <Button size="pill" onClick={() => setRegister(false)}>
-              Login
-            </Button>
-            &nbsp; to your account or&nbsp;
-            <Button size="pill" onClick={() => setRegister(true)}>
-              Register
-            </Button>
-            &nbsp;or continue as a guest.
+            <Show when={store.loggedIn}>You are already logged in.</Show>
+            <Show when={!store.loggedIn}>
+              <Button size="pill" onClick={() => setRegister(false)}>
+                Login
+              </Button>
+              &nbsp; to your account or&nbsp;
+              <Button size="pill" onClick={() => setRegister(true)}>
+                Register
+              </Button>
+              &nbsp;or continue as a guest.
+            </Show>
           </div>
         }
       />
@@ -106,7 +117,7 @@ const RegisterForm: Component<FormProps> = (props) => {
 
     if (!handle || !username || !password) return
     if (password !== confirm) {
-      toastStore.warn('Passwords do not match', 2)
+      toastStore.warn('Passwords do not match', { ttl: 2 })
       return
     }
 
@@ -157,11 +168,16 @@ const LoginForm: Component<FormProps> = (props) => {
   const navigate = useNavigate()
   const [query] = useSearchParams()
   const loc = useLocation()
-  const state = settingStore()
+  const state = settingStore((s) => ({ config: s.config, initLoading: s.initLoading }))
+  const user = userStore((s) => ({ loggedIn: s.loggedIn }))
+
   const [error, setError] = createSignal<string>()
   const google = useGoogleReady()
 
-  const [store, setStore] = createStore({ username: '', password: '' })
+  const [store, setStore] = createStore({
+    username: loc.pathname.includes('/remember') ? storage.localGetItem(ACCOUNT_KEY) || '' : '',
+    password: '',
+  })
 
   createEffect(() => {
     if (state.initLoading) return
@@ -213,7 +229,16 @@ const LoginForm: Component<FormProps> = (props) => {
     const { username, password } = store
     if (!username || !password) return
 
-    userStore.login(username, password, () => {
+    userStore.login(username, password, async () => {
+      if (query.callback) {
+        for (const authUrl of state.config.authUrls) {
+          if (!query.callback.startsWith(authUrl)) continue
+          await wait(0.1)
+          return handleLogin()
+        }
+      }
+
+      if (query.callback) return
       navigate('/dashboard')
     })
   }
@@ -223,14 +248,16 @@ const LoginForm: Component<FormProps> = (props) => {
       <div class="flex flex-col gap-2">
         <TextInput
           placeholder="Username"
+          disabled={user.loggedIn}
           required
-          value={loc.pathname.includes('/remember') ? storage.localGetItem(ACCOUNT_KEY) || '' : ''}
+          value={store.username}
           onChange={(ev) => setStore('username', ev.currentTarget.value)}
         />
         <TextInput
           placeholder="Password"
           type="password"
           required
+          disabled={user.loggedIn}
           onChange={(ev) => setStore('password', ev.currentTarget.value)}
           onKeyDown={(ev) => (ev.key === 'Enter' ? login() : null)}
         />
@@ -240,12 +267,13 @@ const LoginForm: Component<FormProps> = (props) => {
         <TitleCard type="rose">{error()}</TitleCard>
       </Show>
 
-      <Button onClick={login} disabled={props.isLoading || !!error()}>
+      <Button onClick={login} disabled={user.loggedIn || props.isLoading || !!error()}>
         {props.isLoading ? 'Logging in...' : 'Login'}
       </Button>
 
       <div
         class="flex justify-center"
+        classList={{ hidden: user.loggedIn }}
         ref={(ref) => {
           refGoogle = ref
         }}

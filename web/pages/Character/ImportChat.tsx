@@ -1,4 +1,4 @@
-import { Component, createEffect, createSignal, Show } from 'solid-js'
+import { Component, createEffect, createSignal, on, Show } from 'solid-js'
 import { Upload, X } from 'lucide-solid'
 import { AppSchema } from '../../../common/types/schema'
 import Button from '../../shared/Button'
@@ -33,13 +33,18 @@ const ImportChatModal: Component<{
   const [charId, setCharId] = createSignal<string>()
   const state = characterStore((s) => ({ chars: s.characters.list.slice().sort(sort('name')) }))
 
-  createEffect(() => {
-    if (props.char && props.char._id !== charId()) {
-      setCharId(props.char?._id)
-    } else if (!charId() && state.chars.length) {
-      setCharId(state.chars[0]._id)
-    }
-  })
+  createEffect(
+    on(
+      () => [props.char, state.chars.length],
+      () => {
+        if (props.char && props.char._id !== charId()) {
+          setCharId(props.char?._id)
+        } else if (!charId() && state.chars.length) {
+          setCharId(state.chars[0]._id)
+        }
+      }
+    )
+  )
 
   const onSelectLog = async (files: FileInputResult[]) => {
     if (!files.length) return setJson()
@@ -109,7 +114,7 @@ const ImportChatModal: Component<{
         <FileInput
           label="JSON Lines File (.jsonl)"
           fieldName="json"
-          accept="application/json-lines,application/jsonl,text/jsonl,application/json,text/json"
+          accept=".txt, application/json, application/json-lines, application/jsonl, text/jsonl"
           helperText="Supported formats: Agnaistic, TavernAI"
           required
           onUpdate={onSelectLog}
