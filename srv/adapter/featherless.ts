@@ -83,4 +83,51 @@ async function getModelList() {
   }
 }
 
+async function getModelClasses() {
+  let page = 1
+  const all: any[] = []
+
+  while (true) {
+    try {
+      const res = await fetch(`https://featherless.ai/api/feather/models?page=${page}&perPage=50`, {
+        headers: {
+          accept: '*/*',
+        },
+        method: 'GET',
+      })
+
+      if (res.status === 404) {
+        break
+      }
+
+      if (res.status > 200) {
+        const text = await res.text().catch(() => 'Could not parse')
+        logger.warn(
+          { warning: text, page },
+          `Featherless model classes failed: ${res.status} ${res.statusText}`
+        )
+
+        await wait(3000)
+        continue
+      }
+
+      const json = await res.json()
+      const items = json?.items
+
+      if (items.length) {
+        all.push(...items)
+      }
+
+      if (items.length < 50) break
+      await wait(4000)
+      page++
+    } catch (ex: any) {
+      logger.warn(`Featherless model classes failed: ${ex.message || ex}`)
+      return
+    }
+  }
+
+  return all
+}
+
 getModelList()

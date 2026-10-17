@@ -1171,6 +1171,11 @@ function renderMessage(
 
   // we sanizize user input to prevent XSS attacks
   // DomPurify has an implicit list of allowed Tags, when we add our own we have to use ADD_TAGS
+
+  Purify.addHook('afterSanitizeElements', (node) => {
+    node
+  })
+
   const html = Purify.sanitize(
     wrapWithQuoteElement(
       markdown
@@ -1181,6 +1186,8 @@ function renderMessage(
       ADD_TAGS: ['qem'],
     }
   )
+
+  Purify.removeAllHooks()
 
   return html
 }
