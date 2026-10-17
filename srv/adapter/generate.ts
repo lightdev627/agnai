@@ -337,10 +337,13 @@ export async function createChatStream(
    * - There is both a history and response template
    */
   let jsonSchema: JsonField[] | undefined
-  if (opts.chatSchema && opts.chatSchema.schema?.length) {
-    if (subscription?.preset?.jsonSchemaCapable || !subscription) {
-      jsonSchema = opts.chatSchema.schema
-    }
+  if (
+    subscription?.preset?.jsonSchemaCapable &&
+    opts.entities?.gen.jsonEnabled &&
+    opts.chatSchema &&
+    opts.chatSchema.schema?.length
+  ) {
+    jsonSchema = opts.chatSchema.schema
   }
 
   const fallbackContext = subscription?.preset?.maxContextLength

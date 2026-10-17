@@ -275,6 +275,7 @@ const UserNavigation: Component = () => {
       <div class="flex flex-col gap-1 px-2">
         <UserProfile />
 
+        <Show when={menu.flags.chub}>
         <Show when={page.flags.chub}>
           <MultiItem>
             <Item href="/chub" ariaLabel="Character hub">

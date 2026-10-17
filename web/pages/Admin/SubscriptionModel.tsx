@@ -365,11 +365,13 @@ export const SubscriptionModel: Component = () => {
                   noModel
                 />
                 <div class="flex flex-row justify-end">
+                  <Show when={state._id}>
                   <Show when={state.current._id}>
                     <Button disabled={presets.saving} onClick={onSave}>
                       <Save /> Save
                     </Button>
                   </Show>
+                  <Show when={!state._id}>
                   <Show when={!state.current._id}>
                     <Button disabled={presets.saving} onClick={onSave}>
                       <Save /> Create
