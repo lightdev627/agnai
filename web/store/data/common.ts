@@ -1,15 +1,15 @@
-import { createMemo } from 'solid-js'
 import { getStore } from '../create'
 import { toastStore } from '../toasts'
 import { ModelFormat, replaceTags } from '/common/presets/templates'
 import { AppSchema } from '/common/types'
-import { deepClone, trimSentence } from '/common/util'
+import { deepClone, getSubscriptionModelLimits, trimSentence } from '/common/util'
 import { getBotsForChat, getChatPreset } from '/web/pages/Chat/util'
 import { getUserPreset } from '/web/shared/adapter'
 import { getPresetConnection } from '/common/providers'
 import { ChatMessageExt } from '../message'
 import { MsgAttachment } from '/srv/adapter/type'
 import { simplifyPreset } from '/common/prompt'
+import { resolveChatPath } from '/common/chat'
 
 export type PromptEntities = NonNullable<Awaited<ReturnType<typeof getAuthedPromptEntities>>> & {
   lastMessage?: { msg: string; date: string; id: string; parent?: string }
@@ -44,7 +44,7 @@ export async function getImagePromptEntities(messageId?: string) {
   switch (source) {
     case 'settings': {
       summary = entities.user.images?.summaryPrompt || ''
-      presetId = entities.user.summaryPreset || entities.user.images?.summaryPresetId || ''
+      presetId = entities.user.images?.summaryPresetId || entities.user.summaryPreset || ''
       break
     }
 
@@ -78,7 +78,7 @@ export async function getPromptEntities(opts?: { messageId?: string }): Promise<
     hint: promptState.hintsEnabled ? promptState.hint : '',
   }
 
-  const entities = getAuthedPromptEntities() //isLoggedIn() ?  : await getGuestEntities()
+  const entities = getAuthedPromptEntities(opts)
 
   if (!entities) throw new Error(`Could not collate data for prompting`)
 
@@ -202,7 +202,7 @@ function getChatAttachments(
   return next
 }
 
-function getAuthedPromptEntities() {
+function getAuthedPromptEntities(opts?: { messageId?: string }) {
   const { details, chatProfiles: members, lastChatId } = getStore('chat').getState()
   const active = details[lastChatId]
   if (!active) return
@@ -213,12 +213,14 @@ function getAuthedPromptEntities() {
   const chat = active.chat
   const char = active.char
 
-  const book = getStore('memory')
+  const bookIds = new Set((chat.memoryId || '').split(',').filter((id) => !!id.trim()))
+  const books = getStore('memory')
     .getState()
-    .books.list.find((book) => book._id === chat.memoryId)
+    .books.list.filter((book) => bookIds.has(book._id))
 
-  const { msgs, messageHistory, attachments } = getStore('messages').getState()
-  const presets = getActivePreset(chat, user)!
+  const { attachments, graph } = getStore('messages').getState()
+  const path = resolveChatPath(graph.tree, opts?.messageId || chat.treeLeafId || '')
+  const presets = getActivePresets(chat, user)!
   const conn = getPresetConnection(presets.current, user.providers)
   const scenarios = getStore('scenario')
     .getState()
@@ -227,7 +229,7 @@ function getAuthedPromptEntities() {
   const { impersonating, chatChars } = getStore('character').getState()
 
   const characters = getBotsForChat(chat, char, chatChars.map)
-  const messages = trimMessages(user, messageHistory.concat(msgs))
+  const messages = trimMessages(user, path)
 
   const sub = getPresetSubscription(conn.preset)
   const simple = simplifyPreset(user, conn.preset, sub?.preset)
@@ -237,7 +239,7 @@ function getAuthedPromptEntities() {
     char: tryReplaceCharacter(chatChars.map, char)!,
     user,
     profile,
-    book,
+    books,
     messages,
     settings: simple,
     members,
@@ -267,37 +269,15 @@ function tryReplaceCharacter(
   return replacement || char
 }
 
-export function useActivePreset() {
-  const chat = getStore('chat')((s) => ({ active: s.details[s.lastChatId] }))
-  const user = getStore('user')((s) => ({ user: s.user }))
-
-  const preset = createMemo(() => {
-    if (!chat.active?.chat || !user.user) return
-    const { presets, templates } = getStore('presets').getState()
-
-    const preset = deepClone(getChatPreset(chat.active.chat, user.user, presets))
-
-    if (preset.promptTemplateId) {
-      const template = templates.find((t) => t._id === preset.promptTemplateId)
-      preset.gaslight = template?.template || preset.gaslight
-    }
-
-    applySubscriptionAdjustment(preset)
-
-    return preset
-  })
-
-  return preset
-}
-
-export function getActivePreset(chat?: AppSchema.Chat, user?: AppSchema.User) {
+export function getActivePresets(chat?: AppSchema.Chat, user?: AppSchema.User) {
   if (!chat) {
     const { details, lastChatId } = getStore('chat').getState()
     chat = details[lastChatId]?.chat
   }
 
+  const userState = getStore('user').getState()
   if (!user) {
-    user = getStore('user').getState().user!
+    user = userState.user!
   }
 
   if (!chat || !user) {
@@ -314,28 +294,53 @@ export function getActivePreset(chat?: AppSchema.Chat, user?: AppSchema.User) {
     preset.gaslight = template?.template || preset.gaslight
   }
 
+  if (preset.providerId === 'agnaistic' && preset.providerModels?.agnaistic) {
+    applySubscriptionAdjustment(preset)
+  }
+
   const json = user.jsonPreset ? presets.find((p) => p._id === user.jsonPreset) : undefined
   const summary = user.summaryPreset ? presets.find((p) => p._id === user.summaryPreset) : undefined
   const chargen = user.chargenPreset ? presets.find((p) => p._id === user.chargenPreset) : undefined
 
-  applySubscriptionAdjustment(preset)
+  if (json?.providerId) json.thirdPartyModel = json.providerModels?.[json.providerId]
+  if (summary?.providerId) summary.thirdPartyModel = summary.providerModels?.[summary.providerId]
+  if (chargen?.providerId) chargen.thirdPartyModel = chargen.providerModels?.[chargen.providerId]
 
   return { current: preset, json, summary, chargen }
 }
 
 function applySubscriptionAdjustment(preset: Partial<AppSchema.UserGenPreset>) {
-  if (preset.service !== 'agnaistic') return preset
-
+  const { userLevel } = getStore('user').getState()
   const subs = getStore('settings').getState().config.subs
-  const modelId = preset.providerModels?.agnaistic || preset.registered?.agnaistic?.subscriptionId
-  const match = subs.find((sub) => sub._id === modelId)
-  if (!match) return preset
 
-  return {
-    ...preset,
-    maxContextLength: Math.min(preset.maxContextLength!, match.preset.maxContextLength!),
-    maxTokens: Math.min(preset.maxTokens!, match.preset.maxTokens!),
+  const modelId = preset.providerModels?.agnaistic || preset.registered?.agnaistic?.subscriptionId
+  const sub = subs.find((sub) => sub._id === modelId)?.preset
+
+  if (!sub) return
+
+  const updates: any = {}
+  if (sub?.postUserRole) updates.postUserRole = sub.postUserRole
+
+  const reasoningRequired = !!sub?.reasoning?.enabled
+  const reasoningRequested = !!preset.reasoning?.enabled && preset.reasoning?.effort !== 'none'
+  if (reasoningRequired && !reasoningRequested) {
+    updates.reasoning = sub?.reasoning!
   }
+
+  if (sub?.prefill) updates.prefill = sub.prefill
+  if (sub?.modelFormat) updates.modelFormat = sub.modelFormat
+  if (sub?.skipRoleMerging) updates.skipRoleMerging = sub.skipRoleMerging
+
+  const limits = sub ? getSubscriptionModelLimits(sub, userLevel) : null
+  if (limits?.maxContextLength) {
+    updates.maxContextLength = Math.min(preset.maxContextLength!, limits.maxContextLength!)
+  }
+
+  if (limits?.maxTokens) {
+    updates.maxTokens = Math.min(preset.maxTokens!, limits.maxTokens!)
+  }
+
+  Object.assign(preset, updates)
 }
 
 // async function getGuestPreset(user: AppSchema.User, chat: AppSchema.Chat) {

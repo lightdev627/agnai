@@ -49,7 +49,7 @@ export type InferenceRequest = {
   chatId?: string
   requestId?: string
   prompt: string
-  messages?: Array<any>
+  messages: Array<any>
   guest?: string
   user: AppSchema.User
   settings?: Partial<AppSchema.UserGenPreset>
@@ -199,7 +199,9 @@ export async function createInferenceStream(opts: InferenceRequest) {
   const { simple: settings, conn } = await getRequestPreset(opts)
 
   if (opts.stop) {
-    settings.stopSequences = opts.stop
+    conn.preset.stopSequences = opts.stop
+  } else if (opts.settings?.stopSequences) {
+    conn.preset.stopSequences = parseStops(opts.settings.stopSequences)
   }
 
   if (opts.settings?.thirdPartyUrl) {
@@ -208,10 +210,6 @@ export async function createInferenceStream(opts: InferenceRequest) {
 
   if (opts.settings?.thirdPartyFormat) {
     opts.user.thirdPartyFormat = opts.settings.thirdPartyFormat
-  }
-
-  if (opts.settings?.stopSequences) {
-    opts.settings.stopSequences = parseStops(opts.settings.stopSequences)
   }
 
   const isThirdParty = isThirdPartyPreset(conn)
@@ -256,12 +254,12 @@ async function getRequestPreset(opts: InferenceRequest) {
   let preset: Partial<AppSchema.GenSettings> | undefined
   let notUserPreset = false
 
-  if (opts.settings?._id && opts.user && !opts.guest && !isDefaultPreset(opts.settings._id)) {
-    const userPreset = await store.presets.getUserPresetInternal(opts.settings._id)
-    if (userPreset && userPreset.userId === opts.user._id) {
-      opts.settings = userPreset
-    }
-  }
+  // if (opts.settings?._id && opts.user && !opts.guest && !isDefaultPreset(opts.settings._id)) {
+  //   const userPreset = await store.presets.getUserPresetInternal(opts.settings._id)
+  //   if (userPreset && userPreset.userId === opts.user._id) {
+  //     opts.settings = userPreset
+  //   }
+  // }
 
   if (opts.settings) {
     const model = getCachedSubscriptionModels().find((m) => m._id === opts.settings?._id)
@@ -339,10 +337,13 @@ export async function createChatStream(
    * - There is both a history and response template
    */
   let jsonSchema: JsonField[] | undefined
-  if (opts.chatSchema && opts.chatSchema.schema?.length) {
-    if (subscription?.preset?.jsonSchemaCapable || !subscription) {
-      jsonSchema = opts.chatSchema.schema
-    }
+  if (
+    subscription?.preset?.jsonSchemaCapable &&
+    opts.entities?.gen.jsonEnabled &&
+    opts.chatSchema &&
+    opts.chatSchema.schema?.length
+  ) {
+    jsonSchema = opts.chatSchema.schema
   }
 
   const fallbackContext = subscription?.preset?.maxContextLength

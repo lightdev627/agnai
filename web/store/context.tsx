@@ -10,14 +10,15 @@ import { getActiveBots } from '../pages/Chat/util'
 import { FeatureFlags } from './flags'
 import { combine, distinct } from '/common/util'
 import { getRgbaFromVar } from '../shared/colors'
-import { MsgState, msgStore } from './message'
-import { ChatTree } from '/common/chat'
+import { ChatMessageExt, MsgState, msgStore } from './message'
+import { ChatTree, resolveChatPath } from '/common/chat'
 import { PresetStateProvider } from './preset-context'
 import { pageStore } from './page'
 import { ResponseState, responseStore } from './response'
 import { imageStore } from './images'
+import { getStoppingStrings } from '/common/requests/payloads'
 
-export type ContextState = {
+export type ChatContext = {
   appReady: boolean
   tooltip?: string | JSX.Element
   anonymize: boolean
@@ -33,6 +34,15 @@ export type ContextState = {
   /** All bots from user, chats, current chat */
   allBots: Record<string, AppSchema.Character>
 
+  profileMap: Record<string, AppSchema.Profile>
+
+  messages: {
+    path: ChatMessageExt[]
+    viewing: ChatMessageExt[]
+  }
+
+  nameStops: string[]
+
   /** All user-owned bots */
   // botMap: Record<string, AppSchema.Character>
   /** All user-owned bots */
@@ -47,6 +57,7 @@ export type ContextState = {
   flags: FeatureFlags
   char?: AppSchema.Character
   chat?: AppSchema.Chat
+  showMessageCount: number
   replyAs?: string
   trimSentences: boolean
   config: AppSchema.AppConfig
@@ -68,7 +79,7 @@ export type ContextState = {
   providers?: AppSchema.Provider[]
 }
 
-const initial: ContextState = {
+const initial: ChatContext = {
   appReady: false,
   anonymize: false,
   tempMap: {},
@@ -78,7 +89,16 @@ const initial: ContextState = {
 
   activeMap: {},
   activeBots: [],
+  profileMap: {},
 
+  messages: {
+    path: [],
+    viewing: [],
+  },
+
+  nameStops: [],
+
+  showMessageCount: 0,
   handle: 'You',
   trimSentences: false,
   flags: {} as any,
@@ -95,7 +115,7 @@ const initial: ContextState = {
   // format: undefined,
 }
 
-const AppContext = createContext([initial, (next: Partial<ContextState>) => {}] as const)
+const Context = createContext([initial, (next: Partial<ChatContext>) => {}] as const)
 
 export function ContextProvider(props: { children: any }) {
   const [state, setState] = createStore(initial)
@@ -112,6 +132,7 @@ export function ContextProvider(props: { children: any }) {
     lastChatId: s.lastChatId,
     chatProfiles: s.chatProfiles,
     promptHistory: s.promptHistory,
+    opts: s.opts,
   }))
   const users = userStore((s) => ({
     current: s.current,
@@ -126,6 +147,8 @@ export function ContextProvider(props: { children: any }) {
     hordeStatus: s.hordeStatus,
     attachments: s.attachments,
     deleting: s.deleting,
+    showMessageCount: s.showMessageCount,
+    msgs: s.msgs,
   }))
 
   const response = responseStore((s) => ({
@@ -156,6 +179,29 @@ export function ContextProvider(props: { children: any }) {
     }
   })
 
+  const pathMessages = createMemo(() => {
+    const chat =
+      chats.active?.chat ||
+      chats.allChats.find((c) => (chats.lastChatId ? c._id === chats.lastChatId : undefined))
+
+    if (!chat) return []
+
+    const leafId = chat?.treeLeafId || msgs.msgs.slice(-1)[0]?._id || ''
+    const path = resolveChatPath(msgs.graph.tree, leafId)
+    return path
+  })
+
+  const chatMsgs = createMemo(() => {
+    const path = pathMessages()
+
+    const filtered = path.filter((msg) => {
+      if (chats.opts.hideOoc && msg.ooc) return false
+      return true
+    })
+
+    return filtered.slice(-msgs.showMessageCount)
+  })
+
   const allBots = createMemo(() => {
     const curr = chars.chatChars.list
     const temps = Object.values(chats.active?.chat.tempCharacters || {})
@@ -182,6 +228,19 @@ export function ContextProvider(props: { children: any }) {
     return impersonate || handle || 'You'
   })
 
+  const nameStops = createMemo(() => {
+    const stops = getStoppingStrings(
+      {
+        user: users.user!,
+        char: chats.active?.char,
+        characters: chars.chatChars.map,
+        members: chats.chatProfiles.concat(users.profile!).filter((profile) => !!profile),
+      },
+      undefined
+    )
+    return stops
+  })
+
   createEffect(() => {
     // We will try to use our cache if it's available to speed some things up
     const chat =
@@ -194,7 +253,7 @@ export function ContextProvider(props: { children: any }) {
       ? chars.chatChars.map[chat.characterId] || chars.characters.map[chat.characterId]
       : undefined
 
-    const next: Partial<ContextState> = {
+    const next: Partial<ChatContext> = {
       bg: visuals(),
       appReady: cfg.inited,
       flags: page.flags,
@@ -207,11 +266,20 @@ export function ContextProvider(props: { children: any }) {
       activeMap: toMap(activeBots()),
       activeBots: activeBots(),
       active: chats.active,
+      profileMap: toMap(chats.chatProfiles),
+
+      messages: {
+        path: pathMessages(),
+        viewing: chatMsgs(),
+      },
+
+      nameStops: nameStops(),
 
       msgDeleting: msgs.deleting,
       impersonate: chars.impersonating,
       char: char,
       chat: chat,
+      showMessageCount: msgs.showMessageCount,
       replyAs: chats.active?.replyAs,
       user: users.user,
       profile: users.profile,
@@ -235,14 +303,14 @@ export function ContextProvider(props: { children: any }) {
   })
 
   return (
-    <AppContext.Provider value={[state, setState]}>
+    <Context.Provider value={[state, setState]}>
       <PresetStateProvider>{props.children}</PresetStateProvider>
-    </AppContext.Provider>
+    </Context.Provider>
   )
 }
 
 export function useAppContext() {
-  const [state, setState] = useContext(AppContext)
+  const [state, setState] = useContext(Context)
 
   return [state, { setState }] as const
 }

@@ -22,7 +22,7 @@ import { AIAdapter, AdapterSetting } from '/common/adapters'
 import { AppSchema } from '/common/types'
 import { getSubscriptionModelLimits, parseStops } from '/common/util'
 import { handleVenus } from './venus'
-import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
+import { sanitise } from '/common/requests/util'
 import { obtainLock, releaseLock } from '../api/chat/lock'
 import { getServerConfiguration } from '../db/admin'
 import { handleGemini } from './gemini'
@@ -73,7 +73,7 @@ export async function getSubscriptionPreset(
 }
 
 export const handleAgnaistic: ModelAdapter = async function* (opts) {
-  const { char, members, prompt, log, gen } = opts
+  const { prompt, log, gen } = opts
 
   if ('subscription' in opts === false) {
     opts.subscription = await getSubscriptionPreset(opts.user, !!opts.guest, opts.gen)
@@ -160,6 +160,12 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
       ...recommended
     } = subPreset
     Object.assign(opts.gen, recommended)
+
+    // Add the recommended stop sequences when the user preset needs recommended settings
+    if (!opts.gen.stopSequences) opts.gen.stopSequences = []
+    if (stopSequences?.length) {
+      opts.gen.stopSequences.push(...stopSequences)
+    }
   }
 
   // Max tokens and max context limit are decided by the subscription preset
@@ -168,12 +174,13 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
   opts.gen.thirdPartyUrl = subPreset.thirdPartyUrl
   opts.gen.thirdPartyFormat = subPreset.thirdPartyFormat
 
+  // Typical requests are always `kind: 'plain'` so we don't automatically always inherit the subPreset stop sequences
   const stops =
     Array.isArray(subPreset.stopSequences) && opts.kind !== 'plain'
       ? new Set(subPreset.stopSequences)
       : new Set<string>()
 
-  if (Array.isArray(opts.gen.stopSequences) && opts.gen.stopSequences.length) {
+  if (Array.isArray(opts.gen.stopSequences)) {
     for (const stop of opts.gen.stopSequences) {
       stops.add(stop)
     }
@@ -267,13 +274,13 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
 
   body.api_key = key
 
-  const stripped = body.messages ? stripImageContent(body.messages) : null
+  const stripped = body.messages?.length ? stripImageContent(body.messages) : null
 
   yield { prompt: stripped || prompt }
 
   log.debug({ ...body, prompt: null, messages: null, imageData: null }, 'Agnaistic payload')
 
-  log.debug(`Prompt:\n${body.messages ? JSON.stringify(stripped, null, 2) : prompt}`)
+  log.debug(`Prompt:\n${body.messages?.length ? JSON.stringify(stripped, null, 2) : prompt}`)
 
   const [submodel, override = ''] = subPreset.subModel.split(',')
 
@@ -328,15 +335,7 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
       else accumulated += generated.token
 
       if (gen.streamResponse) {
-        yield {
-          partial: sanitiseAndTrim({
-            text: accumulated,
-            char,
-            members,
-            gen: opts.gen,
-            stops: allStops,
-          }),
-        }
+        yield { partial: accumulated }
       }
     }
 
@@ -364,8 +363,7 @@ export const handleAgnaistic: ModelAdapter = async function* (opts) {
   }
 
   const parsed = sanitise((result || accumulated).replace(prompt, ''))
-  const trimmed = trimResponseV2(parsed, opts.replyAs, members, opts.gen, allStops)
-  yield trimmed || parsed
+  yield parsed
 }
 
 const settings: AdapterSetting[] = [

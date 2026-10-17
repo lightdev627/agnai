@@ -2,10 +2,8 @@ import needle from 'needle'
 import { decryptText } from '../db/util'
 import { registerAdapter } from './register'
 import { ModelAdapter } from './type'
-import { sanitiseAndTrim } from '/common/requests/util'
 import { AppLog } from '../middleware'
 import { OpenRouterModel } from '/common/adapters'
-import { createClaudeChatCompletionV2 } from './claude'
 import { logPayload } from './template-chat-payload'
 import { streamGenerator } from '/common/requests/stream'
 import { getJsonSchemaPayload } from '/common/guidance/json-schema'
@@ -74,19 +72,11 @@ export const handleOpenRouter: ModelAdapter = async function* (opts) {
     payload.response_format = getJsonSchemaPayload(opts.jsonSchema, 'openai', opts)
   }
 
-  const useAnthropic =
-    opts.gen.service !== 'openrouter-completion' &&
-    (opts.gen.openRouterModel?.id || '').startsWith('anthropic')
-
   if (opts.gen.service === 'openrouter-completion') {
     payload.prompt = opts.prompt
-  } else if (useAnthropic) {
-    const messages = await createClaudeChatCompletionV2(opts)
-    payload.messages = messages
-    // payload.system = system
   } else if (opts.messages) {
     const last = opts.messages.slice(-1)[0]
-    if (last && modelNeedsUserRoleLast(opts.gen, payload.model)) {
+    if (last && modelNeedsUserRoleLast(opts, payload.model)) {
       last.role = 'user'
     }
     payload.messages = opts.messages
@@ -157,14 +147,7 @@ export const handleOpenRouter: ModelAdapter = async function* (opts) {
 
     if ('token' in gen.value) {
       accum += gen.value.token
-      yield {
-        partial: sanitiseAndTrim({
-          text: accum,
-          char: opts.replyAs,
-          members: opts.members,
-          gen: opts.gen,
-        }),
-      }
+      yield { partial: accum }
     }
 
     if (typeof gen.value === 'string') {
@@ -176,7 +159,7 @@ export const handleOpenRouter: ModelAdapter = async function* (opts) {
     yield { meta: { model: response.model, provider: response.provider, ...response.usage } }
   }
 
-  const text = getResponseText(response, fullText || accum, opts.log)
+  const text = getResponseText(response, fullText || accum, opts.log, stops)
 
   if (text instanceof Error) {
     yield { error: `OpenRouter response failed: ${text.message}` }
@@ -189,14 +172,7 @@ export const handleOpenRouter: ModelAdapter = async function* (opts) {
     return
   }
 
-  const trimmed = sanitiseAndTrim({
-    text,
-    char: opts.replyAs,
-    members: opts.members,
-    gen: opts.gen,
-    stops,
-  })
-  yield trimmed
+  yield text
 }
 
 async function* getCompletion(
@@ -240,7 +216,7 @@ registerAdapter('openrouter', handleOpenRouter, {
   options: ['temp', 'maxTokens'],
 })
 
-function getResponseText(resp: any, accum: string, log: AppLog) {
+function getResponseText(resp: any, accum: string, log: AppLog, stops: string[]) {
   if (accum) {
     return accum
   }
@@ -251,7 +227,7 @@ function getResponseText(resp: any, accum: string, log: AppLog) {
 
   if (resp.type === 'Buffer') {
     const buffer = Buffer.from(resp.data).toString()
-    return getResponseText(buffer, accum, log)
+    return getResponseText(buffer, accum, log, stops)
   }
 
   log.debug({ resp }, 'Get response text')
@@ -268,7 +244,7 @@ function getResponseText(resp: any, accum: string, log: AppLog) {
   if (typeof message === 'string') return message
 
   if (!message || !message.content) {
-    log.warn({ resp }, 'OpenRouter response was empty (No text)')
+    log.warn({ resp, stops }, 'OpenRouter response was empty (No text)')
     return new Error(`Response contained no data (No text)`)
   }
 

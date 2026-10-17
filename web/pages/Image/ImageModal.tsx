@@ -1,5 +1,5 @@
 import './images.scss'
-import { Component, For, JSX, Show, createEffect, createMemo, on } from 'solid-js'
+import { Component, For, JSX, Show, createEffect, createMemo, on, onMount } from 'solid-js'
 import Modal from '../../shared/Modal'
 import {
   ConfirmAction,
@@ -13,7 +13,7 @@ import {
 } from '../../store'
 import { getAssetUrl, getJsonSchema } from '../../shared/util'
 import Button from '/web/shared/Button'
-import { useImageCache } from '/web/shared/hooks'
+import { useDraft, useImageCache } from '/web/shared/hooks'
 import TextInput from '/web/shared/TextInput'
 import { ArrowLeft, ArrowRight, Download, SettingsIcon, Trash, WandSparkles } from 'lucide-solid'
 import { cleanPrompt, hydrateTemplate } from '/common/util'
@@ -29,6 +29,8 @@ import { genApi } from '/web/store/data/inference'
 import { getImagePromptEntities } from '/web/store/data/common'
 import { usePresetContext } from '/web/store/preset-context'
 import { useAppContext } from '/web/store/context'
+import { useImageContext } from '../Settings/Image/image-context'
+import { SelectImageProvider } from '../Settings/Image/ImageProvider'
 
 const log = debug('image-modal')
 
@@ -39,7 +41,11 @@ export const ImageModal: Component = () => {
 
   return (
     <>
-      <ImageCollectionModal />
+      <Show
+        when={state.showImage?.src.type === 'collection' || state.showImage?.src.type === 'message'}
+      >
+        <ImageCollectionModal />
+      </Show>
 
       <Show when={state.showImage?.src.type === 'url'}>
         <ImageUrlModal
@@ -101,9 +107,12 @@ const ImageUrlModal: Component<{
 
 const ImageCollectionModal: Component<{}> = (props) => {
   const [context] = useAppContext()
+  const [imgctx] = useImageContext()
   const [presets] = usePresetContext()
 
   const reel = useImageCache()
+  const nonChatPrompt = useDraft('image-prompt-global')
+
   const store = imageStore((s) => {
     return {
       src: s.showImage?.src,
@@ -111,6 +120,12 @@ const ImageCollectionModal: Component<{}> = (props) => {
       onClose: s.showImage?.onClose,
       preview: s.preview,
     }
+  })
+
+  const collectionId = createMemo(() => {
+    const id = store.src?.id
+    if (!id) return ''
+    return id
   })
 
   const show = createMemo(() => {
@@ -190,12 +205,22 @@ const ImageCollectionModal: Component<{}> = (props) => {
 
   createEffect(
     on(
+      () => state.prompt,
+      () => {
+        if (store.src?.type !== 'collection' || !collectionId()) return
+        console.log('global-prompt', state.prompt)
+        nonChatPrompt.update(state.prompt)
+      }
+    )
+  )
+
+  createEffect(
+    on(
       () => store.src?.id,
-      (id) => {
-        log('loading #%s %s ', store.src?.initial || 0, id)
-        if (id) {
-          reel.load(id, store.src?.initial)
-        }
+      () => {
+        log('loading #%s %s ', store.src?.initial || 0, collectionId())
+        reel.load(collectionId(), store.src?.initial)
+
         if (store.src?.type === 'message') {
           const msg = getGraphMessage(store.src.messageId)
 
@@ -208,6 +233,13 @@ const ImageCollectionModal: Component<{}> = (props) => {
           update('prompt', msg?.imagePrompt || '')
           return
         }
+
+        if (store.src?.type === 'collection' && collectionId()) {
+          const prompt = nonChatPrompt.open(`image-prompt-${collectionId()}`)
+          update('prompt', prompt)
+          return
+        }
+
         update('prompt', store.src?.prompt || '')
       }
     )
@@ -234,20 +266,29 @@ const ImageCollectionModal: Component<{}> = (props) => {
     update('loading', true)
 
     try {
-      const result = await imageApi.generateImageAsync(imagePrompt, {
-        model: '',
-        noAffix: false,
-      })
-
-      const { cacheId } = await reel.addImage(result.image, {
-        id: result.file.name,
-        prompt: imagePrompt,
-      })
-
-      const msg = getGraphMessage(store.src?.messageId)
-      if (!msg) return
-      const nextExtras = msg.extras?.slice() || []
-      msgStore.localEditMessageProp(msg._id, { extras: nextExtras.concat(cacheId) })
+      // If the source is a message, use the standardized message flow
+      if (store.src?.messageId) {
+        await msgStore.createImage({
+          prompt: imagePrompt,
+          sourceMsgId: store.src.messageId,
+          append: true,
+          onImage: (image) => reel.reload(),
+          onPrompt: (prompt) => update('prompt', prompt),
+          onTick: (text, state) => {
+            if (state !== 'partial' && state !== 'done') return
+            update('prompt', text)
+          },
+        })
+      } else {
+        const result = await imageApi.generateImageAsync(imagePrompt, {
+          model: '',
+          noAffix: false,
+        })
+        await reel.addImage(result.image, {
+          id: result.file.name,
+          prompt: imagePrompt,
+        })
+      }
     } catch (ex: any) {
       toastStore.error(`Image Generation Error: ${ex.message || ex}`)
       console.error(ex)
@@ -295,6 +336,10 @@ const ImageCollectionModal: Component<{}> = (props) => {
 
   const GenerationActions = (
     <div class="flex flex-col gap-2">
+      <div class="flex w-full items-end justify-end">
+        <SelectImageProvider ctx={imgctx} />
+      </div>
+
       <div class="flex w-full items-end justify-end gap-2">
         <Button size="sm" onClick={generateImage} disabled={state.loading}>
           Generate Image
@@ -422,13 +467,14 @@ const PromptSettings: Component<{
     return true
   })
 
+  onMount(() => {
+    promptStore.loadImageHint(msgs.message.msg.chatId)
+  })
+
   return (
     <div class="image-modal">
       <section class="flex flex-col gap-1" style={{ 'grid-area': 'options' }}>
         <Show when={props.messageId}>
-          <Show when={window.flags.debug}>
-            <span class="text-500 text-xs italic">{props.messageId}</span>
-          </Show>
           <TextInput
             placeholder="Caption Hint: What to focus on when generating the caption?"
             class="!text-sm"

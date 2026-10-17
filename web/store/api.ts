@@ -4,7 +4,7 @@ import { jwtDecode } from 'jwt-decode'
 import needle from 'needle'
 import { parseSearchQuery, tryParse, incompleteJson, parseEvent } from '/common/util'
 import { debug } from '/common/debug'
-import { TickHandler } from '/common/prompt'
+import type { TickHandler } from '/common/prompt'
 import { getNextThoughts, getNextTokens, joinThoughtTokens, joinUrl } from '/common/requests/util'
 
 let socketId = ''
@@ -19,23 +19,23 @@ const PORT = location.port
 
 // Sometimes a user has DNS issues with a particular API url.
 // We can provide them a `?api_url=...` url to try alternate API urls
-if (location.search) {
+if (location.search && typeof localStorage !== 'undefined') {
   const search = parseSearchQuery(location.search)
   if (search.api_url && search.api_url.endsWith('.agnai.chat')) {
     localStorage.setItem('api_url', search.api_url)
   }
 }
 
-const API_OVERRIDE = localStorage.getItem('api_url')
+const API_OVERRIDE = typeof localStorage !== 'undefined' ? localStorage.getItem('api_url') : ''
 
 export const baseUrl = API_OVERRIDE
   ? `${PROTO}//${API_OVERRIDE}`
   : PORT === '1234' || PORT === '3001' // || HOST === 'localhost' || HOST === '127.0.0.1'
   ? `${PROTO}//${HOST}:3001`
   : HOST === 'agnai.chat'
-  ? `${PROTO}//prd-api.agnai.chat`
-  : HOST === 'prd-assets.agnai.chat'
   ? `${PROTO}//edge-api.agnai.chat`
+  : HOST === 'prd-assets.agnai.chat'
+  ? `${PROTO}//prd-api.agnai.chat`
   : HOST === 'dev.agnai.chat' || HOST === 'dev-assets.agnai.chat'
   ? `${PROTO}//edge-api.agnai.chat`
   : HOST === 'stg.agnai.chat'
@@ -45,6 +45,7 @@ export const baseUrl = API_OVERRIDE
 export const api = {
   get,
   post,
+  callApi,
   method,
   upload,
   streamGet,

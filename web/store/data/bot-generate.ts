@@ -6,11 +6,12 @@ import {
   buildPromptPlaceholders,
   createPromptParts,
   getLinesForPrompt,
+  getPromptHistory,
   getTemplate,
   InferenceState,
   JsonField,
   JsonOutput,
-  PromptLine,
+  PromptOpts,
   registerTemplateLocator,
   resolveScenario,
   TickHandler,
@@ -19,7 +20,7 @@ import { parseTemplate } from '/common/template-parser'
 import { countTokens, getEncoder } from '/common/tokenize'
 import { AppSchema } from '/common/types'
 import { UserEmbed } from '/common/types/memory'
-import { GenerateRequestV2 } from '/srv/adapter/type'
+import { GenerateRequestV2, HistoryLine } from '/srv/adapter/type'
 import { getPromptEntities, PromptEntities } from './common'
 import { embedApi } from '../embeddings'
 import { ChatDetail } from '../chat'
@@ -30,13 +31,12 @@ import iconv from 'iconv-lite'
 import { genApi } from './inference'
 import { localEmit } from '../socket'
 import { getProviderConnection } from '/common/providers'
-import { toChatMessages } from '/common/template-messages'
+import { stripImageContent, toChatMessages } from '/common/template-messages'
 import { msgsApi } from './messages'
 import { getProvider } from '../preset-context'
 import { getLocalPayload, getStoppingStrings } from '/common/requests/payloads'
-import { sanitiseAndTrim } from '/common/requests/util'
 import { toastStore } from '../toasts'
-import { inline, LazyPromise, lazyPromise } from '/common/util'
+import { inline, LazyPromise, lazyPromise, round, stopResponse } from '/common/util'
 import type { ResponseState } from '../response'
 import { EVENTS, events } from '/web/emitter'
 import { debug } from '/common/debug'
@@ -53,12 +53,12 @@ registerTemplateLocator((id: string) => {
 })
 
 export const botGen = {
-  stream: streamResponse,
+  streamResponse: streamResponse,
   getActivePromptOptions,
   getMessageParent,
 }
 
-export type GenerateOpts = { signal: AbortController; hint?: string } & /**
+export type GenerateOpts = { signal: AbortController; hint?: string; systemPrompt?: string } & /**
  * A user sending a new message
  */ (
   | { kind: 'send'; text: string; messageId?: string }
@@ -83,7 +83,7 @@ export type GenerateOpts = { signal: AbortController; hint?: string } & /**
    * Generate a message on behalf of the user
    */
   | { kind: 'self' }
-  | { kind: 'summary' }
+  | { kind: 'summary'; text: string; assistant?: string; messageId?: string }
   | {
       kind: 'chat-query'
       messageId?: string
@@ -94,11 +94,15 @@ export type GenerateOpts = { signal: AbortController; hint?: string } & /**
 )
 
 type ChatRequest = Awaited<ReturnType<typeof buildChatRequest>>
-type StreamOpts = Exclude<GenerateOpts, { type: 'ooc' | 'send-noreply' | 'send-event:ooc' }> & {
-  onTick?: TickHandler
-}
+type StreamOpts = { state?: 'error' | 'done' | 'complete' } & Exclude<
+  GenerateOpts,
+  { type: 'ooc' | 'send-noreply' | 'send-event:ooc' }
+> & {
+    onTick?: TickHandler
+  }
 
 async function streamResponse(opts: StreamOpts) {
+  debug('bot-gen')('request type: %s', opts.kind)
   const { details, lastChatId } = getStore('chat').getState()
   const active = details[lastChatId]
   if (!active) {
@@ -114,6 +118,13 @@ async function streamResponse(opts: StreamOpts) {
     messages.push({
       role: 'user',
       content: `${assistant}: ${opts.text}`,
+    })
+  }
+
+  if (opts.kind === 'summary') {
+    messages.push({
+      role: 'user',
+      content: `${opts.assistant || 'Chat Summary Query'}`,
     })
   }
 
@@ -134,15 +145,29 @@ async function streamResponse(opts: StreamOpts) {
   await handlePreStreamResponse(opts, req)
 
   const meta: any = {
+    start: Date.now(),
     ctx: req.entities.settings.maxContextLength,
     len: req.prompt.template.length,
   }
+
+  if (req.entities.settings.streamResponse) {
+    meta.wait = 0
+  }
+
   const provider = getProvider(req.entities.settings?.providerId)
   const conn = provider ? getProviderConnection(provider) : undefined
+
+  const jsonSchema =
+    opts.kind === 'summary' ||
+    opts.kind === 'chat-query' ||
+    req.entities.settings.jsonEnabled === 'standard'
+      ? req.request.jsonSchema
+      : undefined
 
   const payload = conn?.local
     ? getLocalPayload({
         ...req.request,
+        jsonSchema,
         messages: messages,
         prompt: assembled.prompt,
       })
@@ -153,17 +178,11 @@ async function streamResponse(opts: StreamOpts) {
     prefix += ' '
   }
 
-  const stops = getStoppingStrings(req.request, req.entities.settings)
-  const sanitize = (text: string) =>
-    sanitiseAndTrim({
-      char: req.props.replyAs,
-      members: req.entities.members,
-      gen: req.request.settings!,
-      text,
-      stops,
-    })
+  const sanitize = (text: string) => (text || '').trim()
 
   const format = req.request.settings?.modelFormat
+  const stops = req.props.stops
+
   if (stops.length < 4 && format) {
     const tags = BUILTIN_FORMATS[format]
     if (tags?.closeBot?.trim()) stops.push(tags.closeBot)
@@ -171,6 +190,7 @@ async function streamResponse(opts: StreamOpts) {
   }
 
   const messageId = req.request.replacing?._id || req.request.requestId
+
   waiting({
     mode: opts.kind,
     characterId: req.request.replyAs._id,
@@ -182,12 +202,11 @@ async function streamResponse(opts: StreamOpts) {
     userId: undefined, // Do we ever need this?
   })
 
-  localEmit({ type: 'service-prompt', id: messageId, prompt: JSON.stringify(messages, null, 2) })
-
-  const jsonSchema =
-    opts.kind === 'chat-query' || req.entities.settings.jsonEnabled === 'standard'
-      ? req.schema?.schema
-      : undefined
+  localEmit({
+    type: 'service-prompt',
+    id: messageId,
+    prompt: JSON.stringify(stripImageContent(messages), null, 2),
+  })
 
   await genApi.inferenceStream(
     {
@@ -210,18 +229,15 @@ async function streamResponse(opts: StreamOpts) {
 
   /** In development: Performing JSON output in a separate call if specified by the schema */
 
-  if (
-    opts.kind !== 'chat-query' &&
-    req.entities.settings.jsonEnabled === 'separate' &&
-    req.schema
-  ) {
+  const isInseparableKind = opts.kind === 'chat-query' || opts.kind === 'summary'
+  if (!isInseparableKind && req.entities.settings.jsonEnabled === 'separate' && req.schema) {
     await genApi.inferenceStream(
       {
         settings: req.entities.presets.json || req.request.settings,
-        jsonSchema: req.schema.schema,
-        messages: messages,
+        jsonSchema: req.request.jsonSchema,
+        messages: messages.concat({ role: 'user', content: 'Chat Summary Query' }),
         prompt: assembled.prompt,
-        payload,
+        // payload,
         signal: opts.signal,
         stop: stops,
         chatId: req.request.chat._id,
@@ -251,7 +267,7 @@ async function handleStreamTick(
   },
   tick: { state: InferenceState; response: string; json?: JsonOutput }
 ) {
-  const { opts, req, active, sanitize } = input
+  const { opts, req, active, sanitize, meta } = input
 
   let prefix = input.req.request.continuing?.msg || ''
   if (prefix) {
@@ -260,8 +276,10 @@ async function handleStreamTick(
 
   switch (tick.state) {
     case 'error':
-      input.lazy.reject(tick.response)
-      toastStore.error(tick.response)
+      if (opts.state) return
+
+      opts.state = 'error'
+      input.lazy.reject(new Error(tick.response))
       // waiting(undefined)
       break
 
@@ -279,6 +297,7 @@ async function handleStreamTick(
     }
 
     case 'partial': {
+      if (meta.wait === 0) meta.wait = round((Date.now() - meta.start) / 1000)
       const trimmed = sanitize(prefix + tick.response)
       if (req.request.settings?.streamResponse) {
         const hydrated = input.jsonCall ? req.schema?.hydrator?.(trimmed) : undefined
@@ -301,6 +320,7 @@ async function handleStreamTick(
     }
 
     case 'thought': {
+      if (meta.wait === 0) meta.wait = round((Date.now() - meta.start) / 1000)
       if (opts.kind === 'chat-query') break
       localEmit({
         type: 'inference-thought',
@@ -312,6 +332,9 @@ async function handleStreamTick(
     }
 
     case 'done': {
+      if (!!opts.state) return
+
+      opts.state = 'done'
       const trimmed = sanitize(prefix + tick.response)
       const hydrated = input.jsonCall ? req.schema?.hydrator?.(trimmed) : undefined
 
@@ -418,6 +441,19 @@ async function handlePostStreamResponse(input: {
 }) {
   const { req, opts, response, json, meta } = input
 
+  if (opts.signal.signal.aborted) {
+    getStore('responses').setState({
+      retrying: undefined,
+      partial: undefined,
+    })
+
+    if (!response?.trim()) {
+      return
+    }
+    // console.log('aborted -- ignoring post stream handler')
+    // return
+  }
+
   const { replacing, parent, replyAs, continuing } = req.request
   const messageId = replacing?._id || req.request.requestId
   const chatId = req.request.chat._id
@@ -441,7 +477,7 @@ async function handlePostStreamResponse(input: {
         meta,
       }
 
-      await msgsApi.editMessageProps(replacing, payload)
+      await msgsApi.editMessageProps(replacing, { ...payload, assignTree: true })
       return
     }
 
@@ -454,7 +490,9 @@ async function handlePostStreamResponse(input: {
         msg: response,
         state: 'continued',
         meta,
+        assignTree: true,
       })
+
       return
     }
 
@@ -489,21 +527,30 @@ async function handlePostStreamResponse(input: {
 
   if (input.jsonCall) {
     await msgsApi.editMessageProps({ _id: messageId, chatId }, { json })
+    getStore('responses').setState({
+      retrying: undefined,
+      partial: undefined,
+    })
+    return
   }
 
+  const canCreate = opts.state === 'done'
   req.request.response = response
 
-  await msgsApi.createMessage({
-    kind: opts.kind.startsWith('send-event') ? opts.kind : 'send-noreply',
-    chatId,
-    messageId,
-    text: response,
-    parent,
-    character: replyAs,
-    bot: true,
-    meta,
-    json,
-  })
+  if (canCreate) {
+    opts.state = 'complete'
+    await msgsApi.createMessage({
+      kind: opts.kind?.startsWith('send-event') ? opts.kind : 'send-noreply',
+      chatId,
+      messageId: messageId, // Consider removing deterministic ID creation
+      text: response,
+      parent,
+      character: replyAs,
+      bot: true,
+      meta,
+      json,
+    })
+  }
 
   getStore('responses').setState({
     retrying: undefined,
@@ -525,6 +572,7 @@ async function buildChatRequest(opts: GenerateOpts) {
     kind: opts.kind,
     chat: entities.chat,
     user: entities.user,
+    systemPrompt: opts.systemPrompt,
     char: removeAvatar(entities.char),
     sender: removeAvatar(entities.profile),
     members: entities.members.map(removeAvatar),
@@ -553,11 +601,12 @@ async function buildChatRequest(opts: GenerateOpts) {
     jsonValues: props.json,
     reschemaPrompt: props.reschemaPrompt,
     eventStream: true,
-    jsonSchema: schema?.schema,
+    jsonSchema: schema ? { fields: schema.schema, entities: schema.entities } : undefined,
+    stop: [],
   }
 
-  const stops = getStoppingStrings(request, request.settings)
-  request.settings!.stopSequences = stops
+  request.stop = getStoppingStrings(request, request.settings)
+  request.settings!.stopSequences = request.stop
 
   if (
     opts.kind === 'send' ||
@@ -565,7 +614,8 @@ async function buildChatRequest(opts: GenerateOpts) {
     opts.kind === 'continue' ||
     opts.kind === 'retry' ||
     opts.kind === 'self' ||
-    opts.kind === 'chat-query'
+    opts.kind === 'chat-query' ||
+    opts.kind === 'summary'
   ) {
     request.attachments = entities.attachments
   }
@@ -602,7 +652,7 @@ async function getActivePromptOptions(
     replyAs: props.replyAs,
     user: entities.user,
     userEmbeds: [],
-    book: entities.book,
+    books: entities.books,
     continue: props.continue,
     impersonate: entities.impersonating,
     chatEmbeds: [],
@@ -635,6 +685,10 @@ type EventKind =
   | 'send-event:ooc'
 
 async function createActiveChatPrompt(opts: GenerateOpts) {
+  if (localStorage.error_test === 'gen-prompt') {
+    throw new Error(`Prompt error test`)
+  }
+
   const { details, lastChatId } = getStore('chat').getState()
   const active = details[lastChatId]
 
@@ -647,7 +701,12 @@ async function createActiveChatPrompt(opts: GenerateOpts) {
   const props = await getGenerateProps(opts, active)
   const entities = props.entities
   const template = getTemplate({
-    settings: opts.kind === 'chat-query' ? entities.presets.json : entities.settings,
+    settings:
+      opts.kind === 'chat-query'
+        ? entities.presets.json
+        : opts.kind === 'summary'
+        ? entities.presets.summary
+        : entities.settings,
     chat: entities.chat,
   })
 
@@ -711,62 +770,78 @@ async function createActiveChatPrompt(opts: GenerateOpts) {
         )
       : undefined
 
-  const prompt = await createPromptParts(
-    {
-      kind: opts.kind,
-      sender: entities.profile,
+  const promptOpts: PromptOpts = {
+    kind: opts.kind,
+    sender: entities.profile,
 
-      // Relevant characters
-      char: entities.char,
-      replyAs: props.replyAs,
-      impersonate: props.impersonate,
+    // Relevant characters
+    char: entities.char,
+    replyAs: props.replyAs,
+    impersonate: props.impersonate,
 
-      chat: entities.chat,
-      user: entities.user,
-      members: entities.members.concat([entities.profile]),
-      continue: props?.continue,
-      book: entities.book,
-      retry: props?.retry,
-      settings: entities.settings,
-      messages: props.messages,
-      characters: entities.characters,
-      lastMessage: entities.lastMessage?.date || '',
-      trimSentences: ui.trimSentences,
-      chatEmbeds,
-      userEmbeds,
-      resolvedScenario,
-      jsonValues: props.json,
-      contextBuffer: entities.settings.maxTokens,
-      props: entities.props,
-      schema: schema?.schema,
-    },
-    encoder
-  )
+    chat: entities.chat,
+    user: entities.user,
+    members: entities.members.concat([entities.profile]),
+    continue: props?.continue,
+    books: entities.books,
+    retry: props?.retry,
+    settings: entities.settings,
+    messages: props.messages,
+    characters: entities.characters,
+    lastMessage: entities.lastMessage?.date || '',
+    trimSentences: ui.trimSentences,
+    chatEmbeds,
+    userEmbeds,
+    resolvedScenario,
+    jsonValues: props.json,
+    contextBuffer: entities.settings.maxTokens,
+    props: entities.props,
+    schema: schema ? { fields: schema.schema, entities: schema.entities } : undefined,
+  }
+
+  const lines = await getPromptHistory(promptOpts, encoder)
+
+  const retrievalAllowed =
+    opts.kind === 'request' ||
+    opts.kind === 'self' ||
+    opts.kind === 'continue' ||
+    opts.kind === 'send' ||
+    opts.kind === 'retry' ||
+    opts.kind === 'chat-query'
+
+  if (retrievalAllowed) {
+    const { users, chats } = await getSemanticRetrievalContent(
+      text,
+      entities,
+      props.messages,
+      lines.slice()
+    )
+
+    if (chats?.messages.length) {
+      for (const chat of chats.messages) {
+        const name =
+          entities.chatBots.find((b) => b._id === chat.entityId)?.name ||
+          entities.members.find((m) => m._id === chat.entityId)?.handle ||
+          'You'
+
+        chatEmbeds.push({ date: '', distance: chat.similarity, text: chat.msg, name, id: '' })
+      }
+    }
+
+    if (users?.messages.length) {
+      for (const chat of users.messages) {
+        userEmbeds.push({ date: '', distance: chat.similarity, text: chat.msg, id: '' })
+      }
+    }
+  }
+
+  const prompt = await createPromptParts(promptOpts, encoder)
 
   if (entities.settings.modelFormat) {
     prompt.template.parsed = replaceTags(prompt.template.parsed, entities.settings.modelFormat)
   }
 
-  const embedLines = (prompt.template.history || prompt.lines).slice()
-
-  const { users, chats } = await getRetrievalBreakpoint(text, entities, props.messages, embedLines)
-
-  if (chats?.messages.length) {
-    for (const chat of chats.messages) {
-      const name =
-        entities.chatBots.find((b) => b._id === chat.entityId)?.name ||
-        entities.members.find((m) => m._id === chat.entityId)?.handle ||
-        'You'
-
-      chatEmbeds.push({ date: '', distance: chat.similarity, text: chat.msg, name, id: '' })
-    }
-  }
-
-  if (users?.messages.length) {
-    for (const chat of users.messages) {
-      userEmbeds.push({ date: '', distance: chat.similarity, text: chat.msg, id: '' })
-    }
-  }
+  // const embedLines = (prompt.template.history || prompt.lines).slice()
 
   // if (opts.kind === 'chat-query') {
   //   const assistant = opts.assistant || 'Chat Query'
@@ -782,11 +857,11 @@ async function createActiveChatPrompt(opts: GenerateOpts) {
   return { prompt, props, entities, chatEmbeds, userEmbeds, template, schema }
 }
 
-async function getRetrievalBreakpoint(
+async function getSemanticRetrievalContent(
   text: string | undefined,
   ents: PromptEntities,
   messages: AppSchema.ChatMessage[],
-  lines: PromptLine[]
+  lines: HistoryLine[]
 ) {
   const { settings, chat } = ents
   if (!text?.trim()) return { users: undefined, chats: undefined }
@@ -795,13 +870,15 @@ async function getRetrievalBreakpoint(
   let removed = 0
   let count = 0
 
+  let contextLength =
+    +localStorage.test_embed > 0 ? localStorage.test_embed : settings.maxContextLength!
   for (let i = 0; i < lines.length; i++) {
     const line = lines[lines.length - 1 - i]
-    const size = await encoder(line.line)
+    const size = await encoder(line.msg)
     removed += size
     count++
 
-    if (removed > settings.maxContextLength!) break
+    if (removed > contextLength) break
   }
 
   const users = text && chat.userEmbedId ? await embedApi.query(chat.userEmbedId, text) : undefined
@@ -809,7 +886,8 @@ async function getRetrievalBreakpoint(
   const bp = messages[messages.length - count - 1]
   if (!bp) return { users, chats: undefined }
 
-  const chats = settings.memoryChatEmbedLimit
+  const embedLimit = settings.memoryChatEmbedLimit ?? 500
+  const chats = embedLimit
     ? await embedApi.queryChat(
         chat._id,
         text,
@@ -833,10 +911,11 @@ export type GenerateProps = {
   parent?: AppSchema.ChatMessage
   json: Record<string, any>
   reschemaPrompt?: string
+  stops: string[]
 }
 
 async function getGenerateProps(opts: GenerateOpts, active: ChatDetail) {
-  const entities = await getPromptEntities()
+  const entities = await getPromptEntities('messageId' in opts ? { messageId: opts.messageId } : {})
 
   const json = entities.messages.reduce<Record<string, any>>(
     (prev, curr) => Object.assign(prev, curr.json?.values || {}),
@@ -858,17 +937,44 @@ async function getGenerateProps(opts: GenerateOpts, active: ChatDetail) {
     if (curr.characterId) return curr
   }, undefined)
 
+  const stops = getStoppingStrings(
+    {
+      user: entities.user,
+      char: entities.char,
+      characters: entities.characters,
+      impersonate: entities.impersonating,
+      replyAs: entities.char,
+      members: entities.members,
+      sender: entities.profile,
+    },
+    entities.conn.preset
+  )
+
+  entities.messages = entities.messages.map((msg) => {
+    if (!msg.characterId) return msg
+    if (msg.userId) return msg
+
+    const author = entities.characters[msg.characterId]?.name || ''
+    const text = stopResponse({ text: msg.msg, author, stops })
+    return { ...msg, msg: text }
+  })
+
   const props: GenerateProps = {
     entities,
     replyAs: entities.char,
-    messages: entities.messages.slice(),
+    messages: entities.messages,
     impersonate: entities.impersonating,
     parent: getMessageParent(opts.kind, entities.messages),
     json,
+    stops,
   }
 
   if (opts.kind === 'chat-query' && entities.presets.json) {
     entities.settings = entities.presets.json
+  }
+
+  if (opts.kind === 'summary' && entities.presets.summary) {
+    entities.settings = entities.presets.summary
   }
 
   if ('text' in opts) {
@@ -887,13 +993,13 @@ async function getGenerateProps(opts: GenerateOpts, active: ChatDetail) {
   }
 
   const getBot = (id: string) => {
-    if (!isLoggedIn() && !id.startsWith('temp-')) {
+    if (!isLoggedIn() && !id?.startsWith('temp-')) {
       const { characters } = getStore('character').getState()
       const char = characters.list.find((ch) => ch._id === id)
       if (char) return char
     }
 
-    if (id.startsWith('temp-')) return entities.chat.tempCharacters?.[id]!
+    if (id?.startsWith('temp-')) return entities.chat.tempCharacters?.[id]!
 
     const { chatChars } = getStore('character').getState()
     const fullChar = chatChars.map[id]
@@ -1064,4 +1170,8 @@ function removeAvatars(chars: Record<string, AppSchema.Character>) {
 
 function waiting(next: ResponseState['waiting']) {
   events.emit(EVENTS.setWaiting, next)
+
+  if (next) {
+    console.log(`${EVENTS.setWaiting}: ${inline(next)}`)
+  }
 }

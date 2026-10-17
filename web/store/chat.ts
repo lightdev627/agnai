@@ -12,7 +12,6 @@ import { getPromptEntities } from './data/common'
 import { imageApi } from './data/image'
 import { usersApi } from './data/user'
 import { embedApi } from './embeddings'
-import { msgStore } from './message'
 import { subscribe } from './socket'
 import { toastStore } from './toasts'
 import { replace } from '/common/util'
@@ -175,6 +174,18 @@ export const chatStore = createStore<ChatState>('chat', {
           memberIds: { ...memberIds, [id]: res.result! },
         }
       }
+    },
+
+    async *forkChat(state, newLeafId: string) {
+      if (!state.lastChatId || !state.details[state.lastChatId]) return
+      const active = state.details[state.lastChatId]
+
+      const nextDetails = {
+        ...state.details,
+        [state.lastChatId]: { ...active, chat: { ...active.chat, treeLeafId: newLeafId } },
+      }
+
+      return { details: nextDetails }
     },
 
     async *openChat(
@@ -540,13 +551,13 @@ export const chatStore = createStore<ChatState>('chat', {
 
     async computePrompt(
       { details },
+      path: AppSchema.ChatMessage[],
       msg: AppSchema.ChatMessage,
       perspective?: AppSchema.Character
     ) {
       const detail = details[msg.chatId]
       if (!detail) return
 
-      const { msgs, messageHistory } = msgStore.getState()
       const entities = await getPromptEntities()
 
       const encoder = await getEncoder()
@@ -568,11 +579,11 @@ export const chatStore = createStore<ChatState>('chat', {
           lastMessage: entities.lastMessage?.date || '',
           replyAs: perspective || replyAs,
           sender: entities.profile,
-          messages: messageHistory.concat(msgs).filter((m) => m.createdAt < msg.createdAt),
+          messages: path,
           chatEmbeds: [],
           userEmbeds: [],
           resolvedScenario,
-          jsonValues: msgs.reduce((prev, curr) => Object.assign(prev, curr.json?.values || {}), {}),
+          jsonValues: path.reduce((prev, curr) => Object.assign(prev, curr.json?.values || {}), {}),
         },
         encoder
       )

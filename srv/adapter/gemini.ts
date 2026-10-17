@@ -1,6 +1,6 @@
 import { decryptText } from '../db/util'
 import { ModelAdapter } from './type'
-import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
+import { sanitise } from '/common/requests/util'
 import {
   Content,
   GenerateContentConfig,
@@ -11,10 +11,8 @@ import {
 } from '@google/genai'
 import { remapMessages } from './template-chat-payload'
 import { getMimeTypeBase64 } from '/common/util'
-import { getEncoderByName } from '../tokenize'
 import { getJsonSchemaPayload } from '/common/guidance/json-schema'
 import { getStoppingStrings } from '/common/requests/payloads'
-import { toChatMessages } from '/common/template-messages'
 import { LLM_DEBUG } from './util'
 
 const SYSTEM_INCAPABLE: Record<string, boolean> = {
@@ -24,12 +22,7 @@ const SYSTEM_INCAPABLE: Record<string, boolean> = {
 export const handleGemini: ModelAdapter = async function* (opts) {
   const key = opts.guest ? opts.gen.thirdPartyKey : decryptText(opts.gen.thirdPartyKey!)
 
-  const counter = getEncoderByName('gemma')
-  let messages = opts.messages
-  if (!messages) {
-    const res = await toChatMessages(opts, counter.count)
-    messages = res.messages
-  }
+  let messages = opts.messages!
 
   const googleModel = opts.gen.thirdPartyModel || opts.gen.googleModel
 
@@ -222,29 +215,13 @@ export const handleGemini: ModelAdapter = async function* (opts) {
         yield { thoughts: text }
       } else {
         accum += text || ''
-        yield {
-          partial: sanitiseAndTrim({
-            text: accum,
-            char: opts.replyAs,
-            members: opts.members,
-            gen: opts.gen,
-            stops: generationConfig.stopSequences,
-          }),
-        }
+        yield { partial: accum }
       }
     }
   }
 
   const parsed = sanitise(accum)
-  const trimmed = trimResponseV2(
-    parsed,
-    opts.replyAs,
-    opts.members,
-    opts.gen,
-    generationConfig.stopSequences
-  )
-
-  yield trimmed || parsed
+  yield parsed
 }
 
 const safetySettings: SafetySetting[] = [

@@ -1,13 +1,39 @@
 import { getSchemaAliases, parseVariableName, StructureEntities } from './guidance/json-schema'
-import { UserType } from './types/admin'
+import { Admin } from './types'
+import { FeatureAccess, UserType } from './types/admin'
 import type { AppSchema } from './types/schema'
 import type { GenerateRequestV2 } from '/srv/adapter/type'
 
 export const PING_INTERVAL_MS = 30000
 
+export function stopResponse(opts: { text: string; author: string; stops: string[] }) {
+  let generated = opts.text
+
+  if (opts.author) {
+    generated = generated.split(`${opts.author}:`).join('').trim()
+  }
+
+  let index = -1
+  let trimmed = opts.stops.reduce((prev, endToken) => {
+    const idx = generated.indexOf(endToken)
+
+    if (idx === -1) return prev
+
+    const text = generated.slice(0, idx)
+    if (index === -1 || idx < index) {
+      index = idx
+      return text
+    }
+
+    return prev
+  }, '')
+
+  return trimmed || generated
+}
+
 // this is an edited and inverted ver of https://stackoverflow.com/a/70385497
 export function incompleteJson(data: string) {
-  if (data.startsWith('{') && !data.endsWith('}')) return true
+  if (data?.startsWith('{') && !data.endsWith('}')) return true
   try {
     const parsed = JSON.parse(data)
     if (parsed && typeof parsed === 'object') {
@@ -52,7 +78,7 @@ export function parseEvent(msg: string) {
 
 export function getMimeTypeBase64(base64: string) {
   const [start, encode] = base64.split(';')
-  if (!start.startsWith('data:')) return { mimeType: 'image/jpeg', data: base64 }
+  if (!start?.startsWith('data:')) return { mimeType: 'image/jpeg', data: base64 }
 
   return { mimeType: start.slice(5), data: encode.replace('base64,', '') }
 }
@@ -194,7 +220,7 @@ export function toDuration(valueSecs: number, full?: boolean) {
 
   if (full) {
     return [`${days}d`, `${hours}h`, `${minutes}m`, `${seconds}s`]
-      .filter((time) => !time.startsWith('0'))
+      .filter((time) => !time?.startsWith('0'))
       .join(':')
   }
 
@@ -393,7 +419,7 @@ export function getBotName(
   const charId = msg.characterId || ''
   if (!charId) return replyAs?.name || main.name
 
-  if (charId.startsWith('temp-')) {
+  if (charId?.startsWith('temp-')) {
     const temp = chat.tempCharacters?.[charId]
     if (!temp) return main.name
     return temp.name
@@ -684,10 +710,11 @@ const SAFE_NAME = /[_\/'"!@#$%^&*()\[\],\.:;=+-]+/g
 
 export function hydrateTemplate(
   def: Ensure<AppSchema.Character['json']>,
-  json: any,
+  values: any,
   opts: StructureEntities,
   aliases?: Record<string, string>
 ) {
+  const json = values || {}
   const map = new Map<string, string>()
   const allAliases = { ...aliases, ...getSchemaAliases(def.schema) }
 
@@ -888,17 +915,23 @@ export type LazyPromise<T = any> = {
 
 export function lazyPromise<T = any>() {
   const parts = {
+    state: 'pending' as 'pending' | 'resolved' | 'rejected',
     resolve: (result: T) => {},
     reject: (error: any) => {},
     promise: {} as any as Promise<{ result?: T; error?: any }>,
   }
 
-  parts.promise = new Promise<{ result?: T; error?: any }>((resolve, _reject) => {
+  parts.promise = new Promise<{ result?: T; error?: any }>((resolve, reject) => {
     parts.resolve = (result: any) => {
+      if (parts.state !== 'pending') return
+      if (parts.state === 'pending') parts.state = 'resolved'
+
       resolve({ result, error: undefined })
     }
     parts.reject = (error: any) => {
-      resolve({ result: undefined, error })
+      if (parts.state !== 'pending') return
+      if (parts.state === 'pending') parts.state = 'rejected'
+      reject(error)
     }
   })
 
@@ -907,6 +940,7 @@ export function lazyPromise<T = any>() {
 
 export function lazySimplePromise<T = any>() {
   const parts = {
+    state: 'pending' as 'pending' | 'resolved' | 'rejected',
     resolve: (result: T) => {},
     reject: (error: any) => {},
     promise: {} as any as Promise<T>,
@@ -914,12 +948,82 @@ export function lazySimplePromise<T = any>() {
 
   parts.promise = new Promise<T>((resolve, reject) => {
     parts.resolve = (result: any) => {
+      if (parts.state !== 'pending') return
+      if (parts.state === 'pending') parts.state = 'resolved'
       resolve(result)
     }
     parts.reject = (error: any) => {
+      if (parts.state !== 'pending') return
+      if (parts.state === 'pending') parts.state = 'rejected'
       reject(error)
     }
   })
 
   return parts
+}
+
+export function sortAlpha<T extends {}>(opts: {
+  prop: keyof T
+
+  /** Descending order? */
+  desc?: boolean
+
+  /** Case insensitive */
+  ignoreCase?: boolean
+}) {
+  const sorter = (left: T, right: T) => {
+    let l = '' + (left[opts.prop] || '')
+    let r = '' + (right[opts.prop] || '')
+
+    if (opts.ignoreCase) {
+      l = l.toLowerCase()
+      r = r.toLowerCase()
+    }
+
+    return l.localeCompare(r) * (opts.desc ? -1 : 1)
+  }
+
+  return sorter
+}
+
+export function getUserFeatureAccess(
+  user: AppSchema.User | undefined,
+  tier: UserSub | undefined
+): Admin.UserType {
+  if (!user) return 'guests'
+  if (user.admin) return 'admins'
+  if (tier && tier.level > 0) return 'subscribers'
+  if (tier && tier.level === 0) return 'users'
+  if (user._id !== 'anon') return 'users'
+
+  return 'guests'
+}
+
+export function canUseFeature(requires: FeatureAccess, userType: UserType): boolean {
+  switch (requires) {
+    case 'off': {
+      return false
+    }
+
+    case 'admins': {
+      return userType === 'admins'
+    }
+
+    case 'subscribers': {
+      return userType === 'subscribers' || userType === 'moderators' || userType === 'admins'
+    }
+
+    case 'users': {
+      return (
+        userType === 'users' ||
+        userType === 'subscribers' ||
+        userType === 'moderators' ||
+        userType === 'admins'
+      )
+    }
+
+    case 'all': {
+      return true
+    }
+  }
 }

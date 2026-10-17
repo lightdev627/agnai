@@ -50,8 +50,8 @@ import {
 } from '../../../store'
 import { markdown } from '../../../shared/markdown'
 import Button, { ButtonSchema } from '/web/shared/Button'
-import { ContextState, useAppContext } from '/web/store/context'
-import { hydrateTemplate, trimSentence } from '/common/util'
+import { ChatContext, useAppContext } from '/web/store/context'
+import { hydrateTemplate, stopResponse, trimSentence } from '/common/util'
 import { EVENTS, events } from '/web/emitter'
 import { Pill } from '/web/shared/Card'
 import { DropMenu } from '/web/shared/DropMenu'
@@ -69,7 +69,7 @@ import { MessageAttachments } from './Attachments'
 import { ComponentEventEmitter, getJsonSchema, isToday, toShortDuration } from '/web/shared/util'
 import { extractReasoning } from '/common/reasoning'
 import { SendFunc } from './InputBar'
-import { PresetContext, PresetState } from '/web/store/preset-context'
+import { ContextPreset, PresetContext } from '/web/store/preset-context'
 import { runPresetParsers } from '/common/chat'
 
 type MessageProps = {
@@ -188,9 +188,24 @@ const Message: Component<MessageProps> = (props) => {
   const content = createMemo(() => {
     const message = msg()
 
+    let display = message.json?.response || props.content
+
+    if (message.json?.values) {
+      const autoDefs = getJsonSchema({
+        characterId: message.characterId,
+        preset: props.preset?.current!,
+      })
+
+      const json = getJsonUpdate(ctx, autoDefs?.schema, {
+        ...message.json.values,
+        response: props.content,
+      })
+      display = json?.json.response || display
+    }
+
     const msgV2 = getMessageContent(ctx, props.preset?.current, props, state.chatProfiles, {
       ...message,
-      msg: props.content,
+      msg: display,
     })
     return msgV2
   })
@@ -201,7 +216,7 @@ const Message: Component<MessageProps> = (props) => {
     const sender = senderJson ? JSON.parse(senderJson) : {}
 
     if (message.json) {
-      const json = jsonValues()
+      const json = { ...jsonValues() }
 
       const autoDefs = getJsonSchema({
         characterId: message.characterId,
@@ -355,7 +370,7 @@ const Message: Component<MessageProps> = (props) => {
             >
               <Show when={ctx.flags.debug}>
                 <span class="text-600 flex w-full justify-center text-[0.5rem]">
-                  {msg().parent?.slice(0, 4) || 'root'}
+                  {msg().parent?.slice(0, 4) || 'root'} #{props.index}
                 </span>
               </Show>
               <Switch>
@@ -643,7 +658,7 @@ const Message: Component<MessageProps> = (props) => {
                 </Match>
                 <Match when={edit()}>
                   <div
-                    class="msg-edit-text-box"
+                    class="msg-edit-text-box p-1 !outline-0"
                     ref={editRef!}
                     contentEditable={true}
                     onKeyUp={(ev) => {
@@ -694,7 +709,7 @@ const JsonEdit: Component<{
           </Pill>
           <div
             ref={(r) => (r.innerText = props.msg.msg)}
-            class="msg-edit-text-box rounded-md rounded-tl-none border border-[var(--bg-500)] p-1"
+            class="msg-edit-text-box rounded-md rounded-tl-none border border-[var(--bg-500)] p-1 !outline-0"
             contentEditable={true}
             onKeyUp={(ev: any) => props.message(ev.target.innerText)}
           ></div>
@@ -709,7 +724,7 @@ const JsonEdit: Component<{
             </Pill>
             <div
               ref={(r) => (r.innerText = editing[key])}
-              class="msg-edit-text-box rounded-md rounded-tl-none border border-[var(--bg-500)] p-1"
+              class="msg-edit-text-box rounded-md rounded-tl-none border border-[var(--bg-500)] p-1 !outline-0"
               contentEditable={true}
               onKeyUp={(ev: any) => {
                 setEditing(key, ev.target.innerText)
@@ -736,7 +751,7 @@ const MessageOptions: Component<{
   textBeforeGenMore?: string
   onRemove: () => void
   showMore: Signal<boolean>
-  ctx: ContextState
+  ctx: ChatContext
   preset: PresetContext | undefined
   canUseAttachments: boolean | undefined
 }> = (props) => {
@@ -772,7 +787,8 @@ const MessageOptions: Component<{
         class: 'prompt-btn',
         outer: props.ui.msgOptsInline.prompt,
         show: !!props.msg.characterId && props.msg.adapter !== 'image',
-        onClick: () => !props.partial && chatStore.computePrompt(props.msg),
+        onClick: () =>
+          !props.partial && chatStore.computePrompt(props.ctx.messages.path, props.msg),
         icon: Terminal,
       },
 
@@ -793,7 +809,10 @@ const MessageOptions: Component<{
         class: 'fork-btn',
         show: !props.last,
         outer: props.ui.msgOptsInline.fork,
-        onClick: () => !props.partial && msgStore.fork(props.msg._id),
+        onClick: () => {
+          if (props.partial) return
+          chatStore.forkChat(props.msg._id)
+        },
         icon: Split,
       },
 
@@ -1140,8 +1159,8 @@ function retryMessage(original: AppSchema.ChatMessage, split: SplitMessage) {
 }
 
 function renderMessage(
-  ctx: ContextState,
-  preset: PresetState | undefined,
+  ctx: ChatContext,
+  preset: ContextPreset | undefined,
   text: string,
   isUser: boolean,
   adapter?: string
@@ -1188,7 +1207,7 @@ function wrapWithQuoteElement(str: string) {
     Regex magic explained:
     <[\s\S]*?>      - skip all HTML tags   eg. <sumting>
     ```[\s\S]*?```  - skip all code blocks eg. <pre>/``` markdown transform <pre><code> to ```
-    ``[\s\S]*?``    - skip all inline code eg. <code>/`` markdown transform <code> to `` | this is a non standard markup 
+    ``[\s\S]*?``    - skip all inline code eg. <code>/`` markdown transform <code> to `` | this is a non standard markup
     `[\s\S]*?`      - skip all inline code eg. <code>/` markdown transform <code> to `
 
     (\".+?\")       - capture all regular double quotes, which are not part of HTML tags or code blocks
@@ -1227,8 +1246,8 @@ function sendAction(_send: MessageProps['sendMessage'], action: AppSchema.ChatAc
 
 function parseMessage(
   msg: string,
-  ctx: ContextState,
-  preset: PresetState | undefined,
+  ctx: ChatContext,
+  preset: ContextPreset | undefined,
   isUser: boolean,
   adapter?: string
 ) {
@@ -1259,8 +1278,8 @@ function canShowMeta(msg: AppSchema.ChatMessage, history: any) {
 }
 
 function getMessageContent(
-  ctx: ContextState,
-  preset: PresetState | undefined,
+  ctx: ChatContext,
+  preset: ContextPreset | undefined,
   props: MessageProps,
   profiles: ChatState['chatProfiles'],
   msg: AppSchema.ChatMessage & { handle?: string }
@@ -1322,15 +1341,30 @@ function getMessageContent(
     message = trimSentence(message)
   }
 
+  const baseStops = preset?.stopSequences || []
+  const sender = msg.characterId
+    ? ctx.allBots[msg.characterId]?.name
+    : msg.userId
+    ? ctx.profileMap[msg.userId]?.handle
+    : ''
+
+  const allStops = (preset?.disableNameStops ? baseStops : baseStops.concat(ctx.nameStops)).filter(
+    (name) => name !== sender + ':'
+  )
+
+  const trimmed = msg.userId
+    ? message
+    : stopResponse({ text: message, author: sender, stops: allStops })
+
   return {
     type: 'message' as const,
-    message: renderMessage(ctx, preset, message, !!msg.userId, msg.adapter),
+    message: renderMessage(ctx, preset, trimmed, !!msg.userId, msg.adapter),
     thoughts,
     class: 'not-streaming',
   }
 }
 
-function getJsonUpdate(ctx: ContextState, def: AppSchema.Character['json'], json: any) {
+function getJsonUpdate(ctx: ChatContext, def: AppSchema.Character['json'], json: any) {
   if (!def) return
   const hydration = hydrateTemplate(def, json, {
     char: ctx.char!,

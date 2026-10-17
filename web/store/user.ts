@@ -23,6 +23,7 @@ import {
 } from '../shared/colors'
 import { UserType } from '/common/types/admin'
 import { EMBED_MODELS, embedApi } from './embeddings'
+import { ImageProviderSettings } from '/common/types/image-schema'
 
 const BACKGROUND_KEY = 'ui-bg'
 export const ACCOUNT_KEY = 'agnai-username'
@@ -563,19 +564,18 @@ export const userStore = createStore<UserState>(
       }
     },
 
-    async *syncPatreonAccount({ sub: previous, tiers }, quiet?: boolean) {
+    async *syncPatreonAccount({ sub: previous, tiers, userLevel }, quiet?: boolean) {
       const res = await api.post('/user/resync/patreon')
 
       if (res.result) {
         yield { user: res.result }
       }
-
       if (quiet) return
 
       if (res.result) {
         toastStore.success('Successfully updated Patreon information')
         const sub = getUserSubscriptionTier(res.result, tiers, previous)
-        return { user: res.result, sub }
+        return { user: res.result, sub, userLevel: sub?.level ?? userLevel }
       }
 
       if (res.error) {
@@ -584,6 +584,20 @@ export const userStore = createStore<UserState>(
       }
 
       userStore.getConfig()
+    },
+
+    async *upsertImageProvider(_, provider: ImageProviderSettings, onSuccess?: () => void) {
+      const res = await api.post('/user/image-provider', provider)
+      if (res.result) {
+        const op = provider._id ? 'updated' : 'created'
+        toastStore.success(`Image provider ${op}`)
+        onSuccess?.()
+        return { user: res.result }
+      }
+
+      if (res.error) {
+        toastStore.error(res.error)
+      }
     },
 
     async *login(_, username: string, password: string, onSuccess?: (token: string) => void) {
@@ -930,10 +944,11 @@ function init(): UserState {
   }
 
   const cachedSub = storage.localGetItem(CACHED_SUB_KEY)
+  const parsedSub = cachedSub ? (JSON.parse(cachedSub) as SubscriberInfo) : undefined
 
   return {
     userType: undefined,
-    userLevel: 0,
+    userLevel: parsedSub?.level || 0,
     loggedIn: true,
     loading: false,
     jwt: existing,
@@ -1147,6 +1162,8 @@ function getInitialEmbeddingsModel(user: AppSchema.User) {
 
 async function autoSwitchImageService(init: { config: AppSchema.AppConfig; user: AppSchema.User }) {
   // If it's already set, ignore
+  if (!init.user || !init.config) return
+
   const config = init.config.serverConfig
   if (init.user.images?.type === 'agnai') return
 
@@ -1169,10 +1186,13 @@ async function autoSwitchImageService(init: { config: AppSchema.AppConfig; user:
       next.agnai.model = config.defaultImageModel
     } else {
       next.agnai = {
+        _id: 'agnai',
+        name: 'Agnaistic',
         type: 'agnai',
         url: '',
         model: config.defaultImageModel,
         sampler: 'k_euler_a',
+        scheduler: '',
         draftMode: false,
       }
     }
@@ -1180,3 +1200,17 @@ async function autoSwitchImageService(init: { config: AppSchema.AppConfig; user:
 
   userStore.updateConfig({ images: next })
 }
+
+userStore.subscribe((next, prev) => {
+  if (next.user?.hordeKey || next.user?.userHordeKey) return
+
+  if ((next && prev.user?.hordeKey) || prev.user?.userHordeKey) {
+    const nextUser: AppSchema.User = {
+      ...next.user,
+      hordeKey: prev.user.hordeKey,
+      userHordeKey: prev.user.userHordeKey,
+    } as any
+    console.log('Kept UHK')
+    userStore.setState({ user: nextUser })
+  }
+})

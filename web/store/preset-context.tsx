@@ -19,11 +19,10 @@ import { debug } from '/common/debug'
 import { getRemotePreset, presetStore } from './presets'
 import { chatStore } from './chat'
 import { v4 } from 'uuid'
-
-export { ContextState as PresetContext }
+import { prepareTokenizer } from '/common/tokenize'
 
 export type PresetProps = {
-  state: PresetState
+  state: ContextPreset
   setters: PresetFuncs
   page?: string
 
@@ -35,23 +34,23 @@ export type PresetProps = {
 export type PresetTab = 'General' | 'Prompt' | 'Memory' | 'Samplers' | 'Toggles'
 
 export type PresetTabProps = {
-  state: PresetState
+  state: ContextPreset
   setters: PresetFuncs
   sub: SubscriptionModelOption | undefined
   tab: string
   page: string | undefined
 }
 
-export type PresetState = Omit<AppSchema.SubscriptionModel, 'kind'> & {
+export type ContextPreset = Omit<AppSchema.SubscriptionModel, 'kind'> & {
   userId?: string
   disabled?: boolean
 }
 
 export type HideState = ReturnType<typeof usePresetContext>[0]['hides']
 
-export type SetPresetState = SetStoreFunction<PresetState>
+export type SetPresetState = SetStoreFunction<ContextPreset>
 
-export function getPresetForm(state: PresetState) {
+export function getPresetForm(state: ContextPreset) {
   const {
     disabled,
     subApiKey,
@@ -67,13 +66,13 @@ export function getPresetForm(state: PresetState) {
   return form
 }
 
-export function getSubPresetForm(state: PresetState) {
+export function getSubPresetForm(state: ContextPreset) {
   const { disabled, subApiKeySet, ...form } = state
 
   return { ...form, kind: 'subscription-setting' as const }
 }
 
-const initPreset = (): PresetState => ({
+const initPreset = (): ContextPreset => ({
   _id: '',
   ...agnaiPresets.agnai,
   reasoning: { enabled: false, effort: 'medium', exclude: true, start: '', end: '', maxTokens: 0 },
@@ -105,7 +104,7 @@ const initPreset = (): PresetState => ({
   postUserRole: false,
 })
 
-const initContext = (id?: string): ContextState => ({
+const initContext = (id?: string): PresetContext => ({
   __: id || v4().slice(0, 4),
   url: '',
   loading: false,
@@ -120,11 +119,11 @@ const initContext = (id?: string): ContextState => ({
   chargen: undefined,
 })
 
-const noopModels: SetStoreFunction<ContextState> = (...args: any[]) => {}
+const noopModels: SetStoreFunction<PresetContext> = (...args: any[]) => {}
 
-const PresetContext = createContext([initContext('global'), noopModels] as const)
+const Context = createContext([initContext('global'), noopModels] as const)
 
-type ContextState = {
+export type PresetContext = {
   __: string
   list: string[]
   url: string
@@ -139,7 +138,7 @@ type ContextState = {
   sub?: SubscriptionModelOption
   hides: { [key in keyof AppSchema.GenSettings]?: boolean }
 
-  current: PresetState
+  current: ContextPreset
   json: AppSchema.UserGenPreset | undefined
   summary: AppSchema.UserGenPreset | undefined
   chargen: AppSchema.UserGenPreset | undefined
@@ -148,9 +147,7 @@ type ContextState = {
 export function PresetStateProvider(props: { children: any }) {
   const [context, setContext] = createStore(initContext())
 
-  return (
-    <PresetContext.Provider value={[context, setContext]}>{props.children}</PresetContext.Provider>
-  )
+  return <Context.Provider value={[context, setContext]}>{props.children}</Context.Provider>
 }
 
 export type PresetFuncs = ReturnType<typeof usePresetContext>[1]
@@ -163,11 +160,9 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
 
   const [failedChatId, setFailedChatId] = createSignal('')
 
-  const [context, setContext] = opts?.anonymous
-    ? createStore(initContext())
-    : useContext(PresetContext)
+  const [context, setContext] = opts?.anonymous ? createStore(initContext()) : useContext(Context)
 
-  const setState: SetStoreFunction<PresetState> = (...args: any[]) => {
+  const setState: SetStoreFunction<ContextPreset> = (...args: any[]) => {
     const [first, second] = args
     if (args.length === 1) {
       setContext({ current: { ...context.current, ...first } })
@@ -257,6 +252,19 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
 
         log('loading after failure (chat now ready)')
         loadChat(detail.chat)
+      }
+    )
+  )
+
+  createEffect(
+    on(
+      () => [context.sub?.preset.tokenizer, context.current.tokenizer],
+      () => {
+        const tokenizer = context.sub?.preset.tokenizer || context.current.tokenizer
+
+        if (tokenizer) {
+          prepareTokenizer(tokenizer)
+        }
       }
     )
   )
@@ -375,7 +383,7 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
       onStateUpdated('provider-save')
 
       await Promise.all([
-        loadModels({ force: true }),
+        loadModels({}),
         updateAndSave(
           { providerId },
           {
@@ -392,7 +400,7 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
 
     setState({ providerId })
     onStateUpdated('provider-nosave')
-    loadModels({ force: true })
+    loadModels({})
   }
 
   const load = async (preset: Partial<AppSchema.UserGenPreset> | undefined) => {
@@ -438,7 +446,11 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
         opts?.force
       )
       if (list) {
-        log('models success: %s', list?.list.length)
+        log(
+          'models success: %s [%s]',
+          list?.list.length,
+          `${!!opts?.force === true ? 'true' : 'false'}`
+        )
         setContext({
           list: list?.list || [],
           data: list?.data || [],
@@ -482,7 +494,7 @@ export function usePresetContext(opts?: { anonymous: boolean }) {
   }
 
   const updateAndSave = async (
-    update: Partial<PresetState>,
+    update: Partial<ContextPreset>,
     opts?: {
       quiet?: boolean
       onSuccess?: (preset: AppSchema.GenSettings) => void
@@ -547,7 +559,7 @@ export function getProvider(id: string | undefined) {
   return match
 }
 
-function createHides(store: PresetState, ctx: PresetConnection) {
+function createHides(store: ContextPreset, ctx: PresetConnection) {
   const keys = Object.keys(ADAPTER_SETTINGS) as Array<keyof AppSchema.GenSettings>
   let hides: { [key in keyof AppSchema.GenSettings]?: boolean } = {}
 
@@ -576,7 +588,7 @@ function maybeDeepClone(obj: any | undefined) {
 }
 
 function hidePresetSetting(
-  state: Pick<PresetState, 'service' | 'thirdPartyFormat' | 'presetMode'>,
+  state: Pick<ContextPreset, 'service' | 'thirdPartyFormat' | 'presetMode'>,
   prop?: keyof PresetAISettings
 ) {
   let hide = false

@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight } from 'lucide-solid'
 import { Component, Show } from 'solid-js'
 import Button from '/web/shared/Button'
-import { chatStore, msgStore } from '/web/store'
+import { msgStore } from '/web/store'
 import { AppSchema, UI } from '/common/types'
 
 export const SwipeMessage: Component<{
@@ -36,19 +36,13 @@ export const SwipeMessage: Component<{
   )
 }
 
-export const LoadMore: Component<{ canFetch?: boolean }> = (props) => {
-  const state = msgStore((s) => ({
-    msgs: s.msgs,
-    history: s.messageHistory,
-  }))
-  const chat = chatStore((s) => ({ loaded: s.detailLoaded }))
-
+export const LoadMore: Component<{ canFetch?: boolean; showMore: boolean }> = (props) => {
   return (
-    <Show when={chat.loaded && state.msgs.length > 0}>
+    <Show when={props.showMore}>
       <div class="flex w-full justify-center">
         <a
-          class="link"
-          classList={{ hidden: state.history.length === 0 }}
+          class="link select-none"
+          classList={{ hidden: !props.showMore }}
           onClick={() => {
             msgStore.getNextMessages()
           }}

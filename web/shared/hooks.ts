@@ -20,7 +20,7 @@ import { ADAPTER_LABELS } from '/common/adapters'
 import { getStore } from '../store/create'
 import { clamp, hydrateTemplate, inline, tryParse } from '/common/util'
 import { debug } from '/common/debug'
-import { getActivePreset } from '../store/data/common'
+import { getActivePresets } from '../store/data/common'
 import { getAppContext } from '../store/context'
 
 const PANE_BREAKPOINT = 1280
@@ -44,7 +44,7 @@ export function getMessageImagePrompt(messageId: string) {
 
   if (!msg.msg.json?.values) return ''
 
-  const presets = getActivePreset()
+  const presets = getActivePresets()
   const schema = getJsonSchema({ characterId: msg.msg.characterId, preset: presets.current })
 
   if (!schema?.schema?.imageCaption) return ''
@@ -258,7 +258,11 @@ export function useImageCache(opts: ImageCacheOpts = {}) {
   const log = debug('use-cache')
   const reel = createImageCache('')
 
-  const cleanIds = (imageId: string) => imageId.replace(`${collection}-`, '')
+  const cleanIds = (imageId: string) => {
+    const col = collection()?.id
+    if (!col) return imageId
+    return imageId.replace(`${col}-`, '')
+  }
 
   const [state, setState] = createStore({
     image: '',
@@ -306,6 +310,17 @@ export function useImageCache(opts: ImageCacheOpts = {}) {
     // const images = await reel.getImageIds()
     // setState({ images })
     // await pos(initial ?? 0)
+  }
+
+  const reload = async () => {
+    const id = collection()
+    if (!id) return
+
+    const imageIds = await reel.getImageIds()
+    const images = imageIds.map(cleanIds)
+    const current = images.length - 1
+    const image = await reel.getImage(images[current])
+    setState({ images, pos: current, imageId: images[current], image })
   }
 
   const pos = async (position: number) => {
@@ -402,6 +417,7 @@ export function useImageCache(opts: ImageCacheOpts = {}) {
     addImage,
     removeImage,
     data,
+    reload,
   }
 }
 
@@ -431,27 +447,34 @@ export function useDeviceType() {
 }
 
 export function useDraft(id: string) {
-  const key = `chat:${id}:draft`
-  const text = localStorage.getItem(key) || ''
+  const [draftId, setDraftId] = createSignal(id)
+
+  const key = () => `chat:${draftId()}:draft`
+  const text = localStorage.getItem(key()) || ''
+
+  const open = (id: string) => {
+    setDraftId(id)
+    return restore()
+  }
 
   const restore = () => {
-    const text = localStorage.getItem(key)
+    const text = localStorage.getItem(key())
     return text || ''
   }
 
   const update = (value?: string) => {
     if (value) {
-      localStorage.setItem(key, value)
+      localStorage.setItem(key(), value)
     } else {
-      localStorage.removeItem(key)
+      localStorage.removeItem(key())
     }
   }
 
   const clear = () => {
-    localStorage.removeItem(key)
+    localStorage.removeItem(key())
   }
 
-  return { text, restore, update, clear }
+  return { open, text, restore, update, clear }
 }
 
 export function clearDraft(id: string) {

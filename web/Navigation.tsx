@@ -184,10 +184,10 @@ const Navigation: Component = () => {
                 aria-label="Agnaistic main page"
               >
                 <div
-                  class="flex h-8 w-full items-center justify-center rounded-lg font-bold"
+                  class="flex h-8 w-full items-center justify-center rounded-lg text-lg font-bold tracking-wide"
                   aria-hidden="true"
                 >
-                  Agn<span class="text-[var(--hl-500)]">ai</span>
+                  Agn<span class="text-[var(--hl-400)]">ai</span>
                   {suffix()}
                 </div>
               </A>
@@ -275,6 +275,7 @@ const UserNavigation: Component = () => {
       <div class="flex flex-col gap-1 px-2">
         <UserProfile />
 
+        <Show when={menu.flags.chub}>
         <Show when={page.flags.chub}>
           <MultiItem>
             <Item href="/chub" ariaLabel="Character hub">
@@ -422,15 +423,11 @@ const GuestNavigation: Component = () => {
   )
 }
 
-const NavIcons: Component<{
-  patreon?: boolean
-  supportEmail?: string
-  showMenu: boolean
-}> = (props) => {
-  const invites = inviteStore((s) => ({ invites: s.invites }))
+export const NotificationBell: Component<{ showMenu?: boolean; size?: number }> = (props) => {
   const toasts = toastStore((s) => ({ unseen: s.unseen }))
   const announce = announceStore((s) => ({ list: s.list }))
   const user = userStore((s) => ({ user: s.user, ui: s.ui }))
+  const invites = inviteStore((s) => ({ invites: s.invites }))
 
   const count = createMemo(() => {
     const threshold = new Date(user.user?.announcement || 0).toISOString()
@@ -440,6 +437,48 @@ const NavIcons: Component<{
 
     return unseen.length + toasts.unseen + invites.invites.length
   })
+
+  return (
+    <Item
+      onClick={() => {
+        if (props.showMenu) pageStore.closeMenu()
+        toastStore.modal(true)
+      }}
+      ariaLabel="Show notification list"
+    >
+      <Switch>
+        <Match when={count() > 0}>
+          <div
+            class="relative flex"
+            role="status"
+            aria-label={`Status: You have ${count()} new notifications`}
+          >
+            <Bell fill="var(--bg-100)" aria-hidden="true" size={props.size} />
+            <span class="absolute bottom-[-0.5rem] right-[-0.5rem]" aria-hidden="true">
+              <Badge type="rose">{count() > 9 ? '9+' : count()}</Badge>
+            </span>
+          </div>
+        </Match>
+
+        <Match when={!count()}>
+          <Bell
+            color="var(--bg-500)"
+            role="status"
+            aria-label="Status: No new notifications"
+            size={props.size}
+          />
+        </Match>
+      </Switch>
+    </Item>
+  )
+}
+
+const NavIcons: Component<{
+  patreon?: boolean
+  supportEmail?: string
+  showMenu: boolean
+}> = (props) => {
+  const user = userStore((s) => ({ user: s.user, ui: s.ui }))
 
   return (
     <>
@@ -461,7 +500,7 @@ const NavIcons: Component<{
         </Item>
 
         <Item
-          onClick={() => imageStore.openImageGen()}
+          onClick={() => imageStore.openImageGen({ collectionId: 'global' })}
           ariaLabel="Image Generation"
           tooltip="Image Generation"
         >
@@ -479,32 +518,7 @@ const NavIcons: Component<{
           </Show>
         </Item>
 
-        <Item
-          onClick={() => {
-            if (props.showMenu) pageStore.closeMenu()
-            toastStore.modal(true)
-          }}
-          ariaLabel="Show notification list"
-        >
-          <Switch>
-            <Match when={count() > 0}>
-              <div
-                class="relative flex"
-                role="status"
-                aria-label={`Status: You have ${count()} new notifications`}
-              >
-                <Bell fill="var(--bg-100)" aria-hidden="true" />
-                <span class="absolute bottom-[-0.5rem] right-[-0.5rem]" aria-hidden="true">
-                  <Badge type="rose">{count() > 9 ? '9+' : count()}</Badge>
-                </span>
-              </div>
-            </Match>
-
-            <Match when={!count()}>
-              <Bell color="var(--bg-500)" role="status" aria-label="Status: No new notifications" />
-            </Match>
-          </Switch>
-        </Item>
+        <NotificationBell showMenu={props.showMenu} />
       </div>
       <div class="flex flex-wrap justify-center gap-[2px] text-sm">
         <Show when={props.patreon}>
@@ -745,13 +759,13 @@ export const UserProfile = () => {
           }}
         >
           <Switch>
+            Darkl
             <Match when={chars.impersonating}>
               <CharacterAvatar
                 char={chars.impersonating!}
                 format={{ corners: 'circle', size: 'xs' }}
               />
             </Match>
-
             <Match when>
               <AvatarIcon
                 avatarUrl={chars.impersonating?.avatar || user.profile?.avatar}

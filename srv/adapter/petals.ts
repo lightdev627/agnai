@@ -1,5 +1,5 @@
 import { AdapterProps, ModelAdapter } from './type'
-import { sanitise, sanitiseAndTrim, trimResponseV2 } from '/common/requests/util'
+import { sanitise } from '/common/requests/util'
 import { registerAdapter } from './register'
 import { WebSocket } from 'ws'
 import { eventGenerator } from '/common/util'
@@ -61,25 +61,17 @@ export const handlePetals: ModelAdapter = async function* (opts) {
 
     if (event.token) {
       accum += event.token
-      yield {
-        partial: sanitiseAndTrim({
-          text: accum,
-          char: opts.replyAs,
-          members: opts.members,
-          gen: opts.gen,
-        }),
-      }
+      yield { partial: accum }
     }
   }
 
   const parsed = sanitise(accum.replace(opts.prompt, ''))
-  const trimmed = trimResponseV2(parsed, opts.replyAs, opts.members, opts.gen, ['END_OF_DIALOG'])
-  yield trimmed || parsed
+  yield parsed
 }
 
 function generateStream(url: string, model: string, opts: AdapterProps, body: PetalRequest) {
   url = url.toLocaleLowerCase().replace('https:', 'wss:').replace('http:', 'ws:')
-  if (!url.startsWith('ws')) {
+  if (!url?.startsWith('ws')) {
     url = `ws://${url}`
   }
 

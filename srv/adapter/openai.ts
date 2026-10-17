@@ -1,16 +1,10 @@
-import { getOaiCompatibleUrl, joinUrl, sanitiseAndTrim } from '/common/requests/util'
+import { getOaiCompatibleUrl, joinUrl } from '/common/requests/util'
 import { AdapterProps, ChatRole, CompletionItem, ModelAdapter } from './type'
 import { defaultPresets } from '../../common/presets'
 import { AppLog } from '../middleware'
-import {
-  modelNeedsUserRoleLast,
-  requestFullCompletion,
-  toChatCompletionPayload,
-} from './chat-completion'
+import { modelNeedsUserRoleLast, requestFullCompletion } from './chat-completion'
 import { decryptText } from '../db/util'
-import { getTokenCounter } from '../tokenize'
 import { ensureMessagesAlternate, stripImageContent } from '/common/template-messages'
-import { OPENAI_MODELS } from '/common/presets/openai'
 import { streamGenerator } from '/common/requests/stream'
 import { getStoppingStrings, toImageJinjaTemplate } from '/common/requests/payloads'
 import { JsonField } from '/common/prompt'
@@ -57,7 +51,7 @@ const REASONING_MODELS: Record<string, boolean> = {
 }
 
 export const handleOAI: ModelAdapter = async function* (opts) {
-  const { char, members, user, prompt, log, gen, guest, kind, isThirdParty } = opts
+  const { user, prompt, log, gen, guest, kind, isThirdParty } = opts
   const base = getOaiCompatibleUrl(gen, isThirdParty)
 
   let oaiKey = gen.providerId ? gen.thirdPartyKey : gen.thirdPartyKey || user.oaiKey
@@ -70,7 +64,6 @@ export const handleOAI: ModelAdapter = async function* (opts) {
   const maxResponseLength = gen.maxTokens ?? defaultPresets.openai.maxTokens
 
   const stops = getStoppingStrings(opts, opts.gen)
-  const allStops = stops.slice()
 
   if (!base.changed) {
     stops.splice(4, stops.length - 4)
@@ -102,8 +95,6 @@ export const handleOAI: ModelAdapter = async function* (opts) {
   //   body.presence_penalty = gen.presencePenalty ?? defaultPresets.openai.presencePenalty
   //   body.frequency_penalty = gen.frequencyPenalty ?? defaultPresets.openai.frequencyPenalty
   // }
-
-  applyReasoningPayload(opts, body)
 
   if (opts.jsonSchema) {
     const base: any = {}
@@ -154,16 +145,8 @@ export const handleOAI: ModelAdapter = async function* (opts) {
   const useChat = (isThirdParty && isChatFormat) || gen.service === 'openai'
 
   if (useChat) {
-    const messages =
-      gen.thirdPartyFormat !== 'openai-chat' && opts.messages
-        ? opts.messages
-        : await toChatCompletionPayload(
-            opts,
-            getTokenCounter('openai', OPENAI_MODELS.Turbo),
-            body.max_tokens
-          )
-
-    body.messages = messages
+    const messages = opts.messages
+    body.messages = opts.messages
 
     /**
      * @todo provide an option for this
@@ -216,6 +199,10 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     body.messages = adjustMessageFormatting(opts.conn, body.messages)
   }
 
+  if (!body.stop?.length) {
+    delete body.stop
+  }
+
   const iter = body.stream
     ? streamGenerator({
         userId: opts.user._id,
@@ -236,7 +223,12 @@ export const handleOAI: ModelAdapter = async function* (opts) {
         signal: opts.signal,
       })
 
-  let accumulated = ''
+  const accum = {
+    tokens: '',
+    thoughts: '',
+  }
+
+  // let accumulated = ''
   let response: Completion<Inference> | undefined
 
   while (true) {
@@ -249,6 +241,7 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     }
 
     if ('thoughts' in generated.value) {
+      accum.thoughts += generated.value.thoughts
       yield { thoughts: generated.value.thoughts! }
     }
 
@@ -264,16 +257,8 @@ export const handleOAI: ModelAdapter = async function* (opts) {
 
     // Only the streaming generator yields individual tokens.
     if ('token' in generated.value) {
-      accumulated += generated.value.token
-      yield {
-        partial: sanitiseAndTrim({
-          text: accumulated,
-          char,
-          members,
-          gen: opts.gen,
-          stops: allStops,
-        }),
-      }
+      accum.tokens += generated.value.token
+      yield { partial: accum.tokens }
     }
 
     if ('meta' in generated.value) {
@@ -281,38 +266,31 @@ export const handleOAI: ModelAdapter = async function* (opts) {
     }
 
     if ('tokens' in generated.value && typeof generated.value.tokens === 'string') {
-      accumulated = generated.value.tokens
+      accum.tokens = generated.value.tokens
     }
   }
 
   try {
-    let text = accumulated ? accumulated : getCompletionContent(response, accumulated, log)
+    const text = accum.tokens ? accum.tokens : getCompletionContent(response, accum.tokens, log)
+
     if (text instanceof Error) {
       yield { error: `[Chat] Request returned an error: ${text.message}` }
       return
     }
 
-    if (!text?.length) {
+    if (!text?.length && !accum.thoughts.length) {
       log.error({ body: response }, '[Chat] Request failed: Empty response')
       yield { error: `[Chat] Request failed: Received empty response. Try again.` }
       return
     }
 
-    gen.swipesPerGeneration! > 1
-      ? yield sanitiseAndTrim({
-          text: accumulated,
-          char,
-          members,
-          gen: opts.gen,
-          stops: allStops,
-        })
-      : yield sanitiseAndTrim({
-          text,
-          char: opts.replyAs,
-          members,
-          gen: opts.gen,
-          stops: allStops,
-        })
+    if (gen.swipesPerGeneration! > 1) {
+      yield accum.tokens
+    } else if (text?.length) {
+      yield text
+    } else if (accum.thoughts) {
+      // ??? This was a function call with no side-effects?
+    }
   } catch (ex: any) {
     log.error({ err: ex }, 'OpenAI failed to parse')
     yield { error: `OpenAI request failed: ${ex.message}` }
@@ -353,6 +331,8 @@ export function getCompletionContent(
 }
 
 function patchPayload(opts: AdapterProps, body: any, messages: CompletionItem<string>[]) {
+  applyReasoningPayload(opts, body)
+
   const { conn } = opts
   if (!conn.provider) return
 
@@ -361,28 +341,49 @@ function patchPayload(opts: AdapterProps, body: any, messages: CompletionItem<st
 
   switch (conn.provider.provider) {
     case 'known-deepseek': {
+      // `.stop` has a limit of 16 for Official DeepSeek
+      if (Array.isArray(body.stop) && body.stop.length > 16) {
+        body.stop = body.stop.slice(0, 16)
+      }
+
       if (!lastMsg) return
       lastMsg.role = 'user'
+
       return
     }
 
     case 'known-openrouter': {
-      if (!modelNeedsUserRoleLast(opts.gen, body.model)) return
+      if (!modelNeedsUserRoleLast(opts, body.model)) return
       if (!lastMsg) return
       lastMsg.role = 'user'
       return
     }
+
+    case 'known-xai': {
+      body.stop = undefined
+      return
+    }
   }
 
-  if (modelNeedsUserRoleLast(opts.gen, model)) {
+  if (modelNeedsUserRoleLast(opts, model)) {
     lastMsg.role = 'user'
   }
 }
 
 function applyReasoningPayload(opts: AdapterProps, body: any) {
-  if (opts.conn.provider?.provider === 'known-zai') {
-    body.thinking = { type: opts.gen.reasoning?.enabled ? 'enabled' : 'disabled' }
-    return
+  const provider = opts.conn.provider?.provider
+
+  switch (provider) {
+    case 'known-zai':
+    case 'known-deepseek': {
+      body.thinking = { type: opts.gen.reasoning?.enabled ? 'enabled' : 'disabled' }
+      return
+    }
+
+    case 'known-nvidia': {
+      delete body.reasoning
+      return
+    }
   }
 
   if (!opts.gen.reasoning?.enabled) return

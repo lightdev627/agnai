@@ -13,7 +13,7 @@ import { ModelFormat, replaceArrayTags, replaceTags } from './presets/templates'
 import { OPENAI_CONTEXTS } from './presets/openai'
 import { NOVEL_MODELS } from './presets/novel'
 import { extractReasoning } from './reasoning'
-
+import { runPresetParsers } from './chat'
 export type JsonOutput = { values: any; response: string; history: string; imageCaption: string }
 export type TickHandler<T = JsonOutput> = (
   response: string,
@@ -92,6 +92,7 @@ export type PromptOpts = {
   retry?: AppSchema.ChatMessage
   continue?: string
   book?: AppSchema.MemoryBook
+  books?: AppSchema.MemoryBook[]
   replyAs: AppSchema.Character
   characters: GenerateRequestV2['characters']
   impersonate?: AppSchema.Character
@@ -104,7 +105,7 @@ export type PromptOpts = {
   jsonValues: Record<string, any> | undefined
   contextBuffer?: number
   props?: Record<string, string>
-  schema?: JsonField[]
+  schema?: GenerateRequestV2['jsonSchema']
 }
 
 export type BuildPromptOpts = {
@@ -121,7 +122,7 @@ export type BuildPromptOpts = {
   chatEmbed?: Memory.UserEmbed<{ name: string }>[]
   userEmbed?: Memory.UserEmbed[]
   history?: HistoryLine[]
-  schema?: JsonField[]
+  schema?: GenerateRequestV2['jsonSchema']
 }
 
 /** {{user}}, <user>, {{char}}, <bot>, case insensitive */
@@ -225,17 +226,40 @@ function titlize(str: string) {
   return `${str[0].toUpperCase()}${str.slice(1).toLowerCase()}`
 }
 
+export async function getPromptHistory(opts: PromptOpts, encoder: TokenCounter) {
+  /**
+   * It's important for us to pass in a max context that is _realistic-ish_ as the embeddings
+   * are retrieved based on the number of history messages we return here.
+   *
+   * If we ambitiously include the entire history then embeddings will never be included.
+   * The queryable embeddings are messages that are _NOT_ included in the context
+   */
+  const contextBuffer = opts.contextBuffer ?? 0
+  const maxContext = opts.settings ? getContextLimit(opts.user, opts.settings) : undefined
+  /**
+   * The lines from `getLinesForPrompt` are returned in time-ascending order
+   */
+  const { lines } = await getLinesForPrompt(opts, encoder, (maxContext || 0) + contextBuffer)
+  return lines
+}
+
 /**
  * This is only ever invoked client-side
  * @param opts
  * @returns
  */
-export async function createPromptParts(opts: PromptOpts, encoder: TokenCounter) {
+export async function createPromptParts(
+  opts: PromptOpts,
+  encoder: TokenCounter,
+  history?: HistoryLine[]
+) {
   if (opts.trimSentences || opts.user.ui?.trimSentences) {
     const nextMsgs = opts.messages.slice()
     for (let i = 0; i < nextMsgs.length; i++) {
       if (nextMsgs[i].userId) continue
-      nextMsgs[i] = { ...nextMsgs[i], msg: trimSentence(nextMsgs[i].msg) || nextMsgs[i].msg }
+      const text = trimSentence(nextMsgs[i].msg) || nextMsgs[i].msg
+
+      nextMsgs[i] = { ...nextMsgs[i], msg: text }
     }
 
     opts.messages = nextMsgs
@@ -248,22 +272,9 @@ export async function createPromptParts(opts: PromptOpts, encoder: TokenCounter)
   const sortedMsgs = opts.messages.filter((msg) => msg.adapter !== 'image')
 
   opts.messages = sortedMsgs
+  const template = getTemplate(opts)
 
-  /**
-   * The lines from `getLinesForPrompt` are returned in time-ascending order
-   */
-  let template = getTemplate(opts)
-
-  /**
-   * It's important for us to pass in a max context that is _realistic-ish_ as the embeddings
-   * are retrieved based on the number of history messages we return here.
-   *
-   * If we ambitiously include the entire history then embeddings will never be included.
-   * The queryable embeddings are messages that are _NOT_ included in the context
-   */
-  const contextBuffer = opts.contextBuffer ?? 0
-  const maxContext = opts.settings ? getContextLimit(opts.user, opts.settings) : undefined
-  const { lines } = await getLinesForPrompt(opts, encoder, (maxContext || 0) + contextBuffer)
+  const lines = history || (await getPromptHistory(opts, encoder))
   const parts = await buildPromptPlaceholders(
     opts,
     lines.map((l) => l.msg),
@@ -306,25 +317,24 @@ export type AssembledPrompt = Awaited<ReturnType<typeof assemblePrompt>>
  * @param lines Always in time-ascending order (oldest to newest)
  * @returns
  */
-export async function assemblePrompt(
-  opts: GenerateRequestV2,
-  encoder: TokenCounter,
-  chat?: boolean
-) {
+export async function assemblePrompt(opts: GenerateRequestV2, encoder: TokenCounter) {
   const post = createPostPrompt(opts)
   const template = getTemplate(opts)
+
+  const parsers = opts.settings?.parsers || []
+  const parsedLines = opts.lines.map((line) => runPresetParsers(parsers, line, { preset: true }))
 
   let { parsed, inserts, length, sections, linesAddedCount, history, addedLines, blocks } =
     await injectPlaceholders(template, {
       opts: { ...opts, schema: opts.jsonSchema },
       parts: opts.parts,
-      lines: opts.lines,
+      lines: parsedLines,
       history: opts.history,
       characters: opts.characters,
       lastMessage: opts.lastMessage,
       encoder,
       jsonValues: undefined,
-      format: chat ? 'None' : getFormatOverride(opts),
+      format: getFormatOverride(opts),
     })
 
   return {
@@ -435,9 +445,9 @@ export async function injectPlaceholders(template: string, inject: InjectOpts) {
 
   const format = inject.format || opts.settings?.modelFormat || 'None'
   result.parsed = replaceTags(result.parsed, format)
-  result.blockPrompt = replaceTags(result.blockPrompt, format)
-  result.sections.strictSystem = replaceArrayTags(result.sections.strictSystem, format)
-  replaceSectionTags(result.sections.sections, format)
+  result.blockPrompt = replaceTags(result.blockPrompt, 'None')
+  result.sections.strictSystem = replaceArrayTags(result.sections.strictSystem, 'None')
+  replaceSectionTags(result.sections.sections, 'None')
 
   return result
 }
@@ -492,6 +502,7 @@ type PromptPartsOptions = Pick<
   | 'userEmbeds'
   | 'resolvedScenario'
   | 'props'
+  | 'books'
 >
 
 export async function buildPromptPlaceholders(
@@ -514,7 +525,7 @@ export async function buildPromptPlaceholders(
           replyAs._id === char._id ? chat.overrides ?? replyAs.persona : replyAs.persona
         )
       ),
-      prefill: opts.settings?.prefill || '',
+      prefill: replyAs.prefill || opts.settings?.prefill || '',
       post: [],
       allPersonas: [],
       chatEmbeds: [],
@@ -545,7 +556,7 @@ export async function buildPromptPlaceholders(
       const temp = opts.chat.tempCharacters?.[bot._id]
       if (temp?.deletedAt || temp?.favorite === false) continue
 
-      if (!bot._id.startsWith('temp-') && !chat.characters?.[bot._id]) {
+      if (!bot._id?.startsWith('temp-') && !chat.characters?.[bot._id]) {
         continue
       }
 
@@ -587,6 +598,7 @@ export async function buildPromptPlaceholders(
     // }
 
     const books: AppSchema.MemoryBook[] = []
+    if (opts.books) books.push(...opts.books)
     if (replyAs.characterBook) books.push(replyAs.characterBook)
     if (opts.book) books.push(opts.book)
 
@@ -677,7 +689,7 @@ function createPostPrompt(
 ) {
   const post = []
 
-  if (opts.kind === 'chat-query') {
+  if (opts.kind === 'chat-query' || opts.kind === 'summary') {
     // post.push(`Query Response:`)
   } else {
     post.push(`${opts.replyAs.name}:`)

@@ -147,6 +147,11 @@ export function toModelOption(sub: AppSchema.SubscriptionModel): AppSchema.Subsc
       levels: sub.levels || [],
       subLevel: sub.subLevel,
       subVisionModel: sub.subVisionModel,
+      tokenizer: sub.tokenizer,
+      postUserRole: sub.postUserRole,
+      reasoning: sub.reasoning?.enabled ? sub.reasoning : undefined,
+      prefill: sub.prefill,
+      skipRoleMerging: sub.skipRoleMerging,
     },
   }
 }

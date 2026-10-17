@@ -1,5 +1,5 @@
 import { createStore } from 'solid-js/store'
-import { SD_SAMPLER } from '/common/image'
+import { SD_SAMPLER, SWARM_SCHEDULER } from '/common/image'
 import { characterStore, chatStore, imageStore, settingStore, userStore } from '/web/store'
 import { createEffect, on } from 'solid-js'
 import { ImageDefaults, ImageSettings } from '/common/types/image-schema'
@@ -9,6 +9,15 @@ import { ImageModel } from '/common/types/admin'
 import { AppSchema } from '/common/types'
 
 type SettingSource = 'Shared' | 'Character' | 'Chat'
+
+const PROVIDER_TYPES = [
+  { label: 'Agnaistic', value: 'agnai' },
+  { label: 'Horde', value: 'horde' },
+  { label: 'NovelAI', value: 'novel' },
+  { label: 'SD WebUI', value: 'sd' },
+  { label: 'Swarm UI', value: 'swarm' },
+  { label: 'OpenAI-Compat', value: 'openai' },
+]
 
 const init = (): ImageSettings => ({
   summaryPresetId: '',
@@ -23,37 +32,54 @@ const init = (): ImageSettings => ({
   summaryPrompt: '',
   template: '',
   type: 'horde',
+  imageProviderId: '',
+  openai: {} as any,
   agnai: {
+    _id: 'agnai',
     type: 'agnai',
+    name: 'Agnaistic',
     url: '',
     model: '',
     sampler: SD_SAMPLER['Euler a'],
     draftMode: false,
+    scheduler: '',
   },
   horde: {
+    _id: 'horde',
     type: 'horde',
+    name: 'Horde',
     url: '',
     sampler: SD_SAMPLER['Euler a'],
+    scheduler: '',
     model: '',
   },
   sd: {
+    _id: 'sd',
     type: 'sd',
+    name: 'Stable Diffusion',
     model: '',
     url: '',
     sampler: SD_SAMPLER['Euler a'],
+    scheduler: '',
   },
   novel: {
+    _id: 'novel',
     type: 'novel',
+    name: 'NovelAI',
     url: '',
     model: '',
     sampler: SD_SAMPLER['Euler a'],
+    scheduler: '',
     ucPreset: '0',
     qualityTags: true,
   },
   swarm: {
+    _id: 'swarm',
     type: 'swarm',
+    name: 'SwarmUI',
     model: '',
     sampler: SD_SAMPLER['Euler a'],
+    scheduler: SWARM_SCHEDULER['Normal'],
     url: 'http://localhost:7801',
     local: true,
   },
@@ -73,6 +99,8 @@ export function useImageContext() {
   }))
 
   const [cfg, setCfg] = createStore(init())
+  const [currentCfg, setCurrentCfg] = createStore(init())
+
   const [state, setState] = createStore({
     agnaiModel: undefined as ImageModel | undefined,
     canUseImages: false,
@@ -136,6 +164,52 @@ export function useImageContext() {
     })
   }
 
+  const hydrateConfig = (current?: boolean) => {
+    // if (!page.open) return
+    const currentTarget: SettingSource =
+      isChat() && entity.chat?.imageSource === 'chat'
+        ? 'Chat'
+        : entity.chat?.imageSource?.includes('character')
+        ? 'Character'
+        : 'Shared'
+
+    const view = current ? currentTarget : tab.current()
+    const setter = current ? setCurrentCfg : setCfg
+
+    switch (view) {
+      case 'Character':
+        setter({
+          ...init(),
+          ...entity.chat?.imageSettings,
+          imageProviderId: entity.char.imageProviderId || entity.char.imageSettings?.type,
+        })
+        setState('editing', 'main-character')
+        break
+
+      case 'Chat':
+        setter({
+          ...init(),
+          ...entity.char?.imageSettings,
+          imageProviderId: entity.chat.imageProviderId || entity.chat.imageSettings?.type,
+        })
+        setState('editing', 'chat')
+        break
+
+      default:
+        setter({
+          ...init(),
+          ...user.user?.images,
+          imageProviderId: user.user?.imageProviderId || user.user?.images?.type,
+        })
+        setState('editing', 'settings')
+        break
+    }
+
+    if (!current) {
+      hydrateConfig(true)
+    }
+  }
+
   createEffect(
     on(
       () => [
@@ -152,29 +226,10 @@ export function useImageContext() {
   createEffect(
     on(
       () => [tab.current(), page.open],
-      () => {
-        if (!page.open) return
-        const view = tab.current()
-
-        switch (view) {
-          case 'Character':
-            setCfg({ ...init(), ...entity.chat?.imageSettings })
-            setState('editing', 'main-character')
-            break
-
-          case 'Chat':
-            setCfg({ ...init(), ...entity.char?.imageSettings })
-            setState('editing', 'chat')
-            break
-
-          default:
-            setCfg({ ...init(), ...user.user?.images })
-            setState('editing', 'settings')
-            break
-        }
-      }
+      () => hydrateConfig()
     )
   )
+  // onMount(hydrateConfig)
 
   createEffect(
     on(
@@ -187,7 +242,7 @@ export function useImageContext() {
   )
 
   const receiveUpdate = () => {
-    if (!page.open) return
+    // if (!page.open) return
 
     const hostingImages =
       !!settings.config.serverConfig?.imagesEnabled &&
@@ -196,9 +251,12 @@ export function useImageContext() {
     const hosts = [
       { label: 'Horde', value: 'horde' },
       { label: 'NovelAI', value: 'novel' },
-      { label: 'Stable Diffusion', value: 'sd' },
+      { label: 'SD WebUI', value: 'sd' },
       { label: 'Swarm UI', value: 'swarm' },
-    ].map((item) => ({ label: `Service: ${item.label}`, value: item.value }))
+      { label: 'OpenAI-Compat', value: 'openai' },
+    ]
+      .map((item) => ({ label: `${item.label}`, value: item.value }))
+      .filter((i) => i.value !== 'agnai')
 
     if (hostingImages) {
       hosts.unshift({ label: 'Agnaistic', value: 'agnai' })
@@ -211,9 +269,15 @@ export function useImageContext() {
     saveImageSettings(tab.current(), cfg, entity, defaults)
   }
 
+  const changeProvider = (providerId: string) => {
+    setCfg('imageProviderId', providerId)
+    changeImageProvider(tab.current(), entity, providerId)
+  }
+
   return [
     {
       store: cfg,
+      current: currentCfg,
       update: setCfg,
       state: state,
       defaults,
@@ -221,8 +285,49 @@ export function useImageContext() {
       updateDefaults: setDefaults,
       tab,
       save,
+      changeProvider,
     },
   ]
+}
+
+export function getImageProviderName(type: string) {
+  const opt = PROVIDER_TYPES.find((t) => t.value === type)
+  return opt?.label || 'None'
+}
+
+async function changeImageProvider(tab: string, entity: any, providerId: string) {
+  switch (tab) {
+    case 'Shared': {
+      await userStore.updatePartialConfig({
+        imageProviderId: providerId,
+      })
+      imageStore.imageSettings(false)
+      return
+    }
+
+    case 'Chat': {
+      await Promise.all([
+        chatStore.editChat(entity.chat?._id!, {
+          imageProviderId: providerId,
+        }),
+      ])
+      imageStore.imageSettings(false)
+      return
+    }
+
+    case 'Character': {
+      await Promise.all([
+        characterStore.editPartialCharacter(entity.char?._id!, {
+          imageProviderId: providerId,
+        }),
+      ])
+      imageStore.imageSettings(false)
+      return
+    }
+
+    default:
+      return
+  }
 }
 
 async function saveImageSettings(
@@ -233,14 +338,21 @@ async function saveImageSettings(
 ) {
   switch (tab) {
     case 'Shared': {
-      await userStore.updatePartialConfig({ images: store, imageDefaults: defaults })
+      await userStore.updatePartialConfig({
+        images: store,
+        imageDefaults: defaults,
+        imageProviderId: store.imageProviderId,
+      })
       imageStore.imageSettings(false)
       return
     }
 
     case 'Chat': {
       await Promise.all([
-        chatStore.editChat(entity.chat?._id!, { imageSettings: store }),
+        chatStore.editChat(entity.chat?._id!, {
+          imageSettings: store,
+          imageProviderId: store.imageProviderId,
+        }),
         userStore.updatePartialConfig({ imageDefaults: defaults }),
       ])
       imageStore.imageSettings(false)
@@ -249,7 +361,10 @@ async function saveImageSettings(
 
     case 'Character': {
       await Promise.all([
-        characterStore.editPartialCharacter(entity.char?._id!, { imageSettings: store }),
+        characterStore.editPartialCharacter(entity.char?._id!, {
+          imageSettings: store,
+          imageProviderId: store.imageProviderId,
+        }),
         userStore.updatePartialConfig({ imageDefaults: defaults }),
       ])
       imageStore.imageSettings(false)

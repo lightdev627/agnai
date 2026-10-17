@@ -7,6 +7,7 @@ import {
   Index,
   on,
   onCleanup,
+  onMount,
   Show,
 } from 'solid-js'
 import { useNavigate, useParams } from '@solidjs/router'
@@ -94,7 +95,13 @@ const ChatDetail: Component = () => {
   const msgs = msgStore((s) => ({
     msgs: s.msgs,
     textBeforeGenMore: s.textBeforeGenMore,
+    graph: s.graph,
+    cutoff: s.showMessageCount,
   }))
+
+  const [swipe, setSwipe] = createSignal(0)
+  const [removeId, setRemoveId] = createSignal('')
+  const [showHiddenEvents, setShowHiddenEvents] = createSignal(false)
 
   const showPane = useValidChatPane()
   const express = useAutoExpression()
@@ -114,35 +121,16 @@ const ChatDetail: Component = () => {
     return `calc(${percent}vh - 24px)`
   })
 
-  const isGreetingOnlyMsg = createMemo(() => msgs.msgs.length === 1)
+  const isGreetingOnlyMsg = createMemo(() => ctx.messages.path.length === 1)
 
   let [evented, setEvented] = createSignal(false)
   const retries = createMemo(() => {
-    const last = msgs.msgs.slice(-1)[0]
+    const last = ctx.messages.viewing.slice(-1)[0]
     if (!last && !isGreetingOnlyMsg()) return
 
     const list = last.retries?.slice() || []
     list.unshift(last.msg)
     return { msgId: last._id, list }
-  })
-
-  const [swipe, setSwipe] = createSignal(0)
-  const [removeId, setRemoveId] = createSignal('')
-
-  const [showHiddenEvents, setShowHiddenEvents] = createSignal(false)
-
-  const chatMsgs = createMemo(() => {
-    if (!chats.chat || !chats.char) return []
-
-    const doShowHiddenEvents = showHiddenEvents()
-
-    const filtered = msgs.msgs.filter((msg) => {
-      if (chats.opts.hideOoc && msg.ooc) return false
-      if (msg.event === 'hidden' && !doShowHiddenEvents) return false
-      return true
-    })
-
-    return filtered
   })
 
   onCleanup(() => {
@@ -158,8 +146,8 @@ const ChatDetail: Component = () => {
         if (evented() || !chats.chat || !chats.char || !chars.ready) return
         setEvented(true)
 
-        const messages = msgs.msgs
-        const isNonEvent = !msgs.msgs[0]?.event
+        const messages = ctx.messages.path
+        const isNonEvent = !messages[0]?.event
         if (isNonEvent && messages.length <= 1) {
           eventStore.onGreeting(chats.chat)
         } else {
@@ -238,13 +226,14 @@ const ChatDetail: Component = () => {
             },
           })
         } else {
+          msgStore.setState({ activeChatId: params.id })
           characterStore.loadImpersonate()
         }
       }
     )
   )
 
-  createEffect(() => {
+  onMount(() => {
     const charName = chats.char?.name
     updateTitle(charName ? `Chat with ${charName || '...'}` : 'Chat')
 
@@ -306,7 +295,7 @@ const ChatDetail: Component = () => {
   }
 
   const indexOfLastRPMessage = createMemo(() => {
-    const msgs = chatMsgs()
+    const msgs = ctx.messages.viewing
 
     for (let i = msgs.length - 1; i >= 0; i--) {
       const curr = msgs[i]
@@ -350,7 +339,7 @@ const ChatDetail: Component = () => {
         ev.preventDefault()
         if (response.retrying || response.partial) return
         const last = indexOfLastRPMessage()
-        const msg = msgs.msgs[last]
+        const msg = ctx.messages.viewing[last]
         if (!msg) return
         if (msg.adapter === 'image') {
           msgStore.createImage({ sourceMsgId: msg._id })
@@ -371,7 +360,7 @@ const ChatDetail: Component = () => {
       if (ev.key === 'a' || ev.code == 'KeyA') {
         ev.preventDefault()
         const last = indexOfLastRPMessage()
-        const msg = msgs.msgs[last]
+        const msg = ctx.messages.viewing[last]
         if (!msg?.characterId) return
 
         responseStore.request(msg.chatId, msg.characterId)
@@ -389,7 +378,7 @@ const ChatDetail: Component = () => {
 
       if (ev.key === 'j' || ev.key === 'KeyJ') {
         ev.preventDefault()
-        const messageId = chatMsgs().slice(-1)[0]?._id
+        const messageId = ctx.messages.viewing.slice(-1)[0]?._id
 
         if (messageId) {
           responseStore.chatQuery({ question: '', messageId })
@@ -459,21 +448,21 @@ const ChatDetail: Component = () => {
           ref={sticky.monitor}
         >
           <div id="chat-messages" class="flex w-full flex-col gap-2">
-            <Show when={chats.loaded && chatMsgs().length < 2 && chats.char?.description}>
+            <Show when={chats.loaded && ctx.messages.viewing.length < 2 && chats.char?.description}>
               <div class="mb-4 flex flex-col items-center text-[var(--text-500)]">
                 <div class="font-bold">Notes from the creator of {chats.char?.name}</div>
                 {descriptionText()}
               </div>
             </Show>
-            <Show when={chats.loaded && chatMsgs().length === 0 && !response.waiting}>
+            <Show when={chats.loaded && ctx.messages.viewing.length === 0 && !response.waiting}>
               <div class="flex justify-center gap-2">
                 <Button onClick={generateFirst}>Generate Message</Button>
               </div>
             </Show>
             {/* Original Slot location */}
-            <LoadMore canFetch={chars.ready} />
+            <LoadMore canFetch={chars.ready} showMore={ctx.messages.path.length > msgs.cutoff} />
 
-            <Index each={chatMsgs()}>
+            <Index each={ctx.messages.viewing}>
               {(msg, i) => (
                 <>
                   <Message
@@ -540,7 +529,7 @@ const ChatDetail: Component = () => {
           tree={ctx.chatTree}
           show
           close={clearModal}
-          leafId={chatMsgs().slice(-1)[0]?._id || ''}
+          leafId={ctx.messages.viewing.slice(-1)[0]?._id || ''}
         />
       </Show>
 
@@ -579,7 +568,8 @@ const ChatDetail: Component = () => {
         }
         show={chats.opts.modal === 'restart'}
         confirm={() => {
-          msgStore.fork('root')
+          const first = msgs.msgs[0]
+          chatStore.forkChat(first?._id || '')
           chatStore.option({ modal: 'none' })
         }}
         close={() => chatStore.option({ modal: 'none' })}

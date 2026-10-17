@@ -35,6 +35,7 @@ const characterForm = {
   voiceDisabled: 'string?',
   tags: 'string?',
   json: 'any?',
+  prefill: 'string?',
 
   imageSettings: 'string?',
 
@@ -237,6 +238,11 @@ const editFullCharacter = handle(async (req) => {
   const id = req.params.id
   const body = handleForm(req, characterForm)
 
+  const existing = await store.characters.getCharacter(req.userId, id)
+  if (!existing) {
+    throw new StatusError(`Character with ID "${id}" not found`, 404)
+  }
+
   const alternateGreetings = body.alternateGreetings ? toArray(body.alternateGreetings) : undefined
   const characterBook = body.characterBook ? JSON.parse(body.characterBook) : undefined
   if (characterBook !== undefined) {
@@ -268,6 +274,7 @@ const editFullCharacter = handle(async (req) => {
     systemPrompt: body.systemPrompt,
     postHistoryInstructions: body.postHistoryInstructions,
     creator: body.creator,
+    prefill: body.prefill,
     characterVersion: body.characterVersion,
     voiceDisabled: body.voiceDisabled === 'true',
     imageSettings,

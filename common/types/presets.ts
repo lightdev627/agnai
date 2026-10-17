@@ -103,7 +103,11 @@ export interface UserGenPreset extends GenSettings {
   userId: string
 }
 
-export type PresetParser = { type: 'replace' | 'remove'; text: string; to?: string }
+export type PresetParser = {
+  type: 'replace' | 'remove' | 'remove-prompt' | 'replace-prompt'
+  text: string
+  to?: string
+}
 
 export type Sampler =
   | 'topK'
@@ -117,6 +121,8 @@ export type Sampler =
   | 'temperature'
 
 export type SamplerState = 'on' | 'off' | 'auto' | string
+
+export type ReasoningEffort = 'custom' | 'high' | 'medium' | 'low' | 'none'
 
 export interface GenSettings {
   name: string
@@ -211,7 +217,7 @@ export interface GenSettings {
   reasoning?: {
     start: string
     end: string
-    effort: string
+    effort: ReasoningEffort
     enabled: boolean
     exclude: boolean
     maxTokens: number

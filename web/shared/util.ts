@@ -10,7 +10,7 @@ import { deepClone } from '/common/util'
 import { getRootRgb } from './colors'
 import { getStore } from '../store/create'
 import { ADAPTER_SETTINGS } from './PresetSettings/settings'
-import { PresetState } from '../store/preset-context'
+import { ContextPreset } from '../store/preset-context'
 import { v4 } from 'uuid'
 import { getChatPreset } from '../pages/Chat/util'
 import { extractReasoning } from '/common/reasoning'
@@ -182,7 +182,7 @@ export function tryParseImport(content: string) {
     return json
   } catch (ex) {}
 
-  if (content.startsWith('data:')) {
+  if (content?.startsWith('data:')) {
     try {
       const index = content.indexOf(',')
       const data = decodeURIComponent(content.slice(index + 1))
@@ -358,8 +358,8 @@ export function getAssetPrefix() {
 }
 
 export function isBase64(file: string) {
-  if (file.startsWith('/') || file.startsWith('http')) return false
-  if (file.startsWith('data:')) return true
+  if (file?.startsWith('/') || file?.startsWith('http')) return false
+  if (file?.startsWith('data:')) return true
 
   return file.length > 500
 }
@@ -704,7 +704,7 @@ export function isDirty<T extends {}>(original: T, compare: T): boolean {
 }
 
 export function serviceHasSetting(
-  state: Pick<PresetState, 'service' | 'thirdPartyFormat'>,
+  state: Pick<ContextPreset, 'service' | 'thirdPartyFormat'>,
   ...props: Array<keyof PresetAISettings>
 ) {
   if (!state.service) {
@@ -739,7 +739,7 @@ function isPresetSetting(key: string): key is keyof PresetAISettings {
 }
 
 export function isValidServiceSetting(
-  state: Pick<PresetState, 'service' | 'thirdPartyFormat'>,
+  state: Pick<ContextPreset, 'service' | 'thirdPartyFormat'>,
   prop?: keyof PresetAISettings
 ) {
   const services = getAISettingServices(prop)

@@ -12,11 +12,11 @@ import { ADAPTER_LABELS, FORMAT_LABEL, ThirdPartyFormat } from '/common/adapters
 import { ManageProvider } from './Manage'
 import { markdown } from '/web/shared/markdown'
 import { CustomSelect } from '/web/shared/CustomSelect'
-import { PresetFuncs, PresetState } from '/web/store/preset-context'
+import { PresetFuncs, ContextPreset } from '/web/store/preset-context'
 import { useProviderList } from './hooks'
 
 export const PresetProvider: Component<{
-  state: PresetState
+  state: ContextPreset
   setters: PresetFuncs
   page?: string
   openSub?: ComponentSubscriber<'open'>
@@ -84,6 +84,13 @@ export const PresetProvider: Component<{
 
   const newProvider = () => {
     setEditing()
+    setOpen(true)
+  }
+
+  const editProviderById = (value: string) => {
+    const match = state.providers.find((p) => p._id === value)
+    if (!match) return
+    setEditing(match)
     setOpen(true)
   }
 
@@ -163,17 +170,22 @@ export const PresetProvider: Component<{
           buttonClass="break-all"
           buttonLabel={label()}
           options={services()}
+          actions={[
+            {
+              comp: (props) => (
+                <Show when={!!props.optionValue && props.optionValue !== 'agnaistic'}>
+                  <Button schema="clear" onClick={() => editProviderById(props.optionValue)}>
+                    <Pencil size={12} />
+                  </Button>
+                </Show>
+              ),
+            },
+          ]}
           onSelect={(ev) => changeProvider(ev.value)}
           openSub={props.openSub}
           closeSub={emitter.on}
           preoptions={
             <div class="flex justify-end gap-2">
-              <Show when={!!props.state.providerId && props.state.providerId !== 'agnaistic'}>
-                <Button size="sm" onClick={editProvider}>
-                  <Pencil size={16} />
-                  Edit Selected
-                </Button>
-              </Show>
               <Button size="sm" onClick={newProvider}>
                 <PlusIcon size={16} />
                 New

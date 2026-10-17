@@ -1,11 +1,11 @@
 import { formatCharacter } from './characters'
 import { grammar } from './grammar'
-import { JsonField, PromptLine, PromptPlaceholders, fillPromptWithLines } from './prompt'
+import { PromptLine, PromptPlaceholders, fillPromptWithLines } from './prompt'
 import { AppSchema, Memory, TokenCounter } from '/common/types'
 import peggy from 'peggy'
 import { elapsedSince } from './util'
 import { v4 } from 'uuid'
-import { ChatRole, HistoryLine } from '/srv/adapter/type'
+import { ChatRole, GenerateRequestV2, HistoryLine } from '/srv/adapter/type'
 import { replaceTags } from './presets/templates'
 
 export type ParsedSection = 'pre_system' | 'system' | 'post_system' | 'history' | 'post'
@@ -46,7 +46,7 @@ export type TemplateOpts = {
   chatEmbed?: Memory.UserEmbed<{ name: string }>[]
   userEmbed?: Memory.UserEmbed[]
 
-  schema?: JsonField[]
+  schema?: GenerateRequestV2['jsonSchema']
 
   /** If present, history will be rendered last */
   limit?: {
@@ -232,7 +232,7 @@ export async function parseTemplate(
   const flags: InternalState = { pre_render: true, messages: [], jsonAliases: {} }
 
   if (opts.schema) {
-    for (const field of opts.schema) {
+    for (const field of opts.schema.fields) {
       if (!field.alias) continue
       flags.jsonAliases[field.alias] = field.name
     }
@@ -806,10 +806,10 @@ function getEntities(holder: IterableHolder, opts: TemplateOpts) {
         if (char.deletedAt) continue
 
         // Exclude temp characters that have been disabled/removed
-        if (char._id.startsWith('temp-') && char.favorite === false) continue
+        if (char._id?.startsWith('temp-') && char.favorite === false) continue
 
         // Exclude non-temp characters that have been removed from the chat
-        if (!char._id.startsWith('temp-') && !opts.chat?.characters?.[char._id]) continue
+        if (!char._id?.startsWith('temp-') && !opts.chat?.characters?.[char._id]) continue
         chars.push(char)
       }
       return chars
@@ -951,7 +951,7 @@ function getPlaceholder(
 ) {
   if (opts.repeatable && !repeatableHolders.has(node.value as any)) return ''
 
-  if (node.value.startsWith('json.')) {
+  if (node.value?.startsWith('json.')) {
     const target = node.value.replace('json.', '')
 
     const jsonValues = opts.jsonValues || opts.history?.slice(-1)[0]?.json || {}
@@ -960,7 +960,7 @@ function getPlaceholder(
     return value
   }
 
-  if (node.value.startsWith('var.') || node.value.startsWith('vars.')) {
+  if (node.value?.startsWith('var.') || node.value?.startsWith('vars.')) {
     const name = node.value.replace('var.', '').replace('vars.', '')
     return opts.parts?.props?.[name] || ''
   }

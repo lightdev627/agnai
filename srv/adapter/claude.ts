@@ -13,17 +13,14 @@ import {
 } from '../../common/prompt'
 import { AppLog } from '../middleware'
 import { getTokenCounter } from '../tokenize'
-import { toChatCompletionPayload } from './chat-completion'
 import { sendOne } from '../api/ws'
-import { joinUrl, sanitiseAndTrim } from '/common/requests/util'
+import { joinUrl } from '/common/requests/util'
 import { GenSettings } from '/common/types/presets'
-import { OPENAI_MODELS } from '/common/presets/openai'
 import { CLAUDE_MODELS, CLAUDE_TEXT_MODELS } from '/common/presets/claude'
 import { fetchStream } from '/common/requests/stream'
 import { remapMessages } from './template-chat-payload'
 import { getMimeTypeBase64 } from '/common/util'
-import { getStoppingStrings } from '/common/requests/payloads'
-import { stripImageContent, toChatMessages } from '/common/template-messages'
+import { stripImageContent } from '/common/template-messages'
 
 const CHAT_URL = `https://api.anthropic.com/v1/messages`
 const TEXT_URL = `https://api.anthropic.com/v1/complete`
@@ -50,18 +47,27 @@ type CompletionGenerator = (opts: {
   log: AppLog
 }) => AsyncGenerator<{ error?: string; token?: string; meta?: any }, ClaudeCompletion | undefined>
 
+const TEMP_TOPP_EXCLUSIVE: Record<string, boolean> = {
+  'claude-haiku-4-5-20251001': false,
+  'claude-sonnet-4-5-20250929': false,
+  'claude-opus-4-1-20250805': false,
+  'claude-opus-4-20250514': false,
+  'claude-sonnet-4-20250514': false,
+  'claude-3-haiku-20240307': false,
+}
+
 // There's no tokenizer for Claude, we use OpenAI's as an estimation
 const encoder = () => getTokenCounter('claude', '')
 
 export const handleClaude: ModelAdapter = async function* (opts) {
-  let { members, user, log, guest, gen, isThirdParty } = opts
+  let { user, log, guest, gen, isThirdParty } = opts
   if (gen.providerId) {
     isThirdParty = true
   }
 
   const claudeModel =
     gen.service === 'kobold'
-      ? gen.thirdPartyModel || gen.claudeModel
+      ? gen.thirdPartyModel || gen.claudeModel!
       : gen.thirdPartyModel || gen.claudeModel || CLAUDE_MODELS.ClaudeV37_Sonnet_Latest
 
   const base = getBaseUrl(gen, claudeModel || defaultPresets.claude.claudeModel, isThirdParty)
@@ -83,7 +89,6 @@ export const handleClaude: ModelAdapter = async function* (opts) {
     ? 'v2'
     : 'v1'
   const stops = new Set([`\n\nHuman:`, `\n\nAssistant:`])
-  const userStops = getStoppingStrings(opts, opts.gen)
 
   const payload: any = {
     model: claudeModel,
@@ -140,6 +145,11 @@ export const handleClaude: ModelAdapter = async function* (opts) {
    * Claude specifies that the budget must be GTE 1024, but less than MAX_TOKENS
    * Reasoning is not supported in any text (old) models
    */
+  const exclusive = TEMP_TOPP_EXCLUSIVE[claudeModel] ?? true
+  if (formatting === 'v2' && exclusive) {
+    delete payload.top_p
+  }
+
   if (formatting === 'v2' && gen.reasoning?.enabled) {
     const effort = gen.reasoning.effort || 'low'
     const max = opts.gen.maxTokens ?? 1024
@@ -208,7 +218,7 @@ export const handleClaude: ModelAdapter = async function* (opts) {
 
   log.debug({ ...payload, prompt: null, messages: null }, 'Claude payload')
   log.debug(`Prompt:\n${payload.prompt}`)
-  yield { prompt: payload.messages ? stripImageContent(payload.messages) : payload.prompt }
+  yield { prompt: payload.messages?.length ? stripImageContent(payload.messages) : payload.prompt }
 
   const iterator = payload.stream
     ? streamCompletion({
@@ -250,15 +260,7 @@ export const handleClaude: ModelAdapter = async function* (opts) {
 
     if ('token' in generated.value) {
       acc += generated.value.token
-      yield {
-        partial: sanitiseAndTrim({
-          text: acc,
-          char: opts.replyAs,
-          members,
-          gen: opts.gen,
-          stops: userStops,
-        }),
-      }
+      yield { partial: acc }
     }
 
     if ('thoughts' in generated.value) {
@@ -277,12 +279,7 @@ export const handleClaude: ModelAdapter = async function* (opts) {
       log.error({ body: resp }, 'Claude request failed: Empty response')
       yield { error: `Claude request failed: Received empty response. Try again.` }
     } else {
-      yield sanitiseAndTrim({
-        text: completion,
-        char: opts.replyAs,
-        members,
-        gen: opts.gen,
-      })
+      yield completion
     }
   } catch (ex: any) {
     log.error({ err: ex }, 'Claude failed to parse')
@@ -456,34 +453,10 @@ const streamCompletion: CompletionGenerator = async function* (opts) {
   return
 }
 
-export async function createClaudeChatCompletionV2(opts: AdapterProps) {
-  let messages = opts.messages
-  if (!messages) {
-    const result = await toChatMessages(opts, getTokenCounter('claude', ''))
-    messages = result.messages
-  }
-
-  // Last message must be 'thinking' block or role 'user'
-  const lastMsg = messages?.slice(-1)?.[0]
-  if (lastMsg?.role === 'assistant') {
-    lastMsg.role = 'user'
-  }
-
-  return messages
-}
-
 export async function createClaudeChatCompletion(opts: AdapterProps) {
   const result = {
     system: '',
     messages: opts.messages!,
-  }
-
-  if (!result.messages) {
-    result.messages = await toChatCompletionPayload(
-      opts,
-      getTokenCounter('openai', OPENAI_MODELS.Turbo),
-      opts.gen.maxTokens!
-    )
   }
 
   // Claude doesn't have a system role, so we extract the first message to put it in the system
@@ -604,11 +577,11 @@ async function createClaudePrompt(opts: AdapterProps) {
 
   for (const line of all) {
     const distanceFromBottom = all.length - 1 - i
-    const lineType: LineType = line.startsWith(sender)
+    const lineType: LineType = line?.startsWith(sender)
       ? 'user'
-      : line.startsWith('System:')
+      : line?.startsWith('System:')
       ? 'system'
-      : line.startsWith(sampleAmble)
+      : line?.startsWith(sampleAmble)
       ? 'example'
       : 'char'
     if (distanceFromBottom === examplePos) {

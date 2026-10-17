@@ -17,6 +17,9 @@ let emitter = (_payload: { type: string }) => {}
 
 export function joinThoughtTokens(accum: string, thoughts: string) {
   if (!thoughts.trim()) return accum
+  if (!accum.trim() && thoughts) {
+    return thoughts
+  }
 
   return `<think>${thoughts}</think>${accum}`
 }
@@ -37,78 +40,9 @@ export function notify() {
   return notifier
 }
 
-type SanitiseOpts = {
-  text: string
-  char: AppSchema.Character
-  members: AppSchema.Profile[]
-  gen: Partial<AppSchema.GenSettings>
-  stops?: string[]
-}
-
-export function sanitiseAndTrim({ text, char, members, gen, stops }: SanitiseOpts) {
-  let parsed = sanitise(text)
-
-  const trimmed = trimResponseV2(parsed, char, members, gen, stops).split(`${char.name}:`).join('')
-  return trimmed || parsed
-}
-
 export function sanitise(generated: string) {
   // If want to support code blocks we need to remove the excess whitespace removal as it breaks indents
   return (generated || '').trim()
-}
-
-export function trimResponseV2(
-  generated: string,
-  char: AppSchema.Character,
-  members: AppSchema.Profile[],
-  gen: Partial<AppSchema.GenSettings> | undefined,
-  endTokens: string[] = []
-) {
-  const allEndTokens = getEndTokens(null, members, endTokens)
-
-  generated = generated.split(`${char.name} :`).join(`${char.name}:`)
-  if (gen?.reasoning?.start) {
-    generated = generated.replace(/\<think\>/g, gen.reasoning.start)
-  }
-
-  if (gen?.reasoning?.end) {
-    generated = generated.replace(/\<\/think\>/g, gen.reasoning.end)
-  }
-
-  for (const member of members) {
-    if (!member.handle) continue
-    generated = generated.split(`${member.handle} :`).join(`${member.handle}:`)
-  }
-
-  /** Do not always add character names as stop tokens here */
-  // if (bots) {
-  //   for (const bot of Object.values(bots)) {
-  //     if (!bot) continue
-  //     if (bot?._id === char._id) continue
-  //     endTokens.push(`${bot.name}:`)
-  //   }
-  // }
-
-  let index = -1
-  let trimmed = allEndTokens.concat(...endTokens).reduce((prev, endToken) => {
-    const idx = generated.indexOf(endToken)
-
-    if (idx === -1) return prev
-
-    const text = generated.slice(0, idx)
-    if (index === -1 || idx < index) {
-      index = idx
-      return text
-    }
-
-    return prev
-  }, '')
-
-  if (index === -1) {
-    return sanitise(generated.split(`${char.name}:`).join(''))
-  }
-
-  return sanitise(trimmed.split(`${char.name}:`).join(''))
 }
 
 export function getChoiceProp<T = any>(json: any, prop: string, assign?: any) {
@@ -209,7 +143,7 @@ export function joinUrl(base: string, path: string) {
     base = base.slice(0, -1)
   }
 
-  if (path.startsWith('/')) {
+  if (path?.startsWith('/')) {
     path = path.slice(1)
   }
 
@@ -217,7 +151,12 @@ export function joinUrl(base: string, path: string) {
 }
 
 export async function getThirdPartyModels(url: string, key: string) {
-  const headers: any = { Accept: 'application/json', 'anthropic-version': '2023-06-01' }
+  const headers: any = {
+    Accept: 'application/json',
+    'anthropic-version': '2023-06-01',
+    'Content-Type': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:58.0) Gecko/20100101 Firefox/58.0',
+  }
 
   if (key) {
     headers.Authorization = `Bearer ${key}`

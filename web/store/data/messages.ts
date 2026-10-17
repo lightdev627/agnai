@@ -6,7 +6,7 @@ import { ApiResult, localApi } from './storage'
 import { toastStore } from '../toasts'
 import { parseTemplate, TemplateOpts } from '/common/template-parser'
 import { exclude, replace } from '/common/util'
-import { storage, toMap } from '/web/shared/util'
+import { toMap } from '/web/shared/util'
 import { localEmit, subscribe } from '../socket'
 import { genApi } from './inference'
 import { botGen } from './bot-generate'
@@ -16,6 +16,7 @@ import { v4 } from 'uuid'
 import { getScenarioEventType } from '/common/scenario'
 import { getStore } from '../create'
 import { getDeletionChanges, toQuickGraph } from '/common/chat'
+import { chatsApi } from './chats'
 
 export const msgsApi = {
   createMessage,
@@ -29,7 +30,12 @@ export const msgsApi = {
 
 export type StreamCallback = (res: string, state: InferenceState) => any
 
-export async function swapMessage(msg: AppSchema.ChatMessage, text: string, retries: string[]) {
+export async function swapMessage(
+  msg: AppSchema.ChatMessage,
+  text: string,
+  retries: AppSchema.ChatMessage['retries'],
+  embed?: string
+) {
   return swapMessageProps(msg, { msg: text, retries })
 }
 
@@ -100,7 +106,7 @@ export async function createMessage(opts: {
     json: opts.json,
   })
 
-  await record('add', opts.chatId, messageId, opts.parent)
+  // await record('add', opts.chatId, messageId, opts.parent)
   if (isLoggedIn() && result.result?.message) {
     localEmit({ type: 'message-created', msg: result.result.message, chatId: opts.chatId })
   }
@@ -129,7 +135,7 @@ export async function editMessage(msg: AppSchema.ChatMessage, replace: string) {
 
 export async function editMessageProps(
   msg: Pick<AppSchema.ChatMessage, '_id' | 'chatId'>,
-  payload: Partial<AppSchema.ChatMessage>
+  payload: Partial<AppSchema.ChatMessage> & { assignTree?: boolean }
 ) {
   const update = { ...payload }
   if (update.meta && Object.keys(update.meta).length === 0) {
@@ -140,19 +146,29 @@ export async function editMessageProps(
     delete payload.parent
   }
 
-  if (payload.parent) {
-    await record('edit', msg.chatId, msg._id, payload.parent)
-  }
+  // if (payload.parent) {
+  //   await record('edit', msg.chatId, msg._id, payload.parent)
+  // }
 
   if (isLoggedIn()) {
+    const { msgs } = getStore('messages').getState()
+    const original = msgs.find((m) => m._id === msg._id)
+    const emit = { type: 'message-edited', chatId: msg.chatId, messageId: msg._id, ...update }
+    if (original) localEmit(emit)
+
     const res = await api.method('put', `/chat/${msg._id}/message-props`, update)
-    if (res.result) {
-      localEmit({ type: 'message-edited', chatId: msg.chatId, messageId: msg._id, ...update })
-    }
+    if (res.result && !original) localEmit(emit)
+    if (res.error && original) localEmit({ ...emit, ...original })
+
     return res
   }
 
   const messages = await localApi.getMessages(msg.chatId)
+  if (update.assignTree) {
+    await chatsApi.editChat(msg.chatId, { treeLeafId: msg._id })
+    delete update.assignTree
+  }
+
   const next = replace(msg._id, messages, update)
   await localApi.saveMessages(msg.chatId, next)
   localEmit({ type: 'message-edited', chatId: msg.chatId, messageId: msg._id, ...update })
@@ -177,6 +193,7 @@ async function getActiveTemplateParts() {
   const { parts, entities, props, lines } = await botGen.getActivePromptOptions({
     signal,
     kind: 'summary',
+    text: '',
   })
   const toLine = messageToLine({
     chars: entities.characters,
@@ -223,13 +240,20 @@ export async function deleteMessages(
     throw new Error(`Chat ID not set`)
   }
 
-  const { graph } = getStore('messages').getState()
-  for (const msgId of msgIds) {
-    const msg = graph.tree[msgId]
-    await record('del', chatId, msgId, msg?.msg?.parent)
-  }
+  const { msgs: storeMsgs } = getStore('messages').getState()
+  // for (const msgId of msgIds) {
+  // const msg = graph.tree[msgId]
+  // await record('del', chatId, msgId, msg?.msg?.parent)
+  // }
 
   if (isLoggedIn()) {
+    if (window.flags.softdel) {
+      const localGraph = toQuickGraph(storeMsgs, leafId)
+      const edges = getDeletionChanges(localGraph, msgIds)
+
+      return localApi.result(edges.updates)
+    }
+
     const res = await api.method('delete', `/chat/${chatId}/messages-v2`, {
       ids: msgIds,
       leafId,
@@ -284,14 +308,14 @@ function messageToLine(opts: {
   }
 }
 
-async function record(type: 'add' | 'del' | 'edit', chatId: string, id: string, parent?: string) {
-  const key = `debug-${chatId}`
-  const raw = await storage.getItem(key).then((res) => res || '[]')
-  const history: any[] = JSON.parse(raw)
+// async function record(type: 'add' | 'del' | 'edit', chatId: string, id: string, parent?: string) {
+//   const key = `debug-${chatId}`
+//   const raw = await storage.getItem(key).then((res) => res || '[]')
+//   const history: any[] = JSON.parse(raw)
 
-  history.push({ type, id, parent })
-  await storage.setItem(`debug-${chatId}`, JSON.stringify(history))
-}
+//   history.push({ type, id, parent })
+//   await storage.setItem(`debug-${chatId}`, JSON.stringify(history))
+// }
 
 /**
  * Partials

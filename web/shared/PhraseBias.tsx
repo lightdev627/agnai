@@ -169,7 +169,7 @@ export const MessageParsers: Field = (props) => {
             </a>
           </div>
         }
-        helperText="Alter the text in a message to remove or modify unwanted text. Only affects how the message is displayed."
+        helperMarkdown="Alter the text in a message to remove or modify unwanted text. Selecting `+ Prompt` will also alter the prompt."
       />
       <div class="flex flex-col gap-2 text-sm">
         <Index each={props.state.parsers || []}>
@@ -178,13 +178,15 @@ export const MessageParsers: Field = (props) => {
               <Select
                 items={[
                   { label: 'Remove', value: 'remove' },
+                  { label: 'Remove (+ Prompt)', value: 'remove-prompt' },
                   { label: 'Replace', value: 'replace' },
+                  { label: 'Replace (+ Prompt)', value: 'replace-prompt' },
                 ]}
                 value={each().type}
                 onChange={(ev) => updateParser(i, { type: ev.value as any })}
               />
               <Switch>
-                <Match when={each().type === 'remove'}>
+                <Match when={each().type === 'remove' || each().type === 'remove-prompt'}>
                   <div class="flex w-full gap-1">
                     <TextInput
                       value={each().text}
@@ -195,7 +197,7 @@ export const MessageParsers: Field = (props) => {
                   </div>
                 </Match>
 
-                <Match when={each().type === 'replace'}>
+                <Match when={each().type === 'replace' || each().type === 'replace-prompt'}>
                   <div class="flex w-full gap-1">
                     <TextInput
                       value={each().text}

@@ -59,7 +59,7 @@ export const ContextSize: Field<{ subMax: Partial<SubscriptionModelLevel> }> = (
     const ctx = props.subMax.maxContextLength
     if (!ctx) return
 
-    const max = Math.floor(ctx / 1000)
+    const max = Math.round(ctx / 1000)
     return `${max}K`
   })
 
@@ -176,7 +176,7 @@ export const Jailbreak: Field = (props) => {
         helperText={
           <>
             <p>
-              <b>Uncensored Models</b>: Typically stylstic instructions. E.g. "Respond succinctly
+              <b>Uncensored Models</b>: Typically stylistic instructions. E.g. "Respond succinctly
               using slang"
             </p>
             <p>

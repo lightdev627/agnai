@@ -33,10 +33,24 @@ interface Props {
   contentClass?: string
 }
 
+export const ConditionalModal: Component<Props & { modal: boolean }> = (props) => {
+  return (
+    <>
+      <Switch>
+        <Match when={props.modal}>
+          <Modal {...props} />
+        </Match>
+        <Match when={!props.modal}>{props.children}</Match>
+      </Switch>
+    </>
+  )
+}
+
 const Modal: Component<Props> = (props) => {
   const mobile = useMobileDetect()
   const [full, setFull] = createSignal(false)
 
+  const toggleFull = () => setFull((f) => !f)
   const toggleFull = () => {
     const next = !full()
     setFull((f) => next)
@@ -72,6 +86,8 @@ const Modal: Component<Props> = (props) => {
             <form
               ref={autofocus}
               onSubmit={props.onSubmit || defaultSubmit}
+              class={`modal-height bg-900 z-50 w-[calc(100vw-0px)] overflow-hidden rounded-lg shadow-md shadow-black transition-all ${width()} `}
+              classList={{ 'h-full': props.maxHeight || full(), 'opacity-80': props.transparent }}
               class={`modal-container bg-900 z-50 w-[calc(100vw-0px)] overflow-hidden rounded-lg shadow-md shadow-black transition-all ${width()}`}
               classList={{ 'h-screen': props.maxHeight || full(), 'opacity-80': props.transparent }}
               role="dialog"
@@ -88,6 +104,8 @@ const Modal: Component<Props> = (props) => {
                       select={props.tabs?.select!}
                       tabs={props.tabs?.tabs?.()!}
                     />
+                    <div class="flex gap-2">
+                      <a class="icon-button" classList={{ hidden: mobile() }} onClick={toggleFull}>
                     <div class="flex items-center gap-2">
                       <a
                         class="icon-button"
